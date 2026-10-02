@@ -367,9 +367,16 @@ export interface AdminSettings {
 
 // Models and evaluation (F20)
 
+export const REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+export type ReasoningEffort = typeof REASONING_EFFORTS[number];
+export interface AdminCodexModel {
+  model: string; name: string; vision: boolean;
+  defaultReasoningEffort: ReasoningEffort | null;
+  supportedReasoningEfforts: Array<{ reasoningEffort: ReasoningEffort; description: string }>;
+}
 export interface AdminModelConnection {
   id: string; name: string; type: "api-key" | "codex"; model: string; baseUrl?: string;
-  keyConfigured: boolean; jsonMode: boolean; vision: boolean;
+  keyConfigured: boolean; jsonMode: boolean; vision: boolean; reasoningEffort?: ReasoningEffort | null;
 }
 export interface AdminModelConfiguration {
   active: string | null; connections: AdminModelConnection[]; modelCallsEnabled: boolean; collectEnabled: boolean;
