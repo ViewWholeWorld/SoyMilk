@@ -1,21 +1,23 @@
 import { SITE } from "@aihot/industry/site";
 import { useState } from "react";
 import { Link } from "react-router";
-import type { AdminModels } from "@aihot/contracts/admin";
+import type { AdminModelConfiguration, AdminModels } from "@aihot/contracts/admin";
 import type { Route } from "./+types/models";
 import { adminGet } from "../../lib/admin.server";
 import { useAdminAction } from "../../features/admin/action";
 import { bj, money, num } from "../../features/admin/format";
 import { AdminPage, Badge, Button, Card, DataTable, Empty, Field, FilterChips, ReasonDialog, Select } from "../../features/admin/ui";
+import { ModelConnections } from "../../features/admin/model-connections";
 
 
 
 export async function loader({ request }: Route.LoaderArgs) {
   const days = new URL(request.url).searchParams.get("days") ?? "7";
-  return adminGet<AdminModels>(request, `/api/admin/models?days=${encodeURIComponent(days)}`);
+  const [models, configuration] = await Promise.all([adminGet<AdminModels>(request, `/api/admin/models?days=${encodeURIComponent(days)}`), adminGet<AdminModelConfiguration>(request, "/api/admin/model-config")]);
+  return { ...models, configuration };
 }
 
-export const meta: Route.MetaFunction = () => [{ title: `模型与评测 · ${SITE.name} 后台` }];
+export const meta: Route.MetaFunction = () => [{ title: `大模型配置 · ${SITE.name} 后台` }];
 
 const SOURCE_LABEL = { admin: "后台切换", env: "环境变量", default: "代码默认" } as const;
 const secs = (ms: number | null) => (ms == null ? "—" : ms >= 10_000 ? `${Math.round(ms / 1000)} s` : `${(ms / 1000).toFixed(1)} s`);
@@ -28,10 +30,12 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
 
   return (
     <AdminPage
-      title="模型与评测"
-      subtitle="每项能力当前用哪个模型、来自哪里（后台切换 > 环境变量 > 代码默认），以及近期的成功率、耗时与费用。切换只影响之后的新任务，已有结果不重算；换精选模型前先看 SelectBench 同批对比。"
+      title="大模型配置"
+      subtitle="统一管理 Codex 账号、API Key 和模型连接，再为各项能力选择模型。配置只影响之后的新任务。"
       actions={<FilterChips param="days" options={[{ value: "1", label: "24 小时" }, { value: "", label: "7 天" }, { value: "30", label: "30 天" }]} />}
     >
+      <ModelConnections configuration={m.configuration} />
+      <h2 className="mb-4 text-[16px] font-medium">各项能力与调用统计</h2>
       <div className="grid gap-5">
         {m.capabilities.map((c) => {
           const total = c.usage.reduce((a, u) => a + u.calls, 0);
@@ -157,7 +161,7 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
               .filter((x) => x.vision === !!target?.vision)
               .map((x) => (
                 <option key={x.key} value={x.key}>
-                  {x.key}（{x.service}）
+                  {m.configuration.connections.find((c) => `connection:${c.id}` === x.key)?.name ?? x.key}（{x.service}）
                 </option>
               ))}
             <option value="__default">恢复默认（{target?.env} 或 {target?.defaultModel}）</option>
