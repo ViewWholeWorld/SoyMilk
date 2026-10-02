@@ -13,7 +13,7 @@ import { CATEGORY_KEYS } from "@aihot/contracts/taxonomy";
 import { CATEGORIES } from "@aihot/industry/taxonomy";
 import { SELECTION } from "@aihot/industry/selection";
 import { sql } from "../db.ts";
-import { chatJson, MODELS, ModelOutputError, type ContentPart } from "../providers/llm.ts";
+import { chatJson, registeredModels, ModelOutputError, type ContentPart } from "../providers/llm.ts";
 import { completeReceipt, ProviderRejectedError, ReceiptUnknownError } from "../providers/receipts.ts";
 import { collapseWhitespace } from "../lib/text.ts";
 import { modelFor } from "./models.ts";
@@ -312,7 +312,7 @@ async function runUnderstand(a: AnalyzeInputArticle, opts: StepOpts): Promise<An
     });
   };
   // A model that is known not to read images gets the text only.
-  const image = MODELS[model]?.vision === false ? null : await firstImagePart(a);
+  const image = (await registeredModels())[model]?.vision === false ? null : await firstImagePart(a);
   let res: Awaited<ReturnType<typeof call>>;
   try {
     res = await call(image);
