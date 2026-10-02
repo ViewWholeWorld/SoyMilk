@@ -2,6 +2,7 @@
 // deployment names in LLM_BASE_URL / LLM_API_KEY / LLM_MODEL, and every capability uses it unless an
 // environment variable or the admin's model page picks one of the named presets below.
 import type { z } from "zod";
+import type { ReasoningEffort } from "@aihot/contracts/admin";
 import { config, credential } from "../config.ts";
 import { sha256 } from "../lib/ids.ts";
 import { completeReceipt, paidRequest, ProviderRejectedError, rejectReceivedResponse } from "./receipts.ts";
@@ -22,6 +23,7 @@ export interface ModelSpec {
   extra?: Record<string, unknown>;
   jsonMode: boolean;
   vision?: boolean;
+  reasoningEffort?: ReasoningEffort | null;
   connection?: { type: "api-key" | "codex"; baseUrl?: string; apiKey?: string; generation: string };
 }
 
@@ -94,6 +96,8 @@ export async function registeredModels(): Promise<Record<string, ModelSpec>> {
   for (const v of c.connections) {
     const key = `connection:${v.id}`;
     const spec: ModelSpec = { key, service: "llm", model: v.model, baseUrlEnv: "", apiKeyEnv: "", jsonMode: v.jsonMode, vision: v.vision,
+      reasoningEffort: v.reasoningEffort,
+      extra: v.type === "api-key" && v.reasoningEffort ? { reasoning_effort: v.reasoningEffort } : undefined,
       connection: { type: v.type, baseUrl: v.baseUrl, apiKey: v.apiKey, generation: v.generation } };
     models[key] = spec;
     if (c.active === v.id) models.default = { ...spec, key: "default" };
@@ -216,7 +220,7 @@ async function executeChatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>, sp
       // Multimodal parts go through as parts; plain objects are sent as JSON text.
       { role: "user", content: typeof opts.user === "string" || Array.isArray(opts.user) ? opts.user : userText },
     ],
-    temperature,
+    ...(spec.reasoningEffort && spec.reasoningEffort !== "none" ? {} : { temperature }),
     max_tokens: maxTokens,
     ...(spec.jsonMode && opts.json !== false ? { response_format: { type: "json_object" } } : {}),
     ...(spec.extra ?? {}),
@@ -228,14 +232,14 @@ async function executeChatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>, sp
       model: spec.model,
       purpose: opts.purpose,
       subject: opts.subject,
-      identity: { model: spec.model, promptVersion: opts.promptVersion, system: sha256(opts.system), user: sha256(userText), temperature, maxTokens, extra: spec.extra ?? null, ...(access ? { transport: "chatgpt-responses-v1", registrationHash: sha256(access.registration) } : {}), ...(spec.connection ? { connection: spec.connection.generation } : {}), ...(codex ? { transport: "codex-app-server", account: codex.generation } : {}) },
-      requestSummary: { promptVersion: opts.promptVersion, systemHash: sha256(opts.system), userHash: sha256(userText), userChars: userText.length, temperature, maxTokens },
+      identity: { model: spec.model, promptVersion: opts.promptVersion, system: sha256(opts.system), user: sha256(userText), temperature, maxTokens, extra: spec.extra ?? null, reasoningEffort: spec.reasoningEffort ?? null, ...(access ? { transport: "chatgpt-responses-v1", registrationHash: sha256(access.registration) } : {}), ...(spec.connection ? { connection: spec.connection.generation } : {}), ...(codex ? { transport: "codex-app-server", account: codex.generation } : {}) },
+      requestSummary: { promptVersion: opts.promptVersion, systemHash: sha256(opts.system), userHash: sha256(userText), userChars: userText.length, temperature, maxTokens, reasoningEffort: spec.reasoningEffort ?? null },
       attemptTag: opts.attemptTag,
     },
     async () => {
       const started = Date.now();
       if (codex) {
-        const json = await requestCodex(codex.server, spec.model, opts.system, opts.user, opts.json !== false, opts.timeoutMs ?? 120_000);
+        const json = await requestCodex(codex.server, spec.model, opts.system, opts.user, opts.json !== false, opts.timeoutMs ?? 120_000, spec.reasoningEffort);
         return { response: { ...json, _latencyMs: Date.now() - started }, requestId: json.id, usage: json.usage, cost: null };
       }
       if (access) {
