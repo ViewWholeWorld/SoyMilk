@@ -158,7 +158,7 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
         <Field label="模型">
           <Select value={choice} onChange={(e) => setChoice(e.target.value)}>
             {m.choices
-              .filter((x) => x.vision === !!target?.vision)
+              .filter((x) => !target?.vision || x.vision)
               .map((x) => (
                 <option key={x.key} value={x.key}>
                   {m.configuration.connections.find((c) => `connection:${c.id}` === x.key)?.name ?? x.key}（{x.service}）
