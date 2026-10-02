@@ -377,7 +377,7 @@ export interface AdminModelConfiguration {
 export interface AdminCodexLogin {
   id: string; state: "pending" | "success" | "failed" | "cancelled"; verificationUrl: string; userCode: string; expiresAt: number; error: string | null;
 }
-export interface AdminCodexAccount { connected: boolean; email: string | null; plan: string | null }
+export interface AdminCodexAccount { connected: boolean; email: string | null; plan: string | null; loginInProgress?: boolean; pendingLogin?: AdminCodexLogin | null }
 
 export interface AdminModelUsage {
   purpose: string;
