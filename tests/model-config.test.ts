@@ -13,7 +13,8 @@ import { config } from "@aihot/backend/config";
 import { closeDb, sql } from "@aihot/backend/db";
 import { passwordLogin, SESSION_COOKIE, sessionPrincipal } from "@aihot/backend/admin/auth";
 import { saveConnection } from "@aihot/backend/admin/model-config";
-import { codexLoginStatus, cancelCodexLogin, CodexServer, openCodexServer, requestCodex, startCodexLogin } from "@aihot/backend/providers/codex";
+import { codexLoginStatus, codexStatus, cancelCodexLogin, CodexServer, openCodexServer, requestCodex, startCodexLogin } from "@aihot/backend/providers/codex";
+import { sha256 } from "@aihot/backend/lib/ids";
 import { deleteModelConnection, modelConfiguration, readModelConfig, saveModelConnection, selectModelConnection } from "@aihot/backend/providers/model-config";
 import { chatJson, registeredModels } from "@aihot/backend/providers/llm";
 import { BudgetExceededError, ProviderRejectedError } from "@aihot/backend/providers/receipts";
@@ -112,6 +113,7 @@ const readline = require('node:readline'); const send = m => process.stdout.writ
 readline.createInterface({input:process.stdin}).on('line', l => { const m=JSON.parse(l); if(m.error){denied=m;return;} if(m.id===undefined)return;
  const reply = result => send({id:m.id,result});
  if(m.method==='initialize') reply({});
+ else if(m.method==='account/read') reply({account:null,requiresOpenaiAuth:true});
  else if(m.method==='account/login/start') reply({type:'chatgptDeviceCode',loginId:'official-login',verificationUrl:'https://auth.openai.com/codex/device',userCode:'FAKE-CODE'});
  else if(m.method==='account/login/cancel') reply({});
  else if(m.method==='fixture/complete') {reply({});send({method:'account/login/completed',params:{loginId:'official-login',success:true}});}
@@ -145,7 +147,11 @@ test("device login stays bound to its initiating session and observes managed co
   const view = await startCodexLogin("session-a", async () => { server = fake(); return server; });
   assert.equal(view.state, "pending"); assert.equal(view.userCode, "FAKE-CODE");
   assert.throws(() => codexLoginStatus("session-b", view.id), /失效/);
-  await assert.rejects(startCodexLogin("session-b"), /管理员/);
+  await assert.rejects(startCodexLogin("session-b"), /另一个登录会话/);
+  assert.equal((await codexStatus("session-a")).pendingLogin?.id, view.id, "a refreshed page can recover its own pending code");
+  const other = await codexStatus("session-b");
+  assert.equal(other.loginInProgress, true); assert.equal(other.pendingLogin, null);
+  assert.ok(!JSON.stringify(other).includes(view.userCode), "other sessions learn only that a login exists");
   assert.equal((await startCodexLogin("session-a")).id, view.id);
   await server.request("fixture/complete", {});
   for (let i = 0; i < 30 && codexLoginStatus("session-a", view.id).state === "pending"; i++) await delay(20);
@@ -156,4 +162,20 @@ test("device login can be cancelled without importing or exposing any account to
   const view = await startCodexLogin("session-a", async () => fake());
   assert.equal((await cancelCodexLogin("session-a", view.id)).state, "cancelled");
   assert.ok(!JSON.stringify(view).includes("access_token"));
+});
+test("an explicit administrator restart cancels the old session without exposing its code", async () => {
+  const first = await startCodexLogin("old-session", async () => fake());
+  const headers = { cookie: `${SESSION_COOKIE}=${token}` };
+  const state = await app.inject({ method: "GET", url: "/api/admin/model-config/codex", headers });
+  assert.equal(state.statusCode, 200); assert.equal(state.json().loginInProgress, true);
+  assert.equal(state.json().pendingLogin, null); assert.ok(!state.body.includes(first.userCode));
+  const conflict = await app.inject({ method: "POST", url: "/api/admin/model-config/codex/login", headers: { ...headers, "x-csrf-token": csrf }, payload: {} });
+  assert.equal(conflict.statusCode, 409);
+  assert.equal((await app.inject({ method: "POST", url: "/api/admin/model-config/codex/login", headers, payload: { restart: true } })).statusCode, 403);
+  const second = await startCodexLogin(sha256(csrf), async () => fake(), true);
+  assert.equal(first.state, "cancelled"); assert.notEqual(first.id, second.id);
+  const resumed = await app.inject({ method: "GET", url: "/api/admin/model-config/codex", headers });
+  assert.equal(resumed.json().pendingLogin.id, second.id);
+  assert.throws(() => codexLoginStatus("old-session", first.id), /失效/);
+  await cancelCodexLogin(sha256(csrf), second.id);
 });
