@@ -12,6 +12,8 @@
 
 使用官方 Codex app-server 的 `chatgptDeviceCode` 流程，支持 Docker/NAS、HTTP 内网和 Tailscale IP，无需本站 HTTPS 回调或 SSH 隧道。依赖锁定为 `@openai/codex@0.160.0`；Codex 自己保管和刷新令牌，应用不读取或复制用户本机的 `auth.json`。模型目录供选择，实际权限以任务执行结果为准。可在此页断开账号。
 
+刷新页面会恢复本会话尚未完成的授权。用另一个地址或浏览器登录时会形成不同会话：网页显示已有授权，并提供「取消旧授权并重新开始」，不用等待旧验证码超时。其他会话不能读取原验证码；只有显式点击重新开始才会取消旧授权。
+
 ### API Key 连接
 
 添加连接，填写名称、服务商基础地址、模型名和密钥。支持 OpenAI 兼容的 **Chat Completions** 协议，提供 OpenAI、DeepSeek、通义千问和智谱地址预设，也支持自定义兼容服务。原生 Anthropic Messages/Gemini 需通过兼容服务接入。按模型能力选择 JSON 输出和图片输入。
