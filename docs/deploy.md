@@ -12,6 +12,8 @@ node scripts/init-env.ts --llm-key <你的模型 API Key>
 
 `init-env.ts` 会生成 `.env`，填好随机密钥和管理员密码，并把密码打印一次。机器上没有 Node 的话，把 `.env.example` 复制成 `.env`，自己填 `ADMIN_PASSWORD`（至少 12 位）、`SESSION_SECRET`、`IMG_PROXY_SIGN_SECRET`、`POSTGRES_PASSWORD`（各用 `openssl rand -hex 32` 生成）和 `LLM_API_KEY`。
 
+默认模型也可以使用 [ChatGPT 订阅授权](chatgpt-auth.md)。先保持采集和模型调用关闭，完成独立的 OAuth 授权，再配置 `LLM_AUTH_MODE=chatgpt` 和账号可用的模型。
+
 启动前检查 `.env` 的 `SITE_URL`：本机试用保留 `http://localhost:3000`；部署到服务器时改成读者实际访问的地址。例如通过服务器 IP 访问时（把示例 IP 换成自己的）：
 
 ```dotenv
