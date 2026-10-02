@@ -42,8 +42,8 @@ export function registerAdmin(app: FastifyInstance) {
   app.post("/api/admin/model-config/connections", adminHandler(async (req, _reply, admin) => saveConnection(req.body, actorOf(admin))));
   app.post("/api/admin/model-config/active", adminHandler(async (req, _reply, admin) => activateConnection(req.body, actorOf(admin))));
   app.delete("/api/admin/model-config/connections/:id", adminHandler(async (req, _reply, admin) => removeConnection(param(req, "id"), actorOf(admin))));
-  app.get("/api/admin/model-config/codex", adminHandler(async () => codexStatus()));
-  app.post("/api/admin/model-config/codex/login", adminHandler(async (_req, _reply, admin) => connectCodex(sha256(admin.csrf), actorOf(admin))));
+  app.get("/api/admin/model-config/codex", adminHandler(async (_req, _reply, admin) => codexStatus(sha256(admin.csrf))));
+  app.post("/api/admin/model-config/codex/login", adminHandler(async (req, _reply, admin) => connectCodex(sha256(admin.csrf), actorOf(admin), req.body ?? {})));
   app.get("/api/admin/model-config/codex/login/:id", adminHandler(async (req, _reply, admin) => loginStatus(sha256(admin.csrf), param(req, "id"), actorOf(admin))));
   app.post("/api/admin/model-config/codex/login/:id/cancel", adminHandler(async (req, _reply, admin) => cancelLogin(sha256(admin.csrf), param(req, "id"), actorOf(admin))));
   app.post("/api/admin/model-config/codex/logout", adminHandler(async (_req, _reply, admin) => disconnectCodex(actorOf(admin))));
