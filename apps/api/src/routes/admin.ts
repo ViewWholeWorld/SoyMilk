@@ -6,6 +6,8 @@ import { actorOf } from "@aihot/backend/admin/auth";
 
 import { importSelectBenchRun, listSelectBenchRuns, selectBenchRun } from "@aihot/backend/admin/selectbench";
 import { modelsOverview, switchModel } from "@aihot/backend/admin/models";
+import { activateConnection, cancelLogin, codexModels, codexStatus, connectCodex, disconnectCodex, loginStatus, modelConfiguration, removeConnection, saveConnection } from "@aihot/backend/admin/model-config";
+import { sha256 } from "@aihot/backend/lib/ids";
 
 import { contentChain, overrideFields, rerun, searchContent, setSeoIndexed, setVisibility } from "@aihot/backend/admin/content";
 import { banSource, eraseFeedback, feedbackScreenshot, listFeedback, unbanSource, updateFeedback } from "@aihot/backend/admin/feedback";
@@ -36,6 +38,16 @@ function decodeImage(dataUrl: unknown): Buffer {
 }
 
 export function registerAdmin(app: FastifyInstance) {
+  app.get("/api/admin/model-config", adminHandler(async () => modelConfiguration()));
+  app.post("/api/admin/model-config/connections", adminHandler(async (req, _reply, admin) => saveConnection(req.body, actorOf(admin))));
+  app.post("/api/admin/model-config/active", adminHandler(async (req, _reply, admin) => activateConnection(req.body, actorOf(admin))));
+  app.delete("/api/admin/model-config/connections/:id", adminHandler(async (req, _reply, admin) => removeConnection(param(req, "id"), actorOf(admin))));
+  app.get("/api/admin/model-config/codex", adminHandler(async () => codexStatus()));
+  app.post("/api/admin/model-config/codex/login", adminHandler(async (_req, _reply, admin) => connectCodex(sha256(admin.csrf), actorOf(admin))));
+  app.get("/api/admin/model-config/codex/login/:id", adminHandler(async (req, _reply, admin) => loginStatus(sha256(admin.csrf), param(req, "id"), actorOf(admin))));
+  app.post("/api/admin/model-config/codex/login/:id/cancel", adminHandler(async (req, _reply, admin) => cancelLogin(sha256(admin.csrf), param(req, "id"), actorOf(admin))));
+  app.post("/api/admin/model-config/codex/logout", adminHandler(async (_req, _reply, admin) => disconnectCodex(actorOf(admin))));
+  app.post("/api/admin/model-config/codex/models", adminHandler(async () => codexModels()));
   // Sources (F18)
   app.get("/api/admin/sources", adminHandler(async (req) => {
     const f = q(req);
