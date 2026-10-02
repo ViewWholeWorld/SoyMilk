@@ -5,7 +5,7 @@
 import type { AdminModels, BeforeJson } from "@aihot/contracts/admin";
 import { sql } from "../db.ts";
 import { CAPABILITIES, invalidateModelCache, modelSources, type Capability, type CapabilityKey } from "../editorial/models.ts";
-import { MODELS } from "../providers/llm.ts";
+import { registeredModels } from "../providers/llm.ts";
 import { audit } from "../audit.ts";
 
 interface UsageRow {
@@ -25,6 +25,7 @@ interface UsageRow {
 }
 
 export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>> {
+  const MODELS = await registeredModels();
   const since = new Date(Date.now() - days * 86400_000);
   const [sources, usage, prices, history, benches] = await Promise.all([
     modelSources(),
@@ -92,9 +93,9 @@ export async function switchModel(capability: string, model: string | null, reas
   if (!c) throw Object.assign(new Error("unknown capability"), { statusCode: 400 });
   if (!reason.trim()) throw Object.assign(new Error("a reason is required"), { statusCode: 400 });
   if (model !== null) {
-    const spec = MODELS[model];
+    const spec = (await registeredModels())[model];
     if (!spec) throw Object.assign(new Error("unknown model"), { statusCode: 400 });
-    if (!!c.vision !== !!spec.vision) throw Object.assign(new Error(c.vision ? "this capability needs a vision model" : "a vision-only model cannot do this"), { statusCode: 400 });
+    if (c.vision && !spec.vision) throw Object.assign(new Error("this capability needs a vision model"), { statusCode: 400 });
   }
   const before = (await modelSources())[capability];
   if (model === null) await sql`DELETE FROM settings WHERE key = ${`models.${capability}`}`;
