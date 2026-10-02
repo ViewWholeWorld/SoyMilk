@@ -13,7 +13,9 @@ import { config } from "@aihot/backend/config";
 import { closeDb, sql } from "@aihot/backend/db";
 import { passwordLogin, SESSION_COOKIE, sessionPrincipal } from "@aihot/backend/admin/auth";
 import { saveConnection } from "@aihot/backend/admin/model-config";
-import { codexLoginStatus, codexStatus, cancelCodexLogin, CodexServer, openCodexServer, requestCodex, startCodexLogin } from "@aihot/backend/providers/codex";
+import { codexLoginStatus, codexModels, codexStatus, cancelCodexLogin, CodexServer, openCodexServer, requestCodex, startCodexLogin } from "@aihot/backend/providers/codex";
+import { modelsOverview } from "@aihot/backend/admin/models";
+import { invalidateModelCache, modelFor } from "@aihot/backend/editorial/models";
 import { sha256 } from "@aihot/backend/lib/ids";
 import { deleteModelConnection, modelConfiguration, readModelConfig, saveModelConnection, selectModelConnection } from "@aihot/backend/providers/model-config";
 import { chatJson, registeredModels } from "@aihot/backend/providers/llm";
@@ -107,27 +109,75 @@ test("configured API calls retain receipts, redaction, reuse and budget limits",
   }
 });
 
+test("capabilities can independently select saved Codex models and reasoning efforts", async () => {
+  const before = await sql`SELECT key, value, updated_by FROM settings WHERE key IN ('models.prefilter','models.score')`;
+  const headers = { cookie: `${SESSION_COOKIE}=${token}`, "x-csrf-token": csrf };
+  try {
+    const low = await saveModelConnection({ name: "Codex fast", type: "codex", model: "fixture-codex", reasoningEffort: "low" });
+    const high = await saveModelConnection({ name: "Codex deep", type: "codex", model: "fixture-codex", reasoningEffort: "high" });
+    for (const [capability, connection] of [["prefilter", low], ["score", high]] as const) {
+      const model = `connection:${connection.id}`;
+      assert.ok((await modelsOverview()).choices.some((x) => x.key === model));
+      const response = await app.inject({ method: "POST", url: `/api/admin/models/${capability}`, headers, payload: { model, reason: "fixture capability configuration" } });
+      assert.equal(response.statusCode, 200, response.body);
+      assert.equal(await modelFor(capability), model);
+    }
+    const registry = await registeredModels();
+    assert.equal(registry[await modelFor("prefilter")]!.reasoningEffort, "low");
+    assert.equal(registry[await modelFor("score")]!.reasoningEffort, "high");
+    await assert.rejects(saveModelConnection({ name: "Invalid", type: "codex", model: "fixture", reasoningEffort: "invented" }));
+  } finally {
+    await sql`DELETE FROM settings WHERE key IN ('models.prefilter','models.score')`;
+    for (const row of before) await sql`INSERT INTO settings(key,value,updated_by) VALUES(${row.key},${sql.json(row.value)},${row.updated_by})`;
+    invalidateModelCache();
+  }
+});
+
+test("API effort reaches the provider and changing it cannot reuse a previous response", async () => {
+  const saved = (await readModelConfig()).connections.find((c) => c.id === connection.id)!;
+  const purpose = `model_effort_test_${Date.now()}`;
+  const api = mock.get("https://fixture.example");
+  config.modelCallsEnabled = true;
+  const ask = () => chatJson({ model: `connection:${connection.id}`, purpose, subject: "same-input", promptVersion: "1", system: "", user: "same-input", schema: z.object({ ok: z.boolean() }) });
+  try {
+    const receipts: number[] = [];
+    for (const effort of ["low", "high"] as const) {
+      await saveModelConnection({ ...sample, id: connection.id, apiKey: "", reasoningEffort: effort });
+      api.intercept({ method: "POST", path: "/v1/chat/completions", body: (raw) => {
+        const body = JSON.parse(String(raw));
+        assert.equal(body.reasoning_effort, effort); assert.equal(body.temperature, undefined);
+        return true;
+      } }).reply(200, { id: effort, choices: [{ message: { content: '{"ok":true}' } }] });
+      const response = await ask(); receipts.push(response.receiptId); assert.equal(response.reused, false);
+      assert.equal((await ask()).reused, true);
+    }
+    assert.notEqual(receipts[0], receipts[1]); mock.assertNoPendingInterceptors();
+  } finally { config.modelCallsEnabled = false; await saveModelConnection({ ...saved, apiKey: "" }); }
+});
+
 // A subprocess fixture speaks the pinned app-server protocol. It makes no network connections.
 const FAKE = `
-const readline = require('node:readline'); const send = m => process.stdout.write(JSON.stringify(m)+'\\n'); let denied = null;
+const readline = require('node:readline'); const send = m => process.stdout.write(JSON.stringify(m)+'\\n'); let denied = null; let turn = null;
 readline.createInterface({input:process.stdin}).on('line', l => { const m=JSON.parse(l); if(m.error){denied=m;return;} if(m.id===undefined)return;
  const reply = result => send({id:m.id,result});
  if(m.method==='initialize') reply({});
- else if(m.method==='account/read') reply({account:null,requiresOpenaiAuth:true});
+ else if(m.method==='account/read') reply({account:process.env.FIXTURE_CONNECTED==='true'?{type:'chatgpt',email:'fixture@example.com',planType:'plus'}:null,requiresOpenaiAuth:true});
+ else if(m.method==='model/list') reply({data:[{model:'fixture-model',displayName:'Fixture',inputModalities:['text','image'],defaultReasoningEffort:'low',supportedReasoningEfforts:[{reasoningEffort:'low',description:'Fast'},{reasoningEffort:'high',description:'Deep'}]}],nextCursor:null});
  else if(m.method==='account/login/start') reply({type:'chatgptDeviceCode',loginId:'official-login',verificationUrl:'https://auth.openai.com/codex/device',userCode:'FAKE-CODE'});
  else if(m.method==='account/login/cancel') reply({});
  else if(m.method==='fixture/complete') {reply({});send({method:'account/login/completed',params:{loginId:'official-login',success:true}});}
  else if(m.method==='fixture/error') send({id:m.id,error:{message:'fake-private-api-key'}});
  else if(m.method==='fixture/denied') reply(denied);
+ else if(m.method==='fixture/turn') reply(turn);
  else if(m.method==='thread/start') { if(m.params.ephemeral!==true || m.params.approvalPolicy!=='never'||m.params.sandbox!=='read-only') process.exit(2); reply({thread:{id:'fixture-thread'}}); }
- else if(m.method==='turn/start') { if(m.params.sandboxPolicy.networkAccess!==false) process.exit(2);reply({turn:{id:'fixture-turn'}});
+ else if(m.method==='turn/start') { turn=m.params; if(m.params.sandboxPolicy.networkAccess!==false) process.exit(2);reply({turn:{id:'fixture-turn'}});
  send({method:'item/completed',params:{threadId:'fixture-thread',item:{type:'agentMessage',phase:'commentary',text:'IGNORE'}}});
  send({id:'approval-1',method:'item/commandExecution/requestApproval',params:{}});
  send({method:'thread/tokenUsage/updated',params:{threadId:'fixture-thread',tokenUsage:{last:{inputTokens:2,outputTokens:3,totalTokens:5}}}});
  send({method:'item/completed',params:{threadId:'fixture-thread',item:{type:'agentMessage',phase:'final_answer',text:'{"ok":true}'}}});
  send({method:'turn/completed',params:{threadId:'fixture-thread',turn:{id:'fixture-turn',status:process.env.FIXTURE_STATUS||'completed'}}}); }
 });`;
-function fake(status = "completed") { const server = new CodexServer(spawn(process.execPath, ["-e", FAKE], { env: { FIXTURE_STATUS: status }, stdio: "pipe", windowsHide: true })); servers.push(server); return server; }
+function fake(status = "completed", connected = false) { const server = new CodexServer(spawn(process.execPath, ["-e", FAKE], { env: { FIXTURE_STATUS: status, FIXTURE_CONNECTED: String(connected) }, stdio: "pipe", windowsHide: true })); servers.push(server); return server; }
 test("pinned official binary accepts bridge settings and reads an empty isolated account offline", async () => {
   const server = await openCodexServer();
   try { assert.equal((await server.request("account/read", { refreshToken: false })).account, null); }
@@ -139,8 +189,20 @@ test("app-server RPC errors redact diagnostics; tools are denied; only final com
   const response = await requestCodex(server, "fixture-model", "System", "article", true, 2000);
   assert.equal(response.choices[0].message.content, '{"ok":true}'); assert.deepEqual(response.usage, { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 });
   assert.equal((await server.request("fixture/denied", {})).error.code, -32601);
+  assert.equal((await server.request("fixture/turn", {})).effort, undefined, "old connections preserve the provider default");
   await server.stop();
   const failed = fake("failed"); await assert.rejects(requestCodex(failed, "fixture-model", "", "", false, 2000), /未知/); await failed.stop();
+});
+
+test("Codex catalog reports model defaults and an explicit effort reaches turn/start", async () => {
+  const catalog = await codexModels(async () => fake("completed", true));
+  assert.equal(catalog.models[0]!.defaultReasoningEffort, "low");
+  assert.deepEqual(catalog.models[0]!.supportedReasoningEfforts.map((x: { reasoningEffort: string }) => x.reasoningEffort), ["low", "high"]);
+  const server = fake();
+  await requestCodex(server, "fixture-model", "System", "article", true, 2000, "high");
+  const turn = await server.request("fixture/turn", {});
+  assert.equal(turn.effort, "high"); assert.equal(turn.approvalPolicy, "never"); assert.equal(turn.sandboxPolicy.networkAccess, false);
+  await server.stop();
 });
 test("device login stays bound to its initiating session and observes managed completion", async () => {
   let server!: CodexServer;
