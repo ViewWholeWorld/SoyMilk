@@ -26,9 +26,10 @@ export async function removeConnection(id: string, actor: string) {
   if (before) await audit(actor, "models.connection.delete", `connection:${id}`, "删除模型连接", before, null);
   return { deleted: !!before };
 }
-export async function connectCodex(owner: string, actor: string) {
-  const result = await startCodexLogin(owner);
-  await audit(actor, "models.codex.login.start", "codex", "网页发起设备授权", null, { login: result.id });
+export async function connectCodex(owner: string, actor: string, input: unknown = {}) {
+  const { restart } = z.object({ restart: z.boolean().default(false) }).parse(input);
+  const result = await startCodexLogin(owner, undefined, restart);
+  await audit(actor, "models.codex.login.start", "codex", restart ? "取消旧授权并重新发起设备授权" : "网页发起设备授权", null, { login: result.id });
   return result;
 }
 const logged = new Set<string>();
