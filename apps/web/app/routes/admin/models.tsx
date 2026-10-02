@@ -1,13 +1,13 @@
 import { SITE } from "@aihot/industry/site";
 import { useState } from "react";
 import { Link } from "react-router";
-import type { AdminModelConfiguration, AdminModels } from "@aihot/contracts/admin";
+import type { AdminCodexModel, AdminModelConfiguration, AdminModelConnection, AdminModels, ReasoningEffort } from "@aihot/contracts/admin";
 import type { Route } from "./+types/models";
 import { adminGet } from "../../lib/admin.server";
 import { useAdminAction } from "../../features/admin/action";
 import { bj, money, num } from "../../features/admin/format";
 import { AdminPage, Badge, Button, Card, DataTable, Empty, Field, FilterChips, ReasonDialog, Select } from "../../features/admin/ui";
-import { ModelConnections } from "../../features/admin/model-connections";
+import { ModelConnections, ReasoningEffortField } from "../../features/admin/model-connections";
 
 
 
@@ -26,6 +26,17 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
   const { run, pending } = useAdminAction();
   const [target, setTarget] = useState<AdminModels["capabilities"][number] | null>(null);
   const [choice, setChoice] = useState<string>("");
+  const [catalog, setCatalog] = useState<AdminCodexModel[]>([]);
+  const [effort, setEffort] = useState<ReasoningEffort | "">("");
+  const [switching, setSwitching] = useState(false);
+  const connectionFor = (key: string) => m.configuration.connections.find((c) => key === `connection:${c.id}` || (key === "default" && c.id === m.configuration.active));
+  const nameOf = (key: string) => {
+    const c = connectionFor(key);
+    return c ? `${key === "default" ? "跟随默认 · " : ""}${c.name} · ${c.model} · 推理 ${c.reasoningEffort ?? "模型默认"}` : key;
+  };
+  const selectedConnection = connectionFor(choice);
+  const selectedCodex = catalog.find((x) => `codex:${x.model}` === choice || (selectedConnection?.type === "codex" && selectedConnection.model === x.model));
+  const isCodex = choice.startsWith("codex:") || selectedConnection?.type === "codex";
   const labelOf = (key: string) => m.capabilities.find((c) => `capability:${c.key}` === key)?.label ?? key;
 
   return (
@@ -34,7 +45,7 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
       subtitle="统一管理 Codex 账号、API Key 和模型连接，再为各项能力选择模型。配置只影响之后的新任务。"
       actions={<FilterChips param="days" options={[{ value: "1", label: "24 小时" }, { value: "", label: "7 天" }, { value: "30", label: "30 天" }]} />}
     >
-      <ModelConnections configuration={m.configuration} />
+      <ModelConnections configuration={m.configuration} onCodexModels={setCatalog} />
       <h2 className="mb-4 text-[16px] font-medium">各项能力与调用统计</h2>
       <div className="grid gap-5">
         {m.capabilities.map((c) => {
@@ -45,7 +56,7 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
               title={
                 <span className="inline-flex flex-wrap items-center gap-2">
                   {c.label}
-                  <span className="font-mono text-[12px] font-normal text-ink-3">{c.current.model}</span>
+                  <span className="text-[12px] font-normal text-ink-3">{nameOf(c.current.model)}</span>
                   <Badge tone={c.current.source === "admin" ? "accent" : "muted"}>{SOURCE_LABEL[c.current.source]}</Badge>
                 </span>
               }
@@ -55,6 +66,7 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
                   onClick={() => {
                     setTarget(c);
                     setChoice(c.current.model);
+                    setEffort(connectionFor(c.current.model)?.reasoningEffort ?? "");
                   }}
                 >
                   切换
@@ -147,26 +159,48 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
       <ReasonDialog
         open={!!target}
         title={`切换模型：${target?.label ?? ""}`}
-        description="只影响之后的新任务。选“恢复默认”会回到环境变量或代码默认。"
+        description="只影响之后的新任务。Codex 可直接选择模型和推理强度；选 default 跟随网站默认连接。"
         confirmLabel="切换"
-        busy={pending === "switch"}
+        busy={switching || pending === "switch"}
         onClose={() => setTarget(null)}
-        onSubmit={async (reason) =>
-          (await run("POST", `/api/admin/models/${target!.key}`, { model: choice === "__default" ? null : choice, reason }, { label: "switch", success: "已切换，下一次调用生效" })) !== null
-        }
+        onSubmit={async (reason) => {
+          if (switching) return false;
+          setSwitching(true);
+          try {
+            let model: string | null = choice === "__default" ? null : choice;
+            if (isCodex && (choice !== "default" || effort !== (selectedConnection?.reasoningEffort ?? ""))) {
+              const modelName = selectedCodex?.model ?? selectedConnection?.model;
+              if (!modelName) return false;
+              let connection: AdminModelConnection | null | undefined = m.configuration.connections.find((c) => c.type === "codex" && c.model === modelName && (c.reasoningEffort ?? "") === effort);
+              if (!connection) {
+                connection = await run<AdminModelConnection>("POST", "/api/admin/model-config/connections", {
+                  name: `Codex · ${modelName}${effort ? ` · ${effort}` : ""}`.slice(0, 60), type: "codex", model: modelName,
+                  reasoningEffort: effort || null, jsonMode: true, vision: selectedCodex?.vision ?? selectedConnection?.vision ?? false,
+                });
+                if (!connection) return false;
+              }
+              model = `connection:${connection.id}`;
+            }
+            return (await run("POST", `/api/admin/models/${target!.key}`, { model, reason }, { label: "switch", success: "已切换，下一次调用生效" })) !== null;
+          } finally { setSwitching(false); }
+        }}
       >
         <Field label="模型">
-          <Select value={choice} onChange={(e) => setChoice(e.target.value)}>
+          <Select aria-label="能力模型" value={choice} disabled={switching} onChange={(e) => { setChoice(e.target.value); setEffort(connectionFor(e.target.value)?.reasoningEffort ?? ""); }}>
+            {catalog.filter((x) => !target?.vision || x.vision).map((x) => <option key={`codex:${x.model}`} value={`codex:${x.model}`}>Codex · {x.name}（{x.model}）</option>)}
             {m.choices
               .filter((x) => !target?.vision || x.vision)
               .map((x) => (
                 <option key={x.key} value={x.key}>
-                  {m.configuration.connections.find((c) => `connection:${c.id}` === x.key)?.name ?? x.key}（{x.service}）
+                  {nameOf(x.key)}（{connectionFor(x.key)?.type === "codex" ? "Codex" : x.service}）
                 </option>
               ))}
             <option value="__default">恢复默认（{target?.env} 或 {target?.defaultModel}）</option>
           </Select>
         </Field>
+        {isCodex && <ReasoningEffortField value={effort} onChange={setEffort} model={selectedCodex} codex disabled={switching} />}
+        {!catalog.length && <p className="text-[12px] text-ink-3">Codex 模型目录尚未就绪。连接账号后点击「刷新模型列表」，也可选择已保存的 Codex 连接。</p>}
+        {selectedConnection?.type === "api-key" && <p className="text-[12px] text-ink-3">推理强度：{selectedConnection.reasoningEffort ?? "模型默认"}。可在上方编辑此 API Key 连接。</p>}
       </ReasonDialog>
     </AdminPage>
   );
