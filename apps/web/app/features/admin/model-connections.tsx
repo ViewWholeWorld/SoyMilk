@@ -31,6 +31,12 @@ export function ModelConnections({ configuration: c }: { configuration: AdminMod
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [catalog, setCatalog] = useState<Array<{ model: string; name: string; vision: boolean }>>([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState("");
+  const [codexModel, setCodexModel] = useState(c.connections.find((x) => x.id === c.active && x.type === "codex")?.model ?? "");
+  const [manualModel, setManualModel] = useState(false);
+  const [savingCodex, setSavingCodex] = useState(false);
+  const savedCodex = useRef<AdminModelConnection | null>(null);
   const code = useRef<HTMLInputElement>(null);
   useEffect(() => { setActive(c.active ?? ""); }, [c.active]);
   useEffect(() => {
@@ -38,6 +44,18 @@ export function ModelConnections({ configuration: c }: { configuration: AdminMod
     get<AdminCodexAccount>(`${ROOT}/codex`).then((a) => { if (live) { setAccount(a); if (a.pendingLogin) setLogin(a.pendingLogin); } }).catch(() => {});
     return () => { live = false; };
   }, []);
+  useEffect(() => {
+    if (!account?.connected || account.loginInProgress) return;
+    let live = true;
+    setCatalogLoading(true); setCatalogError("");
+    void run<{ models: typeof catalog }>("POST", `${ROOT}/codex/models`, {}, { revalidate: false }).then((r) => {
+      if (!live) return;
+      if (r) setCatalog(r.models);
+      else setCatalogError("模型列表暂时无法读取，可以重试或手动填写模型名。");
+      setCatalogLoading(false);
+    });
+    return () => { live = false; };
+  }, [account?.connected, account?.loginInProgress, run]);
   useEffect(() => {
     if (!login || login.state !== "pending") return;
     let live = true;
@@ -64,6 +82,25 @@ export function ModelConnections({ configuration: c }: { configuration: AdminMod
   }, [login?.id, login?.state]);
   const edit = (connection: AdminModelConnection) => { setDraft({ ...connection, baseUrl: connection.baseUrl ?? "", apiKey: "" }); setError(""); };
   const update = (v: Partial<Draft>) => setDraft((d) => d ? { ...d, ...v } : d);
+  const saveCodex = async () => {
+    const model = codexModel.trim();
+    if (!model || savingCodex) return;
+    setSavingCodex(true);
+    try {
+      let connection = c.connections.find((x) => x.type === "codex" && x.model === model)
+        ?? (savedCodex.current?.model === model ? savedCodex.current : null);
+      if (!connection) {
+        connection = await run<AdminModelConnection>("POST", `${ROOT}/connections`, {
+          name: `Codex · ${model}`.slice(0, 60), type: "codex", model, jsonMode: true,
+          vision: catalog.find((m) => m.model === model)?.vision ?? false,
+        }, { revalidate: false });
+        if (!connection) return;
+        savedCodex.current = connection;
+      }
+      const result = await run("POST", `${ROOT}/active`, { id: connection.id }, { success: "Codex 模型已保存并设为默认" });
+      if (!result) revalidator.revalidate();
+    } finally { setSavingCodex(false); }
+  };
 
   return <div className="mb-6 grid gap-5">
     {!c.modelCallsEnabled && <div className="rounded-control bg-bg-sunk p-4 text-[13px] text-ink-2">模型调用当前关闭{!c.collectEnabled ? "，采集也已关闭" : ""}。保存连接或登录账号不会启动任务。</div>}
@@ -81,7 +118,7 @@ export function ModelConnections({ configuration: c }: { configuration: AdminMod
             try { const a = await get<AdminCodexAccount>(`${ROOT}/codex`); setAccount(a); if (a.pendingLogin) setLogin(a.pendingLogin); setError(""); } catch (e) { setError((e as Error).message); }
           }}>刷新状态</Button>
           {account?.connected && <Button tone="danger" disabled={!!pending || login?.state === "pending"} onClick={async () => {
-            if (await run("POST", `${ROOT}/codex/logout`, {}, { success: "账号已断开" })) { setAccount({ connected: false, email: null, plan: null }); setCatalog([]); setLogin(null); }
+            if (await run("POST", `${ROOT}/codex/logout`, {}, { success: "账号已断开" })) { setAccount({ connected: false, email: null, plan: null }); setCatalog([]); setLogin(null); setCatalogLoading(false); }
           }}>断开账号</Button>}
         </div>
         {account?.loginInProgress && login?.state !== "pending" && <div className="mt-4 rounded-control bg-bg-sunk p-4">
@@ -97,21 +134,35 @@ export function ModelConnections({ configuration: c }: { configuration: AdminMod
           <div className="flex flex-wrap items-center gap-3"><a href={login.verificationUrl} target="_blank" rel="noopener noreferrer" className="rounded-control bg-ink px-3 py-2 text-[13px] text-bg">打开 OpenAI 授权页面 ↗</a><Button size="sm" disabled={!!pending} onClick={async () => { const r = await run<AdminCodexLogin>("POST", `${ROOT}/codex/login/${login.id}/cancel`, {}, { revalidate: false }); if (r) { setLogin(r); setAccount((a) => a ? { ...a, loginInProgress: false, pendingLogin: null } : a); } }}>取消</Button></div>
           <p className="mt-3 text-[12px] text-ink-4">验证码约 10 分钟有效。首次使用可能需要在 ChatGPT 的安全设置中允许设备代码登录。</p>
         </div>}
-        {login?.state === "success" && <p role="status" className="mt-3 text-[13px] text-accent">授权成功，可以添加 Codex 模型连接。</p>}
+        {login?.state === "success" && <p role="status" className="mt-3 text-[13px] text-accent">授权成功，请在下方选择模型并保存。</p>}
         {(error || login?.error) && <p role="alert" className="mt-3 text-[13px] text-hot">{error || login?.error}</p>}
-        <div className="mt-5 border-t border-line pt-4"><Button size="sm" disabled={!account?.connected || !!pending} onClick={async () => {
-          const r = await run<{ models: typeof catalog }>("POST", `${ROOT}/codex/models`, {}, { revalidate: false });
-          if (r) setCatalog(r.models);
-        }}>读取模型列表</Button>{catalog.length > 0 && <p className="mt-2 text-[12px] text-ink-4">添加连接时可选择这些模型；实际可用性以任务执行结果为准。</p>}</div>
+        {account?.connected && <div className="mt-5 grid gap-3 border-t border-line pt-4">
+          <Field label="Codex 模型" hint="选择后保存为网站默认模型；下方单独指定模型的能力仍使用自己的设置。">
+            {catalog.length > 0 && <Select aria-label="Codex 模型" disabled={catalogLoading || savingCodex} value={manualModel || (codexModel && !catalog.some((m) => m.model === codexModel)) ? "manual" : codexModel} onChange={(e) => {
+              setManualModel(e.target.value === "manual");
+              if (e.target.value !== "manual") setCodexModel(e.target.value);
+            }}><option value="">请选择模型</option>{catalog.map((m) => <option key={m.model} value={m.model}>{m.name} · {m.model}</option>)}<option value="manual">手动填写模型名…</option></Select>}
+            {(catalog.length === 0 || manualModel || (codexModel && !catalog.some((m) => m.model === codexModel))) && <Input className={catalog.length ? "mt-2" : ""} aria-label="Codex 模型名" maxLength={160} value={codexModel} placeholder="填写账号支持的模型名" disabled={savingCodex} onChange={(e) => setCodexModel(e.target.value)} />}
+          </Field>
+          {catalogLoading && <p role="status" className="text-[12px] text-ink-3">正在读取账号可用的模型…</p>}
+          {catalogError && <p role="alert" className="text-[12px] text-hot">{catalogError}</p>}
+          <div className="flex flex-wrap gap-2"><Button tone="primary" disabled={!codexModel.trim() || !!pending || savingCodex || account.loginInProgress} onClick={saveCodex}>{savingCodex ? "正在保存…" : "保存并设为默认"}</Button><Button disabled={catalogLoading || !!pending || savingCodex || account.loginInProgress} onClick={async () => {
+            setCatalogLoading(true); setCatalogError("");
+            const r = await run<{ models: typeof catalog }>("POST", `${ROOT}/codex/models`, {}, { revalidate: false });
+            if (r) setCatalog(r.models); else setCatalogError("模型列表暂时无法读取，可以重试或手动填写模型名。");
+            setCatalogLoading(false);
+          }}>刷新模型列表</Button></div>
+          <p className="text-[12px] text-ink-4">保存配置不会发起模型调用。实际可用性以任务执行结果为准。</p>
+        </div>}
       </Card>
-      <Card title="模型连接" right={<Button size="sm" onClick={() => setDraft(empty())}>添加连接</Button>}>
+      <Card title="模型连接" right={<Button size="sm" onClick={() => setDraft(empty())}>添加 API Key 连接</Button>}>
         <Field label="默认连接" hint="使用 default 的能力会跟随此设置；单独指定的能力保持自己的选择。">
           <div className="flex gap-2"><Select aria-label="默认连接" value={active} onChange={(e) => setActive(e.target.value)}><option value="">原有配置</option>{c.connections.map((x) => <option key={x.id} value={x.id}>{x.name} · {x.model}</option>)}</Select><Button disabled={!!pending || active === (c.active ?? "")} onClick={() => run("POST", `${ROOT}/active`, { id: active || null }, { success: "默认连接已保存" })}>应用</Button></div>
         </Field>
         <div className="mt-4 grid gap-3">{c.connections.length ? c.connections.map((x) => <div key={x.id} className="flex flex-wrap items-center justify-between gap-3 rounded-control bg-bg-sunk p-3">
           <div><p className="flex items-center gap-2 text-[13px] font-medium">{x.name}{c.active === x.id && <Badge tone="accent">默认</Badge>}</p><p className="mt-1 text-[12px] text-ink-3">{x.type === "codex" ? "Codex 订阅" : "API Key"} · {x.model}{x.type === "api-key" && x.keyConfigured ? " · 密钥已保存" : ""}</p></div>
           <div className="flex gap-2"><Button size="sm" onClick={() => edit(x)}>编辑</Button><Button size="sm" disabled={!!pending || c.active === x.id} onClick={() => run("DELETE", `${ROOT}/connections/${x.id}`, undefined, { success: "连接已删除" })}>删除</Button></div>
-        </div>) : <p className="py-5 text-[13px] text-ink-4">添加 Codex 或 API Key 连接，然后选择默认连接。</p>}</div>
+        </div>) : <p className="py-5 text-[13px] text-ink-4">在 Codex 账号卡片中选择模型，或添加 API Key 连接。</p>}</div>
         {draft && <form className="mt-5 grid gap-4 border-t border-line pt-5" onSubmit={async (e) => {
           e.preventDefault();
           if (await run("POST", `${ROOT}/connections`, draft, { success: "连接已保存，后续任务生效" })) setDraft(null);
