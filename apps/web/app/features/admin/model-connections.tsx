@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useRevalidator } from "react-router";
-import type { AdminCodexAccount, AdminCodexLogin, AdminModelConfiguration, AdminModelConnection } from "@aihot/contracts/admin";
+import { REASONING_EFFORTS, type AdminCodexAccount, type AdminCodexLogin, type AdminCodexModel, type AdminModelConfiguration, type AdminModelConnection, type ReasoningEffort } from "@aihot/contracts/admin";
 import { useAdminAction } from "./action";
 import { Badge, Button, Card, Field, Input, Select } from "./ui";
 
@@ -12,8 +12,19 @@ const PROVIDERS = [
   { name: "智谱", url: "https://open.bigmodel.cn/api/paas/v4" },
   { name: "自定义 OpenAI 兼容接口", url: "" },
 ];
-type Draft = { id?: string; name: string; type: "api-key" | "codex"; model: string; baseUrl: string; apiKey: string; jsonMode: boolean; vision: boolean };
-const empty = (): Draft => ({ name: "", type: "api-key", model: "", baseUrl: PROVIDERS[0].url, apiKey: "", jsonMode: true, vision: false });
+type Draft = { id?: string; name: string; type: "api-key" | "codex"; model: string; baseUrl: string; apiKey: string; jsonMode: boolean; vision: boolean; reasoningEffort: ReasoningEffort | null };
+const empty = (): Draft => ({ name: "", type: "api-key", model: "", baseUrl: PROVIDERS[0].url, apiKey: "", jsonMode: true, vision: false, reasoningEffort: null });
+
+export function ReasoningEffortField({ value, onChange, model, codex = false, disabled = false }: { value: ReasoningEffort | ""; onChange: (v: ReasoningEffort | "") => void; model?: AdminCodexModel; codex?: boolean; disabled?: boolean }) {
+  const efforts = codex && model ? model.supportedReasoningEfforts.map((x) => x.reasoningEffort) : REASONING_EFFORTS;
+  return <Field label="推理强度（reasoning effort）" hint={codex ? "选项来自 Codex 模型目录。强度越高，通常耗时和用量越多。" : "仅适用于支持 reasoning_effort 的兼容接口；不支持的服务商请保留默认。"}>
+    <Select aria-label="推理强度" value={value} disabled={disabled} onChange={(e) => onChange(e.target.value as ReasoningEffort | "")}>
+      <option value="">模型默认{model?.defaultReasoningEffort ? `（${model.defaultReasoningEffort}）` : "（不指定）"}</option>
+      {value && !efforts.includes(value) && <option value={value} disabled>{value}（当前目录不支持，请重新选择）</option>}
+      {efforts.map((x) => <option key={x} value={x}>{x}</option>)}
+    </Select>
+  </Field>;
+}
 
 async function get<T>(url: string): Promise<T> {
   const r = await fetch(url, { credentials: "same-origin", cache: "no-store" });
@@ -21,7 +32,7 @@ async function get<T>(url: string): Promise<T> {
   return r.json();
 }
 
-export function ModelConnections({ configuration: c }: { configuration: AdminModelConfiguration }) {
+export function ModelConnections({ configuration: c, onCodexModels }: { configuration: AdminModelConfiguration; onCodexModels: (models: AdminCodexModel[]) => void }) {
   const { run, pending } = useAdminAction();
   const revalidator = useRevalidator();
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -30,15 +41,17 @@ export function ModelConnections({ configuration: c }: { configuration: AdminMod
   const [login, setLogin] = useState<AdminCodexLogin | null>(null);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
-  const [catalog, setCatalog] = useState<Array<{ model: string; name: string; vision: boolean }>>([]);
+  const [catalog, setCatalog] = useState<AdminCodexModel[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState("");
   const [codexModel, setCodexModel] = useState(c.connections.find((x) => x.id === c.active && x.type === "codex")?.model ?? "");
+  const [effort, setEffort] = useState<ReasoningEffort | "">(c.connections.find((x) => x.id === c.active && x.type === "codex")?.reasoningEffort ?? "");
   const [manualModel, setManualModel] = useState(false);
   const [savingCodex, setSavingCodex] = useState(false);
   const savedCodex = useRef<AdminModelConnection | null>(null);
   const code = useRef<HTMLInputElement>(null);
   useEffect(() => { setActive(c.active ?? ""); }, [c.active]);
+  useEffect(() => { onCodexModels(catalog); }, [catalog, onCodexModels]);
   useEffect(() => {
     let live = true;
     get<AdminCodexAccount>(`${ROOT}/codex`).then((a) => { if (live) { setAccount(a); if (a.pendingLogin) setLogin(a.pendingLogin); } }).catch(() => {});
@@ -80,18 +93,18 @@ export function ModelConnections({ configuration: c }: { configuration: AdminMod
     timer = setTimeout(poll, 2500);
     return () => { live = false; clearTimeout(timer); };
   }, [login?.id, login?.state]);
-  const edit = (connection: AdminModelConnection) => { setDraft({ ...connection, baseUrl: connection.baseUrl ?? "", apiKey: "" }); setError(""); };
+  const edit = (connection: AdminModelConnection) => { setDraft({ ...connection, baseUrl: connection.baseUrl ?? "", apiKey: "", reasoningEffort: connection.reasoningEffort ?? null }); setError(""); };
   const update = (v: Partial<Draft>) => setDraft((d) => d ? { ...d, ...v } : d);
   const saveCodex = async () => {
     const model = codexModel.trim();
     if (!model || savingCodex) return;
     setSavingCodex(true);
     try {
-      let connection = c.connections.find((x) => x.type === "codex" && x.model === model)
-        ?? (savedCodex.current?.model === model ? savedCodex.current : null);
+      const matches = (x: AdminModelConnection) => x.type === "codex" && x.model === model && (x.reasoningEffort ?? "") === effort;
+      let connection = c.connections.find(matches) ?? (savedCodex.current && matches(savedCodex.current) ? savedCodex.current : null);
       if (!connection) {
         connection = await run<AdminModelConnection>("POST", `${ROOT}/connections`, {
-          name: `Codex · ${model}`.slice(0, 60), type: "codex", model, jsonMode: true,
+          name: `Codex · ${model}${effort ? ` · ${effort}` : ""}`.slice(0, 60), type: "codex", model, jsonMode: true, reasoningEffort: effort || null,
           vision: catalog.find((m) => m.model === model)?.vision ?? false,
         }, { revalidate: false });
         if (!connection) return;
@@ -140,10 +153,11 @@ export function ModelConnections({ configuration: c }: { configuration: AdminMod
           <Field label="Codex 模型" hint="选择后保存为网站默认模型；下方单独指定模型的能力仍使用自己的设置。">
             {catalog.length > 0 && <Select aria-label="Codex 模型" disabled={catalogLoading || savingCodex} value={manualModel || (codexModel && !catalog.some((m) => m.model === codexModel)) ? "manual" : codexModel} onChange={(e) => {
               setManualModel(e.target.value === "manual");
-              if (e.target.value !== "manual") setCodexModel(e.target.value);
+              if (e.target.value !== "manual") { setCodexModel(e.target.value); setEffort(""); }
             }}><option value="">请选择模型</option>{catalog.map((m) => <option key={m.model} value={m.model}>{m.name} · {m.model}</option>)}<option value="manual">手动填写模型名…</option></Select>}
-            {(catalog.length === 0 || manualModel || (codexModel && !catalog.some((m) => m.model === codexModel))) && <Input className={catalog.length ? "mt-2" : ""} aria-label="Codex 模型名" maxLength={160} value={codexModel} placeholder="填写账号支持的模型名" disabled={savingCodex} onChange={(e) => setCodexModel(e.target.value)} />}
+            {(catalog.length === 0 || manualModel || (codexModel && !catalog.some((m) => m.model === codexModel))) && <Input className={catalog.length ? "mt-2" : ""} aria-label="Codex 模型名" maxLength={160} value={codexModel} placeholder="填写账号支持的模型名" disabled={savingCodex} onChange={(e) => { setCodexModel(e.target.value); setEffort(""); }} />}
           </Field>
+          <ReasoningEffortField value={effort} onChange={setEffort} model={catalog.find((m) => m.model === codexModel)} codex disabled={savingCodex || !codexModel} />
           {catalogLoading && <p role="status" className="text-[12px] text-ink-3">正在读取账号可用的模型…</p>}
           {catalogError && <p role="alert" className="text-[12px] text-hot">{catalogError}</p>}
           <div className="flex flex-wrap gap-2"><Button tone="primary" disabled={!codexModel.trim() || !!pending || savingCodex || account.loginInProgress} onClick={saveCodex}>{savingCodex ? "正在保存…" : "保存并设为默认"}</Button><Button disabled={catalogLoading || !!pending || savingCodex || account.loginInProgress} onClick={async () => {
@@ -160,7 +174,7 @@ export function ModelConnections({ configuration: c }: { configuration: AdminMod
           <div className="flex gap-2"><Select aria-label="默认连接" value={active} onChange={(e) => setActive(e.target.value)}><option value="">原有配置</option>{c.connections.map((x) => <option key={x.id} value={x.id}>{x.name} · {x.model}</option>)}</Select><Button disabled={!!pending || active === (c.active ?? "")} onClick={() => run("POST", `${ROOT}/active`, { id: active || null }, { success: "默认连接已保存" })}>应用</Button></div>
         </Field>
         <div className="mt-4 grid gap-3">{c.connections.length ? c.connections.map((x) => <div key={x.id} className="flex flex-wrap items-center justify-between gap-3 rounded-control bg-bg-sunk p-3">
-          <div><p className="flex items-center gap-2 text-[13px] font-medium">{x.name}{c.active === x.id && <Badge tone="accent">默认</Badge>}</p><p className="mt-1 text-[12px] text-ink-3">{x.type === "codex" ? "Codex 订阅" : "API Key"} · {x.model}{x.type === "api-key" && x.keyConfigured ? " · 密钥已保存" : ""}</p></div>
+          <div><p className="flex items-center gap-2 text-[13px] font-medium">{x.name}{c.active === x.id && <Badge tone="accent">默认</Badge>}</p><p className="mt-1 text-[12px] text-ink-3">{x.type === "codex" ? "Codex 订阅" : "API Key"} · {x.model} · 推理 {x.reasoningEffort ?? "模型默认"}{x.type === "api-key" && x.keyConfigured ? " · 密钥已保存" : ""}</p></div>
           <div className="flex gap-2"><Button size="sm" onClick={() => edit(x)}>编辑</Button><Button size="sm" disabled={!!pending || c.active === x.id} onClick={() => run("DELETE", `${ROOT}/connections/${x.id}`, undefined, { success: "连接已删除" })}>删除</Button></div>
         </div>) : <p className="py-5 text-[13px] text-ink-4">在 Codex 账号卡片中选择模型，或添加 API Key 连接。</p>}</div>
         {draft && <form className="mt-5 grid gap-4 border-t border-line pt-5" onSubmit={async (e) => {
@@ -174,7 +188,8 @@ export function ModelConnections({ configuration: c }: { configuration: AdminMod
             <Field label="接口地址" hint="使用 OpenAI 兼容的 Chat Completions 接口；地址填写到 /v1 等基础路径。"><Input aria-label="接口地址" required type="url" value={draft.baseUrl} placeholder="https://your-provider.example/v1" onChange={(e) => update({ baseUrl: e.target.value })} /></Field>
             <Field label="API Key" hint={draft.id ? "留空保留已保存的密钥；填写新值即可替换。" : "密钥只保存在后端，不会在网页回显。"}><Input aria-label="API Key" required={!draft.id} type="password" autoComplete="new-password" value={draft.apiKey} onChange={(e) => update({ apiKey: e.target.value })} /></Field>
           </>}
-          <Field label="模型名"><Input aria-label="模型名" required list={draft.type === "codex" ? "codex-models" : undefined} value={draft.model} placeholder="填写账号或服务商提供的模型名" onChange={(e) => update({ model: e.target.value })} /><datalist id="codex-models">{catalog.map((m) => <option key={m.model} value={m.model}>{m.name}</option>)}</datalist></Field>
+          <Field label="模型名"><Input aria-label="模型名" required list={draft.type === "codex" ? "codex-models" : undefined} value={draft.model} placeholder="填写账号或服务商提供的模型名" onChange={(e) => update({ model: e.target.value, reasoningEffort: null })} /><datalist id="codex-models">{catalog.map((m) => <option key={m.model} value={m.model}>{m.name}</option>)}</datalist></Field>
+          <ReasoningEffortField value={draft.reasoningEffort ?? ""} onChange={(v) => update({ reasoningEffort: v || null })} model={catalog.find((m) => m.model === draft.model)} codex={draft.type === "codex"} disabled={!!pending} />
           <div className="flex flex-wrap gap-4 text-[13px]"><label className="flex items-center gap-2"><input type="checkbox" checked={draft.jsonMode} onChange={(e) => update({ jsonMode: e.target.checked })} />JSON 输出</label><label className="flex items-center gap-2"><input type="checkbox" checked={draft.vision} onChange={(e) => update({ vision: e.target.checked })} />支持图片输入</label></div>
           {draft.type === "codex" && !account?.connected && <p className="text-[12px] text-ink-3">先在左侧连接账号，再选择要使用的模型。</p>}
           <div className="flex gap-2"><Button type="submit" tone="primary" disabled={!!pending}>保存连接</Button><Button type="button" onClick={() => setDraft(null)}>取消编辑</Button></div>
