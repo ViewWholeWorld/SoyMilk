@@ -35,7 +35,7 @@ export function ModelConnections({ configuration: c }: { configuration: AdminMod
   useEffect(() => { setActive(c.active ?? ""); }, [c.active]);
   useEffect(() => {
     let live = true;
-    get<AdminCodexAccount>(`${ROOT}/codex`).then((a) => { if (live) setAccount(a); }).catch(() => {});
+    get<AdminCodexAccount>(`${ROOT}/codex`).then((a) => { if (live) { setAccount(a); if (a.pendingLogin) setLogin(a.pendingLogin); } }).catch(() => {});
     return () => { live = false; };
   }, []);
   useEffect(() => {
@@ -47,6 +47,7 @@ export function ModelConnections({ configuration: c }: { configuration: AdminMod
         const next = await get<AdminCodexLogin>(`${ROOT}/codex/login/${login.id}`);
         if (!live) return;
         setLogin(next); setError("");
+        if (next.state !== "pending") setAccount((a) => a ? { ...a, loginInProgress: false, pendingLogin: null } : a);
         if (next.state === "success") {
           // Let app-server finish persisting its account before opening a new status process.
           setTimeout(() => { void get<AdminCodexAccount>(`${ROOT}/codex`).then(setAccount).catch(() => setError("授权完成，点击刷新状态查看账号")); }, 2000);
@@ -71,22 +72,29 @@ export function ModelConnections({ configuration: c }: { configuration: AdminMod
         <p className="text-[13px] leading-6 text-ink-3">使用 ChatGPT 账号授权，调用计入账号的 Codex 用量。</p>
         {account?.connected && <div className="mt-3 text-[13px]"><p>{account.email ?? "ChatGPT 账号"}</p><p className="mt-1 text-ink-3">{account.plan ?? ""}</p></div>}
         <div className="mt-4 flex flex-wrap gap-2">
-          <Button tone="primary" disabled={!!pending || login?.state === "pending"} onClick={async () => {
+          <Button tone="primary" disabled={!!pending || account?.loginInProgress || login?.state === "pending"} onClick={async () => {
             setError(""); setCopied(false);
             const r = await run<AdminCodexLogin>("POST", `${ROOT}/codex/login`, {}, { label: "connect", revalidate: false });
-            if (r) setLogin(r);
+            if (r) { setLogin(r); setAccount((a) => a ? { ...a, loginInProgress: true, pendingLogin: r } : a); }
           }}>{pending === "connect" ? "正在连接…" : account?.connected ? "重新连接 Codex" : "Sign in with Codex"}</Button>
           <Button disabled={!!pending || login?.state === "pending"} onClick={async () => {
-            try { setAccount(await get<AdminCodexAccount>(`${ROOT}/codex`)); setError(""); } catch (e) { setError((e as Error).message); }
+            try { const a = await get<AdminCodexAccount>(`${ROOT}/codex`); setAccount(a); if (a.pendingLogin) setLogin(a.pendingLogin); setError(""); } catch (e) { setError((e as Error).message); }
           }}>刷新状态</Button>
           {account?.connected && <Button tone="danger" disabled={!!pending || login?.state === "pending"} onClick={async () => {
             if (await run("POST", `${ROOT}/codex/logout`, {}, { success: "账号已断开" })) { setAccount({ connected: false, email: null, plan: null }); setCatalog([]); setLogin(null); }
           }}>断开账号</Button>}
         </div>
+        {account?.loginInProgress && login?.state !== "pending" && <div className="mt-4 rounded-control bg-bg-sunk p-4">
+          <p className="text-[13px] leading-6">另一个登录会话正在授权，可能是你通过其他地址或浏览器打开的页面。可以回到原页面继续，也可以取消旧授权并重新开始。</p>
+          <Button className="mt-3" disabled={!!pending} onClick={async () => {
+            const r = await run<AdminCodexLogin>("POST", `${ROOT}/codex/login`, { restart: true }, { label: "restart", revalidate: false });
+            if (r) { setLogin(r); setError(""); setCopied(false); setAccount((a) => a ? { ...a, pendingLogin: r } : a); }
+          }}>取消旧授权并重新开始</Button>
+        </div>}
         {login?.state === "pending" && <div className="mt-4 rounded-control bg-bg-sunk p-4">
           <p className="text-[13px] leading-6">复制验证码，前往 OpenAI 确认授权。完成后此页会自动更新。</p>
           <div className="my-3 flex gap-2"><Input ref={code} aria-label="授权验证码" readOnly value={login.userCode} onFocus={(e) => e.target.select()} className="font-mono tracking-widest" /><Button onClick={() => { code.current?.select(); setCopied(document.execCommand("copy")); }}>{copied ? "已复制" : "复制"}</Button></div>
-          <div className="flex flex-wrap items-center gap-3"><a href={login.verificationUrl} target="_blank" rel="noopener noreferrer" className="rounded-control bg-ink px-3 py-2 text-[13px] text-bg">打开 OpenAI 授权页面 ↗</a><Button size="sm" disabled={!!pending} onClick={async () => { const r = await run<AdminCodexLogin>("POST", `${ROOT}/codex/login/${login.id}/cancel`, {}, { revalidate: false }); if (r) setLogin(r); }}>取消</Button></div>
+          <div className="flex flex-wrap items-center gap-3"><a href={login.verificationUrl} target="_blank" rel="noopener noreferrer" className="rounded-control bg-ink px-3 py-2 text-[13px] text-bg">打开 OpenAI 授权页面 ↗</a><Button size="sm" disabled={!!pending} onClick={async () => { const r = await run<AdminCodexLogin>("POST", `${ROOT}/codex/login/${login.id}/cancel`, {}, { revalidate: false }); if (r) { setLogin(r); setAccount((a) => a ? { ...a, loginInProgress: false, pendingLogin: null } : a); } }}>取消</Button></div>
           <p className="mt-3 text-[12px] text-ink-4">验证码约 10 分钟有效。首次使用可能需要在 ChatGPT 的安全设置中允许设备代码登录。</p>
         </div>}
         {login?.state === "success" && <p role="status" className="mt-3 text-[13px] text-accent">授权成功，可以添加 Codex 模型连接。</p>}
