@@ -8,7 +8,7 @@
 
 1. 点击 **Sign in with Codex**，复制页面显示的验证码。
 2. 打开 OpenAI 授权页面，用 ChatGPT 账号确认。首次使用可能需要在 ChatGPT 安全设置中允许设备代码登录（工作区也可能由管理员控制）。
-3. 返回网站，授权结果自动更新。点击「读取模型列表」，添加一个「Codex / ChatGPT 订阅」连接，填写模型名并选为默认连接。
+3. 返回网站，授权结果自动更新，Codex 账号卡片会自动读取模型列表。在「Codex 模型」中选择模型，点击「保存并设为默认」即可。列表读取失败时也可手动填写账号支持的模型名；不会因此发起推理。
 
 使用官方 Codex app-server 的 `chatgptDeviceCode` 流程，支持 Docker/NAS、HTTP 内网和 Tailscale IP，无需本站 HTTPS 回调或 SSH 隧道。依赖锁定为 `@openai/codex@0.160.0`；Codex 自己保管和刷新令牌，应用不读取或复制用户本机的 `auth.json`。模型目录供选择，实际权限以任务执行结果为准。可在此页断开账号。
 
@@ -16,7 +16,7 @@
 
 ### API Key 连接
 
-添加连接，填写名称、服务商基础地址、模型名和密钥。支持 OpenAI 兼容的 **Chat Completions** 协议，提供 OpenAI、DeepSeek、通义千问和智谱地址预设，也支持自定义兼容服务。原生 Anthropic Messages/Gemini 需通过兼容服务接入。按模型能力选择 JSON 输出和图片输入。
+点击「添加 API Key 连接」，填写名称、服务商基础地址、模型名和密钥，再在「默认连接」中选择并应用。支持 OpenAI 兼容的 **Chat Completions** 协议，提供 OpenAI、DeepSeek、通义千问和智谱地址预设，也支持自定义兼容服务。原生 Anthropic Messages/Gemini 需通过兼容服务接入。按模型能力选择 JSON 输出和图片输入。
 
 密钥不会在网页或审计记录中回显；编辑时留空保留，填写新值替换，删除非默认连接会移除密钥。配置保存在共享数据卷 `model-config/connections.json`（文件 600，目录 700），API 和 worker 在调用时读取，无需重启。Codex 使用独立 `model-config/codex/`。这些目录包含敏感凭据，备份应妥善保管，不要提交或上传。
 
