@@ -367,6 +367,18 @@ export interface AdminSettings {
 
 // Models and evaluation (F20)
 
+export interface AdminModelConnection {
+  id: string; name: string; type: "api-key" | "codex"; model: string; baseUrl?: string;
+  keyConfigured: boolean; jsonMode: boolean; vision: boolean;
+}
+export interface AdminModelConfiguration {
+  active: string | null; connections: AdminModelConnection[]; modelCallsEnabled: boolean; collectEnabled: boolean;
+}
+export interface AdminCodexLogin {
+  id: string; state: "pending" | "success" | "failed" | "cancelled"; verificationUrl: string; userCode: string; expiresAt: number; error: string | null;
+}
+export interface AdminCodexAccount { connected: boolean; email: string | null; plan: string | null }
+
 export interface AdminModelUsage {
   purpose: string;
   model: string | null;
