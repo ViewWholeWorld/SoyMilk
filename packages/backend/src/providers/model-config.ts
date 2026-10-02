@@ -4,6 +4,7 @@ import { mkdir, readFile, rmdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
+import { REASONING_EFFORTS } from "@aihot/contracts/admin";
 import { config } from "../config.ts";
 import { atomicPrivateJson } from "./chatgpt-auth.ts";
 
@@ -12,6 +13,7 @@ export const ConnectionInput = z.object({
   type: z.enum(["api-key", "codex"]), model: z.string().trim().min(1).max(160),
   baseUrl: z.string().trim().max(500).optional(), apiKey: z.string().trim().max(4096).optional(),
   jsonMode: z.boolean().default(true), vision: z.boolean().default(false),
+  reasoningEffort: z.enum(REASONING_EFFORTS).nullable().optional(),
 }).superRefine((v, ctx) => {
   if (v.type !== "api-key") return;
   try {
