@@ -1,4 +1,34 @@
-# ChatGPT / Codex 订阅授权
+# 网页大模型配置与 ChatGPT 订阅授权
+
+## 网页配置（推荐）
+
+管理员登录后打开 `/admin/models` 的「大模型配置」。可以保存多组连接并选择默认连接，下方也可为各项能力分别指定模型。
+
+### Sign in with Codex
+
+1. 点击 **Sign in with Codex**，复制页面显示的验证码。
+2. 打开 OpenAI 授权页面，用 ChatGPT 账号确认。首次使用可能需要在 ChatGPT 安全设置中允许设备代码登录（工作区也可能由管理员控制）。
+3. 返回网站，授权结果自动更新。点击「读取模型列表」，添加一个「Codex / ChatGPT 订阅」连接，填写模型名并选为默认连接。
+
+使用官方 Codex app-server 的 `chatgptDeviceCode` 流程，支持 Docker/NAS、HTTP 内网和 Tailscale IP，无需本站 HTTPS 回调或 SSH 隧道。依赖锁定为 `@openai/codex@0.160.0`；Codex 自己保管和刷新令牌，应用不读取或复制用户本机的 `auth.json`。模型目录供选择，实际权限以任务执行结果为准。可在此页断开账号。
+
+### API Key 连接
+
+添加连接，填写名称、服务商基础地址、模型名和密钥。支持 OpenAI 兼容的 **Chat Completions** 协议，提供 OpenAI、DeepSeek、通义千问和智谱地址预设，也支持自定义兼容服务。原生 Anthropic Messages/Gemini 需通过兼容服务接入。按模型能力选择 JSON 输出和图片输入。
+
+密钥不会在网页或审计记录中回显；编辑时留空保留，填写新值替换，删除非默认连接会移除密钥。配置保存在共享数据卷 `model-config/connections.json`（文件 600，目录 700），API 和 worker 在调用时读取，无需重启。Codex 使用独立 `model-config/codex/`。这些目录包含敏感凭据，备份应妥善保管，不要提交或上传。
+
+使用 `default` 的能力跟随默认连接，单独指定的能力保留自己的选择。连接修改、账号变更会改变回执身份。选择「原有配置」恢复环境变量设置。
+
+保存、登录和读取状态不会启动采集或推理，`MODEL_CALLS_ENABLED=false` 和 `COLLECT_ENABLED=false` 保持关闭。模型只在 worker 调用，经原有回执和预算熔断。Codex 使用临时会话和只读沙箱，关闭命令、图片文件读取、网页搜索，拒绝所有服务端工具/批准请求。配置接口需要管理员会话，写请求验证 CSRF，授权结果仅发起登录的会话可查询。
+
+Codex 和网页配置的接口使用 `EGRESS_PROXY_URL`；新接口禁止跳转并保留出站地址检查。本地推理服务需由部署者按现有网络策略配置。
+
+官方说明：[Codex app-server](https://developers.openai.com/codex/app-server)、[设备代码登录](https://developers.openai.com/codex/auth)。
+
+## 命令行直接授权（高级选项）
+
+以下保留另一条直接授权路径（`LLM_AUTH_MODE=chatgpt`），与网页 Codex 托管登录独立。一般使用上面的网页配置即可。
 
 SoyMilk 的默认模型可以使用官方 **Sign in with ChatGPT** 的订阅授权。此功能用于 worker 的内容筛选、写作和日报；后台仍使用管理员密码登录。
 
