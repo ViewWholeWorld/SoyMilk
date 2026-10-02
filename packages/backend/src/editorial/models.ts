@@ -3,7 +3,7 @@
 // cached for a minute, so a switch applies to the next call without a restart; a changed model only
 // affects work done from then on (history is not re-judged).
 import { sql } from "../db.ts";
-import { MODELS } from "../providers/llm.ts";
+import { registeredModels } from "../providers/llm.ts";
 
 export interface Capability {
   label: string;
@@ -36,7 +36,8 @@ async function overrides(): Promise<Record<string, string>> {
   if (cache && Date.now() - cache.at < 60_000) return cache.overrides;
   const rows = await sql<{ key: string; value: { model?: string } }[]>`SELECT key, value FROM settings WHERE key LIKE 'models.%'`;
   const map: Record<string, string> = {};
-  for (const r of rows) if (r.value?.model && MODELS[r.value.model]) map[r.key.slice("models.".length)] = r.value.model;
+  const models = await registeredModels();
+  for (const r of rows) if (r.value?.model && models[r.value.model]) map[r.key.slice("models.".length)] = r.value.model;
   cache = { at: Date.now(), overrides: map };
   return map;
 }
@@ -49,16 +50,17 @@ export function invalidateModelCache() {
 export async function modelFor(capability: CapabilityKey): Promise<string> {
   const c: Capability = CAPABILITIES[capability];
   const chosen = (await overrides())[capability] ?? process.env[c.env] ?? c.default;
-  return MODELS[chosen] ? chosen : c.default;
+  return (await registeredModels())[chosen] ? chosen : c.default;
 }
 
 /** Where the current choice comes from, for the admin page. */
 export async function modelSources(): Promise<Record<string, { model: string; source: "admin" | "env" | "default" }>> {
   const o = await overrides();
+  const models = await registeredModels();
   const out: Record<string, { model: string; source: "admin" | "env" | "default" }> = {};
   for (const [key, c] of Object.entries(CAPABILITIES) as Array<[string, Capability]>) {
-    if (o[key]) out[key] = { model: o[key]!, source: "admin" };
-    else if (process.env[c.env] && MODELS[process.env[c.env]!]) out[key] = { model: process.env[c.env]!, source: "env" };
+    if (o[key] && models[o[key]!]) out[key] = { model: o[key]!, source: "admin" };
+    else if (process.env[c.env] && models[process.env[c.env]!]) out[key] = { model: process.env[c.env]!, source: "env" };
     else out[key] = { model: c.default, source: "default" };
   }
   return out;
