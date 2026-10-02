@@ -6,6 +6,8 @@ import { config, credential } from "../config.ts";
 import { sha256 } from "../lib/ids.ts";
 import { completeReceipt, paidRequest, ProviderRejectedError, rejectReceivedResponse } from "./receipts.ts";
 import { sql } from "../db.ts";
+import { chatGPTAccess } from "./chatgpt-auth.ts";
+import { chatGPTBody, requestChatGPT } from "./chatgpt.ts";
 
 export interface ModelSpec {
   key: string;
@@ -161,14 +163,18 @@ export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): P
   const spec = MODELS[opts.model];
   if (!spec) throw new Error(`Unknown model ${opts.model}`);
   if (!config.modelCallsEnabled) throw new Error("Model calls are disabled (MODEL_CALLS_ENABLED=false)");
-  const baseUrl = credential("models", spec.baseUrlEnv);
-  const apiKey = credential("models", spec.apiKeyEnv);
-  if (!baseUrl || !apiKey || !spec.model) throw new Error(`Model ${opts.model} is not configured (${spec.baseUrlEnv}, ${spec.apiKeyEnv}${spec.key === "default" ? ", LLM_MODEL" : ""})`);
+  const authMode = spec.key === "default" ? process.env.LLM_AUTH_MODE || "api-key" : "api-key";
+  if (!["api-key", "chatgpt"].includes(authMode)) throw new Error("LLM_AUTH_MODE must be api-key or chatgpt");
+  const chatgpt = authMode === "chatgpt";
+  const baseUrl = chatgpt ? null : credential("models", spec.baseUrlEnv);
+  const apiKey = chatgpt ? null : credential("models", spec.apiKeyEnv);
+  if (!spec.model || (!chatgpt && (!baseUrl || !apiKey))) throw new Error(`Model ${opts.model} is not configured (${spec.baseUrlEnv}, ${spec.apiKeyEnv}${spec.key === "default" ? ", LLM_MODEL" : ""})`);
+  const access = chatgpt ? await chatGPTAccess() : null;
 
   const temperature = opts.temperature ?? 0.2;
   const maxTokens = Math.max(opts.maxTokens ?? 1500, 512) + (spec.key.endsWith("-think") ? 4000 : 0);
   const userText = typeof opts.user === "string" ? opts.user : JSON.stringify(opts.user);
-  const body: Record<string, unknown> = {
+  const body: Record<string, unknown> = chatgpt ? chatGPTBody(spec.model, opts.system, opts.user, opts.json !== false) : {
     model: spec.model,
     messages: [
       // A prompt given as one user message (the title/summary prompts) has no system message.
@@ -188,15 +194,19 @@ export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): P
       model: spec.model,
       purpose: opts.purpose,
       subject: opts.subject,
-      identity: { model: spec.model, promptVersion: opts.promptVersion, system: sha256(opts.system), user: sha256(userText), temperature, maxTokens, extra: spec.extra ?? null },
+      identity: { model: spec.model, promptVersion: opts.promptVersion, system: sha256(opts.system), user: sha256(userText), temperature, maxTokens, extra: spec.extra ?? null, ...(access ? { transport: "chatgpt-responses-v1", registrationHash: sha256(access.registration) } : {}) },
       requestSummary: { promptVersion: opts.promptVersion, systemHash: sha256(opts.system), userHash: sha256(userText), userChars: userText.length, temperature, maxTokens },
       attemptTag: opts.attemptTag,
     },
     async () => {
       const started = Date.now();
+      if (access) {
+        const json = await requestChatGPT(body, access.token, opts.timeoutMs ?? 120_000);
+        return { response: { ...json, _latencyMs: Date.now() - started }, requestId: json.id as string, usage: json.usage as Record<string, unknown> | null, cost: null };
+      }
       let res: Response;
       try {
-        res = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
+        res = await fetch(`${baseUrl!.replace(/\/$/, "")}/chat/completions`, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
           body: JSON.stringify(body),
