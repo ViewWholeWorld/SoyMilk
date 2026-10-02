@@ -13,7 +13,7 @@ import type { ContentPart } from "./llm.ts";
 
 type Message = { id?: number | string; method?: string; params?: any; result?: any; error?: unknown };
 type Pending = { resolve: (value: any) => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
-export interface CodexAccount { connected: boolean; email: string | null; plan: string | null }
+export interface CodexAccount { connected: boolean; email: string | null; plan: string | null; loginInProgress?: boolean; pendingLogin?: CodexLogin | null }
 export interface CodexLogin { id: string; state: "pending" | "success" | "failed" | "cancelled"; verificationUrl: string; userCode: string; expiresAt: number; error: string | null }
 
 export class CodexServer {
@@ -96,15 +96,16 @@ async function account(server: CodexServer): Promise<CodexAccount> {
   const r = await server.request("account/read", { refreshToken: false });
   return { connected: r.account?.type === "chatgpt", email: r.account?.type === "chatgpt" ? r.account.email ?? null : null, plan: r.account?.type === "chatgpt" ? r.account.planType ?? null : null };
 }
-let login: { owner: string; view: CodexLogin; cancel: () => Promise<void> } | null = null;
-export async function codexStatus(): Promise<CodexAccount> {
-  if (login?.view.state === "pending") throw Object.assign(new Error("正在等待网页授权"), { statusCode: 409 });
+let login: { owner: string; view: CodexLogin; account: CodexAccount; cancel: () => Promise<void> } | null = null;
+export async function codexStatus(owner?: string): Promise<CodexAccount> {
+  if (login?.view.state === "pending") return { ...login.account, loginInProgress: true, pendingLogin: login.owner === owner ? login.view : null };
   return privateLease("codex", async () => { const server = await openCodexServer(); try { return await account(server); } finally { await server.stop(); } });
 }
-export async function startCodexLogin(owner: string, open = openCodexServer): Promise<CodexLogin> {
+export async function startCodexLogin(owner: string, open = openCodexServer, restart = false): Promise<CodexLogin> {
+  if (restart && login?.view.state === "pending") await login.cancel();
   if (login?.view.state === "pending") {
     if (login.owner === owner) return login.view;
-    throw Object.assign(new Error("已有管理员正在授权，请稍后重试"), { statusCode: 409 });
+    throw Object.assign(new Error("另一个登录会话正在授权，可能来自你打开的其他地址或浏览器。可点击重新开始授权。"), { statusCode: 409 });
   }
   let ready!: (v: CodexLogin) => void;
   let reject!: (e: unknown) => void;
@@ -132,6 +133,7 @@ export async function startCodexLogin(owner: string, open = openCodexServer): Pr
     });
     let timer: NodeJS.Timeout | undefined;
     try {
+      const currentAccount = await account(server);
       const r = await server.request("account/login/start", { type: "chatgptDeviceCode" });
       const u = new URL(r.verificationUrl);
       if (u.origin !== "https://auth.openai.com" || typeof r.userCode !== "string" || typeof r.loginId !== "string") throw new Error("Codex 未返回有效的授权页面");
@@ -140,9 +142,9 @@ export async function startCodexLogin(owner: string, open = openCodexServer): Pr
       const cancel = async () => {
         if (view.state !== "pending") return;
         await server.request("account/login/cancel", { loginId: officialId });
-        view.state = "cancelled"; finish();
+        if (view.state === "pending") { view.state = "cancelled"; finish(); }
       };
-      login = { owner, view, cancel };
+      login = { owner, view, account: currentAccount, cancel };
       timer = setTimeout(() => { view.state = "failed"; view.error = "验证码已过期，请重新连接"; finish(); }, 10 * 60_000);
       ready(view);
       if (completed.has(r.loginId)) void onResult(completed.get(r.loginId)!);
