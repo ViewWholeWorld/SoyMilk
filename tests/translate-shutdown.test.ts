@@ -20,15 +20,21 @@ const provider = await stub(async (_hit, req) => {
 
 function runTranslation() {
   const script = `
+    import { stub, useModelStubs } from './tests/setup.ts';
     import { translatePending } from '@aihot/backend/editorial/translate';
     import { shutdownSignal } from '@aihot/backend/jobs/queue';
     import { closeDb } from '@aihot/backend/db';
+    const local = await stub(async (_hit, req) => {
+      const answer = await fetch(${JSON.stringify(provider.url)} + req.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: req.body });
+      return answer.json();
+    });
+    await useModelStubs({ DEEPSEEK: local.url });
     process.on('SIGTERM', () => { shutdownSignal.abort(); process.send({ stopped: true }); });
     try { process.send({ result: await translatePending({ limit: 1 }) }); }
-    finally { await closeDb(); process.disconnect(); }
+    finally { await local.close(); await closeDb(); process.disconnect(); }
   `;
   const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
-    cwd: process.cwd(), env: { ...process.env, MODEL_CALLS_ENABLED: 'true', TRANSLATE_MODEL: 'deepseek-flash', DEEPSEEK_BASE_URL: `${provider.url}/v1`, DEEPSEEK_API_KEY: 'test-key', AIHOT_CREDENTIALS_DIR: '/nonexistent-test-credentials' },
+    cwd: process.cwd(), env: { ...process.env, MODEL_CALLS_ENABLED: 'false', TRANSLATE_MODEL: 'deepseek-flash', AIHOT_CREDENTIALS_DIR: '/nonexistent-test-credentials' },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
   let result: any;

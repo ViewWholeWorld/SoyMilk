@@ -2,7 +2,7 @@
 // proxy, always behind receipts and the per-minute/hour/day budget (any zero stops it).
 import { credential } from "../config.ts";
 import { guardedFetch } from "../lib/http-fetch.ts";
-import { paidRequest, ProviderRejectedError } from "./receipts.ts";
+import { paidRequest, ProviderRejectedError, ProviderUnavailableError } from "./receipts.ts";
 
 export interface JinaPage {
   title: string | null;
@@ -29,13 +29,13 @@ export async function jinaRead(
   opts: { purpose: string; subject: string; format?: "markdown" | "html"; cacheToleranceSeconds?: number; round?: string },
 ): Promise<JinaPage & { receiptId: number; raw: string }> {
   const key = credential("collectors", "JINA_API_KEY");
-  if (!key) throw new Error("JINA_API_KEY is not configured");
+  if (!key) throw new ProviderUnavailableError("configuration", "JINA_API_KEY is not configured");
   const base = (credential("collectors", "JINA_BASE_URL") ?? "https://r.jina.ai").replace(/\/$/, "");
   // A listing whose freshness matters (xAI news) caps how old Jina's cached rendering may be.
   const tolerance: Record<string, string> = Number.isInteger(opts.cacheToleranceSeconds) && opts.cacheToleranceSeconds! >= 0 ? { "x-cache-tolerance": String(opts.cacheToleranceSeconds) } : {};
   const day = opts.round ?? new Date().toISOString().slice(0, 10);
   const receipt = await paidRequest(
-    { service: "jina", model: null, purpose: opts.purpose, subject: opts.subject, identity: { url: targetUrl, day, format: opts.format ?? "markdown" }, requestSummary: { url: targetUrl } },
+    { service: "jina", model: null, purpose: opts.purpose, subject: opts.subject, identity: { url: targetUrl, day, format: opts.format ?? "markdown" }, requestSummary: { url: targetUrl, day, format: opts.format ?? "markdown" } },
     async () => {
       const res = await guardedFetch(`${base}/${targetUrl}`, {
         headers: { authorization: `Bearer ${key}`, "x-return-format": opts.format ?? "markdown", accept: "text/plain", ...tolerance },

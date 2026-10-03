@@ -22,6 +22,23 @@ export class BudgetExceededError extends Error {
 
 export class ReceiptBusyError extends Error {}
 
+/** A request was not sent because its local switch or provider configuration needs attention. */
+export class ProviderUnavailableError extends Error {
+  readonly kind: "disabled" | "configuration";
+  constructor(kind: "disabled" | "configuration", message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.kind = kind;
+  }
+}
+
+/** Waiting before a request is accepted must not consume a content failure attempt. */
+export function requestWait(error: unknown): { kind: string; retryAfterSeconds: number } | null {
+  if (error instanceof BudgetExceededError) return { kind: "budget", retryAfterSeconds: error.retryAfterSeconds };
+  if (error instanceof ReceiptBusyError) return { kind: "busy", retryAfterSeconds: 60 };
+  if (error instanceof ProviderUnavailableError) return { kind: error.kind, retryAfterSeconds: 300 };
+  return null;
+}
+
 export class ReceiptUnknownError extends Error {
   readonly receiptId: number;
   constructor(receiptId: number, message: string, options?: ErrorOptions) {

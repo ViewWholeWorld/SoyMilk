@@ -5,7 +5,7 @@ import type { z } from "zod";
 import type { ReasoningEffort } from "@aihot/contracts/admin";
 import { config, credential } from "../config.ts";
 import { sha256 } from "../lib/ids.ts";
-import { completeReceipt, paidRequest, ProviderRejectedError, rejectReceivedResponse } from "./receipts.ts";
+import { completeReceipt, paidRequest, ProviderRejectedError, ProviderUnavailableError, rejectReceivedResponse, requestWait } from "./receipts.ts";
 import { sql } from "../db.ts";
 import { chatGPTAccess } from "./chatgpt-auth.ts";
 import { chatGPTBody, requestChatGPT } from "./chatgpt.ts";
@@ -13,6 +13,7 @@ import { codexIdentity, readModelConfig } from "./model-config.ts";
 import { requestCodex, type CodexServer } from "./codex.ts";
 import { withCodexServer } from "./codex-session.ts";
 import { guardedFetch, type GuardedResponse } from "../lib/http-fetch.ts";
+import { shutdownSignal } from "../lib/shutdown.ts";
 
 export interface ModelSpec {
   key: string;
@@ -33,7 +34,7 @@ function extraFromEnv(value: string | undefined): Record<string, unknown> | unde
   try {
     return JSON.parse(value) as Record<string, unknown>;
   } catch {
-    throw new Error("LLM_EXTRA_JSON must be a JSON object, e.g. {\"enable_thinking\": false}");
+    throw new ProviderUnavailableError("configuration", "LLM_EXTRA_JSON must be a JSON object, e.g. {\"enable_thinking\": false}");
   }
 }
 
@@ -182,25 +183,39 @@ function isConnectFailure(error: unknown): boolean {
 }
 
 export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): Promise<ChatJsonResult<z.infer<S>>> {
-  if (!config.modelCallsEnabled) throw new Error("Model calls are disabled (MODEL_CALLS_ENABLED=false)");
+  if (!config.modelCallsEnabled) throw new ProviderUnavailableError("disabled", "Model calls are disabled (MODEL_CALLS_ENABLED=false)");
   const spec = (await registeredModels())[opts.model];
-  if (!spec) throw new Error(`Unknown model ${opts.model}`);
+  if (!spec) throw new ProviderUnavailableError("configuration", `Unknown model ${opts.model}`);
   const authMode = spec.connection?.type ?? (spec.key === "default" ? process.env.LLM_AUTH_MODE || "api-key" : "api-key");
-  if (!["api-key", "chatgpt", "codex"].includes(authMode)) throw new Error("LLM_AUTH_MODE must be api-key, chatgpt or codex");
+  if (!["api-key", "chatgpt", "codex"].includes(authMode)) throw new ProviderUnavailableError("configuration", "LLM_AUTH_MODE must be api-key, chatgpt or codex");
   if (authMode === "codex") {
-    if (!spec.model) throw new Error("请配置 Codex 模型名");
+    if (!spec.model) throw new ProviderUnavailableError("configuration", "请配置 Codex 模型名");
     return withCodexServer(async (server) => {
-      const a = await server.request("account/read", { refreshToken: false });
-      if (a.account?.type !== "chatgpt") throw new Error("请先在网页连接 Codex 账号");
-      const generation = await codexIdentity();
+      let generation: string;
+      try {
+        const a = await server.request("account/read", { refreshToken: false });
+        if (a.account?.type !== "chatgpt") throw new ProviderUnavailableError("configuration", "请先在网页连接 Codex 账号");
+        generation = await codexIdentity();
+      } catch (error) {
+        if (shutdownSignal.signal.aborted || (error instanceof Error && error.name === "AbortError") || requestWait(error)) throw error;
+        throw new ProviderUnavailableError("configuration", error instanceof Error ? error.message : String(error), { cause: error });
+      }
       return await executeChatJson(opts, spec, null, null, null, { server, generation });
     });
   }
   const chatgpt = authMode === "chatgpt";
   const baseUrl = chatgpt ? null : spec.connection?.baseUrl ?? credential("models", spec.baseUrlEnv);
   const apiKey = chatgpt ? null : spec.connection?.apiKey ?? credential("models", spec.apiKeyEnv);
-  if (!spec.model || (!chatgpt && (!baseUrl || !apiKey))) throw new Error(`Model ${opts.model} is not configured (${spec.baseUrlEnv}, ${spec.apiKeyEnv}${spec.key === "default" ? ", LLM_MODEL" : ""})`);
-  const access = chatgpt ? await chatGPTAccess() : null;
+  if (!spec.model || (!chatgpt && (!baseUrl || !apiKey))) throw new ProviderUnavailableError("configuration", `Model ${opts.model} is not configured (${spec.baseUrlEnv}, ${spec.apiKeyEnv}${spec.key === "default" ? ", LLM_MODEL" : ""})`);
+  let access: Awaited<ReturnType<typeof chatGPTAccess>> | null = null;
+  if (chatgpt) {
+    try { access = await chatGPTAccess(); }
+    catch (error) {
+      if (shutdownSignal.signal.aborted || (error instanceof Error && error.name === "AbortError") || error instanceof ProviderUnavailableError) throw error;
+      // Authentication precedes the model request and cannot consume a model/content failure.
+      throw new ProviderUnavailableError("configuration", error instanceof Error ? error.message : String(error), { cause: error });
+    }
+  }
   return executeChatJson(opts, spec, baseUrl, apiKey, access, null);
 }
 

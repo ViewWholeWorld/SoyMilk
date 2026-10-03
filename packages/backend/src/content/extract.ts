@@ -6,7 +6,8 @@ import { sql } from "../db.ts";
 import { guardedFetch } from "../lib/http-fetch.ts";
 import { collapseWhitespace, stripTags } from "../lib/text.ts";
 import { jinaRead } from "../providers/jina.ts";
-import { BudgetExceededError } from "../providers/receipts.ts";
+import { logicalKeyFor, ProviderUnavailableError, ReceiptUnknownError } from "../providers/receipts.ts";
+import { shutdownSignal } from "../lib/shutdown.ts";
 import { getArticle } from "../providers/socialdata.ts";
 import { onlyXArticleLink, xArticleText } from "../sources/x.ts";
 import { sanitizeBody, trimTrailingChrome } from "./sanitize.ts";
@@ -46,7 +47,8 @@ export function readable(html: string, url: string): ExtractedBody | null {
   return { html: clean, text, images, via: "readability" };
 }
 
-export async function extractFromUrl(url: string, opts: { allowJina: boolean; subject: string }): Promise<ExtractedBody | null> {
+export async function extractFromUrl(url: string, opts: { allowJina: boolean; subject: string; round?: () => Promise<string> }): Promise<ExtractedBody | null> {
+  shutdownSignal.signal.throwIfAborted();
   try {
     const res = await guardedFetch(url, { timeoutMs: 20_000, maxBytes: 6 * 1024 * 1024 });
     const type = res.headers.get("content-type") ?? "";
@@ -57,17 +59,55 @@ export async function extractFromUrl(url: string, opts: { allowJina: boolean; su
   } catch {
     // fall through to Jina
   }
+  shutdownSignal.signal.throwIfAborted();
   if (!opts.allowJina) return null;
-  try {
-    const page = await jinaRead(url, { purpose: "body_fallback", subject: opts.subject });
-    const html = markdownBody(page.markdown, url);
-    const text = stripTags(html);
-    if (text.length < MIN_BODY_CHARS) return null;
-    return { html, text, images: [], via: "jina" };
-  } catch (error) {
-    if (error instanceof BudgetExceededError) return null;
-    throw error;
+  const round = await opts.round?.();
+  const page = await jinaRead(url, { purpose: "body_fallback", subject: opts.subject, round });
+  const html = markdownBody(page.markdown, url);
+  const text = stripTags(html);
+  if (text.length < MIN_BODY_CHARS) return null;
+  return { html, text, images: [], via: "jina" };
+}
+
+/** Prove an old receipt's identity before pinning its original round; dates alone are not evidence. */
+export function bodyFallbackRound(receipt: { logical_key: string; created_at: Date; request: Record<string, unknown> }, url: string): string | null {
+  const days = typeof receipt.request.day === "string" ? [receipt.request.day] : [-1, 0, 1].map(offset =>
+    new Date(receipt.created_at.getTime() + offset * 86_400_000).toISOString().slice(0, 10));
+  for (const day of days) {
+    if (logicalKeyFor({ service: "jina", purpose: "body_fallback", identity: { url, day, format: "markdown" } }) === receipt.logical_key) return day;
   }
+  return null;
+}
+
+async function pinBodyFallback(articleId: string, revision: number, url: string): Promise<string> {
+  const result = await sql.begin(async tx => {
+    const [article] = await tx<{ revision: number; url: string; created_at: Date; body_fallback_request: { revision: number; url: string; day: string; format: string } | null }[]>`
+      SELECT revision,url,created_at,body_fallback_request FROM articles WHERE id=${articleId} FOR UPDATE`;
+    if (!article || article.revision !== revision || article.url !== url) return null;
+    // Check consumers even when a pin exists: an older process may have left an unresolved receipt.
+    const prior = await tx<{ id: number; status: string; logical_key: string; request: Record<string, unknown>; created_at: Date }[]>`
+      SELECT r.id,r.status,r.logical_key,r.request,r.created_at FROM receipts r
+      WHERE r.service='jina' AND r.purpose='body_fallback' AND r.request->>'url'=${url}
+        AND (r.subject=${`article:${articleId}@${revision}`} OR EXISTS(SELECT 1 FROM receipt_consumers c
+          WHERE c.receipt_id=r.id AND c.subject=${`article:${articleId}@${revision}`})
+          OR (r.created_at >= coalesce((SELECT created_at FROM article_revisions WHERE article_id=${articleId} AND revision=${revision}),${article.created_at})
+            AND (r.subject=${`article:${articleId}`} OR EXISTS(SELECT 1 FROM receipt_consumers c WHERE c.receipt_id=r.id AND c.subject=${`article:${articleId}`}))))
+      ORDER BY (r.status IN ('unknown','pending')) DESC,r.id LIMIT 1`;
+    let day: string | null = null;
+    if (prior[0]) {
+      day = bodyFallbackRound(prior[0], url);
+      if (!day) {
+        if (prior[0].status === "unknown") throw new ReceiptUnknownError(prior[0].id, "Original body fallback request identity cannot be established");
+        throw new ProviderUnavailableError("configuration", "Original body fallback request identity cannot be established; inspect its receipt");
+      }
+    }
+    const pin = article.body_fallback_request;
+    day ??= pin?.revision === revision && pin.url === url && pin.format === "markdown" ? pin.day : new Date().toISOString().slice(0, 10);
+    await tx`UPDATE articles SET body_fallback_request=${tx.json({ revision,url,day,format: "markdown" })} WHERE id=${articleId}`;
+    return day;
+  });
+  if (!result) throw new ProviderUnavailableError("configuration", "Body input changed before extraction; retry the current input");
+  return result;
 }
 
 /** Pages extraction can fetch: ordinary web pages (X posts and WeChat articles arrive whole or not at all). */
@@ -87,7 +127,7 @@ export async function extractArticleBody(articleId: string, allowJina = process.
     SELECT id, url, body_status, revision, x_post FROM articles WHERE id = ${articleId}`;
   if (!a || a.body_status === "ok") return "skipped";
   if (a.x_post?.tweetId) return extractXArticle(a.id, a.x_post.tweetId, a.revision);
-  const got = await extractFromUrl(a.url, { allowJina, subject: `article:${a.id}` });
+  const got = await extractFromUrl(a.url, { allowJina, subject: `article:${a.id}@${a.revision}`, round: () => pinBodyFallback(a.id, a.revision, a.url) });
   if (!got) {
     return markUnconfirmed(articleId, a.revision);
   }
@@ -126,7 +166,7 @@ async function markUnconfirmed(articleId: string, revision: number): Promise<"un
  * the judging steps are told the article was not fetched.
  */
 async function extractXArticle(articleId: string, tweetId: string, revision: number): Promise<"ok" | "unconfirmed" | "skipped"> {
-  const found = await getArticle(tweetId, { purpose: "x_article", subject: `article:${articleId}` });
+  const found = await getArticle(tweetId, { purpose: "x_article", subject: `article:${articleId}@${revision}` });
   const got = found ? xArticleText(found) : null;
   if (!got) {
     return markUnconfirmed(articleId, revision);

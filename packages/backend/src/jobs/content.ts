@@ -10,7 +10,8 @@ import { extractArticleBody, pageFetchable } from "../content/extract.ts";
 import { analyzeArticle, AnalysisInterruptedError } from "../editorial/analyze.ts";
 import { isHistorical } from "../content/materials.ts";
 import { publishArticle } from "../publication/publish.ts";
-import { BudgetExceededError, ProviderRejectedError, ReceiptBusyError, ReceiptUnknownError } from "../providers/receipts.ts";
+import { ProviderRejectedError, ReceiptUnknownError, requestWait } from "../providers/receipts.ts";
+import { resumeTranslationAfterRelease } from "../editorial/translate.ts";
 import { ModelOutputError } from "../providers/llm.ts";
 import { enqueue, QUEUES, shutdownSignal, work } from "./queue.ts";
 
@@ -162,7 +163,7 @@ async function processRevision(articleId: string, row: NonNullable<Awaited<Retur
   }
 }
 
-async function stopOnUnknownReceipt(articleId: string, revision: number, attemptTag: string | null, error: ReceiptUnknownError): Promise<{ state: string }> {
+export async function stopOnUnknownReceipt(articleId: string, revision: number, attemptTag: string | null, error: ReceiptUnknownError): Promise<{ state: string }> {
   return sql.begin(async (tx) => {
     // The same article -> receipt order is used by analysis commits and release recovery.
     const [article] = await tx<{ revision: number; processing_state: string; processing_attempt_tag: string | null }[]>`
@@ -177,7 +178,7 @@ async function stopOnUnknownReceipt(articleId: string, revision: number, attempt
       return { state: "unknown-receipt" };
     }
     // Release may have committed while this caller was finishing another paid analysis stage.
-    await tx`UPDATE articles SET processing_state='new',processing_attempts=0,processing_error=NULL,
+    await tx`UPDATE articles SET processing_state='new',processing_error=NULL,
       processing_retry_at=NULL,processing_queued_at=NULL WHERE id=${articleId}`;
     if (receipt.status === "pending") {
       await tx`UPDATE articles SET processing_retry_at=now()+interval '1 minute' WHERE id=${articleId}`;
@@ -194,9 +195,10 @@ async function afterFailure(articleId: string, revision: number, error: unknown)
   // failure and must neither consume processing_attempts nor turn an incomplete chain terminal.
   if (error instanceof AnalysisInterruptedError || shutdownSignal.signal.aborted) throw error;
   const message = String(error instanceof Error ? error.message : error).slice(0, 500);
-  if (error instanceof ReceiptBusyError || error instanceof BudgetExceededError) {
+  const waiting = requestWait(error);
+  if (waiting) {
     // Not the article's fault: the same request is in flight, or the budget window is full.
-    const seconds = error instanceof BudgetExceededError ? error.retryAfterSeconds : 60;
+    const seconds = waiting.retryAfterSeconds;
     const retryAt = new Date(Date.now() + seconds * 1000);
     await sql`UPDATE articles SET processing_state = 'new', processing_error = ${message}, processing_retry_at = ${retryAt}, processing_queued_at = NULL
               WHERE id = ${articleId} AND revision = ${revision}`;
@@ -235,33 +237,42 @@ export async function registerContentJobs(boss: PgBoss, concurrency = Number(pro
  * on the excerpt it has ("unconfirmed" body, never a wrong one).
  */
 export async function registerExtractionJobs(boss: PgBoss) {
-  await work(boss, QUEUES.extractBody, { localConcurrency: 4, pollingIntervalSeconds: 2 }, async ({ articleId }) => {
-    const [input] = await sql<{ revision: number; processing_attempt_tag: string | null }[]>`SELECT revision,processing_attempt_tag FROM articles WHERE id = ${articleId}`;
-    if (!input) return { state: "missing" };
-    try {
-      const state = await extractArticleBody(articleId);
-      // A newer revision may still need a body after this task's result was discarded.
-      await queueProcessing(articleId);
-      return { state };
-    } catch (error) {
-      if (shutdownSignal.signal.aborted) throw error;
-      if (error instanceof ReceiptUnknownError) return stopOnUnknownReceipt(articleId, input.revision, input.processing_attempt_tag, error);
-      const message = String(error instanceof Error ? error.message : error).slice(0, 500);
-      const [a] = await sql<{ processing_attempts: number }[]>`
-        UPDATE articles SET processing_attempts = processing_attempts + 1, processing_error = ${`extract: ${message}`},
-          processing_queued_at = NULL, processing_retry_at = now() + interval '10 minutes'
-        WHERE id = ${articleId} AND revision = ${input.revision} AND body_status <> 'ok' RETURNING processing_attempts`;
-      if (!a) {
-        await queueProcessing(articleId);
-        return { state: "skipped" };
-      }
-      if (a.processing_attempts < MAX_EXTRACT_FAILURES) return { state: "retrying" };
-      await sql`UPDATE articles SET body_status = 'unconfirmed', processing_attempts = 0, processing_retry_at = NULL
-        WHERE id = ${articleId} AND revision = ${input.revision} AND body_status = 'pending'`;
-      await queueProcessing(articleId);
-      return { state: "unconfirmed" };
+  await work(boss, QUEUES.extractBody, { localConcurrency: 4, pollingIntervalSeconds: 2 }, ({ articleId }) => processExtraction(articleId));
+}
+
+export async function processExtraction(articleId: string): Promise<{ state: string }> {
+  const [input] = await sql<{ revision: number; processing_attempt_tag: string | null }[]>`SELECT revision,processing_attempt_tag FROM articles WHERE id = ${articleId}`;
+  if (!input) return { state: "missing" };
+  try {
+    const state = await extractArticleBody(articleId);
+    // A newer revision may still need a body after this task's result was discarded.
+    await queueProcessing(articleId);
+    return { state };
+  } catch (error) {
+    if (shutdownSignal.signal.aborted) throw error;
+    if (error instanceof ReceiptUnknownError) return stopOnUnknownReceipt(articleId, input.revision, input.processing_attempt_tag, error);
+    const message = String(error instanceof Error ? error.message : error).slice(0, 500);
+    const waiting = requestWait(error);
+    if (waiting) {
+      const changed = await sql`UPDATE articles SET processing_state='new',processing_error=${`extract waiting (${waiting.kind}): ${message}`},
+        processing_retry_at=${new Date(Date.now() + waiting.retryAfterSeconds * 1000)},processing_queued_at=NULL
+        WHERE id=${articleId} AND revision=${input.revision} AND body_status='pending' RETURNING id`;
+      return { state: changed.length ? "waiting" : "stale" };
     }
-  });
+    const [a] = await sql<{ processing_attempts: number }[]>`
+      UPDATE articles SET processing_attempts = processing_attempts + 1, processing_error = ${`extract: ${message}`},
+        processing_queued_at = NULL, processing_retry_at = now() + interval '10 minutes'
+      WHERE id = ${articleId} AND revision = ${input.revision} AND body_status <> 'ok' RETURNING processing_attempts`;
+    if (!a) {
+      await queueProcessing(articleId);
+      return { state: "skipped" };
+    }
+    if (a.processing_attempts < MAX_EXTRACT_FAILURES) return { state: "retrying" };
+    await sql`UPDATE articles SET body_status = 'unconfirmed', processing_attempts = 0, processing_retry_at = NULL
+      WHERE id = ${articleId} AND revision = ${input.revision} AND body_status = 'pending'`;
+    await queueProcessing(articleId);
+    return { state: "unconfirmed" };
+  }
 }
 
 /**
@@ -283,6 +294,7 @@ export async function sweepUnprocessed(): Promise<{ enqueued: number }> {
 const ARTICLE_STEPS = new Set([
   ...(["prefilter", "score", "understand", "summarize", "structure"] as const).flatMap((step) => CAPABILITIES[step].purposes),
   "body_fallback", "x_article",
+  "translate_body",
 ]);
 
 /**
@@ -291,7 +303,7 @@ const ARTICLE_STEPS = new Set([
  */
 export function receiptArticleSubject(receipt: { purpose: string; subject: string | null }): { articleId: string; revision: number | null } | null {
   if (!ARTICLE_STEPS.has(receipt.purpose)) return null;
-  const match = /^article:([^@:#]+)(?:@([1-9]\d*))?$/.exec(receipt.subject ?? "");
+  const match = /^article:([^@:#]+)(?:@([1-9]\d*))?(?:#\d+)?$/.exec(receipt.subject ?? "");
   if (!match || (!match[2] && !["body_fallback", "x_article"].includes(receipt.purpose))) return null;
   return { articleId: match[1]!, revision: match[2] ? Number(match[2]) : null };
 }
@@ -299,7 +311,8 @@ export function receiptArticleSubject(receipt: { purpose: string; subject: strin
 export async function resumeAfterRelease(receipt: { id: number; purpose: string; subject: string | null }, db: Db): Promise<boolean> {
   const article = receiptArticleSubject(receipt);
   if (!article) return false;
-  const [a] = await db`UPDATE articles SET processing_state = 'new', processing_attempts = 0, processing_retry_at = NULL, processing_error = NULL
+  if (receipt.purpose === "translate_body") return resumeTranslationAfterRelease(receipt.id, article.articleId, article.revision!, db);
+  const [a] = await db`UPDATE articles SET processing_state = 'new', processing_retry_at = NULL, processing_error = NULL
                         WHERE id = ${article.articleId} AND processing_state = 'failed'
                           AND (${article.revision}::integer IS NULL OR revision=${article.revision})
                           AND processing_error=${`receipt ${receipt.id} outcome unknown`} RETURNING id`;

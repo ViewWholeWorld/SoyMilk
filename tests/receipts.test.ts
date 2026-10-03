@@ -142,7 +142,7 @@ async function stoppedArticle(purpose: string, needsBody = false) {
   await assert.rejects(paidRequest({ service: "invariant-unbudgeted", purpose, subject, identity: { key } },
     () => Promise.reject(new Error("socket hang up after sending"))));
   const [receipt] = await sql<{ id: number }[]>`SELECT id FROM receipts WHERE subject = ${subject}`;
-  await sql`UPDATE articles SET processing_state = 'failed', processing_attempts = 3,
+  await sql`UPDATE articles SET processing_state = 'failed', processing_attempts = 1,
     processing_retry_at = now() + interval '1 hour', processing_error = ${`receipt ${receipt!.id} outcome unknown`} WHERE id = ${articleId}`;
   return { articleId, receiptId: receipt!.id };
 }
@@ -159,7 +159,7 @@ test("automatic release requeues the failed articles of all five analysis steps"
     SELECT processing_state AS state, processing_attempts AS attempts, processing_retry_at AS retry, processing_error AS error
     FROM articles WHERE id = ANY(${ids}::text[])`;
   assert.equal(rows.length, ids.length);
-  for (const row of rows) assert.deepEqual(row, { state: "new", attempts: 0, retry: null, error: null });
+  for (const row of rows) assert.deepEqual(row, { state: "new", attempts: 1, retry: null, error: null }, "release preserves earlier genuine failures");
   const jobs = await sql`SELECT id FROM pgboss.job WHERE name = 'content.analyze' AND data->>'articleId' = ANY(${ids}::text[])`;
   assert.equal(jobs.length, ids.length, "each article has a real processing job");
   assert.deepEqual(await autoReleaseUnknownReceipts(), { released: 0, requeued: 0 }, "a released receipt is not queued twice");

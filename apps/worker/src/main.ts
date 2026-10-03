@@ -4,6 +4,7 @@ import { FEATURES } from "@aihot/industry/features";
 import { closeDb, sql } from "@aihot/backend/db";
 import { getBoss, stopBoss } from "@aihot/backend/jobs/queue";
 import { registerContentJobs } from "@aihot/backend/jobs/content";
+import { registerTranslationJobs } from "@aihot/backend/jobs/translate";
 import { registerSourceJobs } from "@aihot/backend/jobs/sources";
 import { registerEventJobs } from "@aihot/backend/jobs/events";
 import { registerNotifyJobs } from "@aihot/backend/jobs/notify";
@@ -20,6 +21,7 @@ if (process.env.CODEX_REUSE_ENABLED === "true") startCodexWorker(Number(process.
 await ensureContentTargets();
 const boss = await getBoss();
 await registerContentJobs(boss);
+await registerTranslationJobs(boss);
 if (process.env.COLLECT_ENABLED !== "false") await registerSourceJobs(boss);
 await registerEventJobs(boss);
 await registerNotifyJobs(boss);

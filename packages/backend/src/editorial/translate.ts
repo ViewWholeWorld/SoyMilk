@@ -9,13 +9,14 @@
 import * as cheerio from "cheerio";
 import type { AnyNode, Element } from "domhandler";
 import { z } from "zod";
-import { sql } from "../db.ts";
+import { sql, type Db } from "../db.ts";
 import { sanitizeBody, textToHtml } from "../content/sanitize.ts";
 import { chatJson } from "../providers/llm.ts";
 import { collapseWhitespace } from "../lib/text.ts";
 import { sha256 } from "../lib/ids.ts";
 import { modelFor } from "./models.ts";
-import { shutdownSignal } from "../jobs/queue.ts";
+import { enqueue, QUEUES, shutdownSignal } from "../jobs/queue.ts";
+import { ReceiptUnknownError, requestWait } from "../providers/receipts.ts";
 import { promptText, promptVersion } from "./prompts.ts";
 
 export const TRANSLATE_PROMPT_VERSION = promptVersion("translate-body", "translate-post");
@@ -30,7 +31,7 @@ const CONTAINER = /^(p|h[2-5]|li|blockquote|figcaption|td|th|dt|dd|caption|ul|ol
 
 const Output = z.object({ t: z.array(z.string()) });
 
-class TranslationInterruptedError extends Error {}
+export class TranslationInterruptedError extends Error {}
 
 const SYSTEM_BODY = promptText("translate-body");
 
@@ -154,11 +155,12 @@ export function unshield(translated: string, s: Shielded): string | null {
   return $.html().replace(/⟦(\d+)⟧/g, (_m, n: string) => s.tokens[Number(n)]!);
 }
 
-export async function translateArticle(articleId: string): Promise<TranslateResult> {
+export async function translateArticle(articleId: string, expectedRevision?: number): Promise<TranslateResult> {
   const [row] = await sql<{ revision: number; channel: string; language: string | null; body_html: string | null; body_text: string | null; x_post: { text?: string } | null; title: string; selected: boolean; body_mode: string; visibility: string }[]>`
     SELECT a.revision, p.channel, a.language, a.body_html, a.body_text, a.x_post, p.title, p.selected, p.body_mode, p.visibility
     FROM publications p JOIN articles a ON a.id = p.article_id WHERE p.article_id = ${articleId}`;
   if (!row) return { articleId, status: "skipped", reason: "not published" };
+  if (expectedRevision !== undefined && row.revision !== expectedRevision) return { articleId, revision: row.revision, status: "skipped", reason: "stale revision" };
   const result = (r: Omit<TranslateResult, "articleId" | "revision">): TranslateResult => ({ articleId, revision: row.revision, ...r });
   if (!row.selected || row.visibility !== "public" || row.body_mode !== "full") return result({ status: "skipped", reason: "not a selected full-text item" });
 
@@ -263,7 +265,7 @@ export async function translateQuotes(opts: { days?: number; limit?: number; bud
       } catch (error) {
         // Switched-off calls or an exhausted budget stop the run; one unusable answer skips its post (its
         // receipt is reused next time, so a retry costs nothing).
-        if (/disabled|not configured|budget/i.test((error as Error).message)) throw error;
+        if (shutdownSignal.signal.aborted || error instanceof TranslationInterruptedError || requestWait(error)) throw error;
         continue;
       }
     }
@@ -284,48 +286,33 @@ export async function translateQuotes(opts: { days?: number; limit?: number; bud
  */
 export async function translatePending(opts: { limit?: number; budgetMs?: number } = {}): Promise<{ done: TranslateResult[]; quotes: number }> {
   const started = Date.now();
-  const rows = await sql<{ article_id: string }[]>`
-    SELECT p.article_id FROM publications p JOIN articles a ON a.id = p.article_id
+  const rows = await sql<{ article_id: string; revision: number }[]>`
+    SELECT p.article_id,a.revision FROM publications p JOIN articles a ON a.id = p.article_id
     LEFT JOIN translations tr ON tr.article_id = p.article_id AND tr.lang = 'zh'
     WHERE p.selected AND p.visibility = 'public' AND p.body_mode = 'full' AND coalesce(a.language, '') <> 'zh'
       AND (p.discovered_at > now() - interval '3 days'
            OR EXISTS (SELECT 1 FROM article_revisions r WHERE r.article_id = a.id AND r.revision = a.revision AND r.revision > 1
-                      AND r.created_at > now() - interval '3 days'))
+                      AND r.created_at > now() - interval '3 days')
+           OR EXISTS (SELECT 1 FROM translation_attempts t WHERE t.article_id=a.id AND t.revision=a.revision
+                      AND t.outcome IN ('waiting','failed') AND t.retry_at <= now()))
       AND (tr.article_id IS NULL OR (tr.origin <> 'source' AND tr.revision < a.revision))
       AND NOT EXISTS (SELECT 1 FROM translation_attempts t WHERE t.article_id = p.article_id AND t.revision = a.revision
-                      AND (t.outcome IN ('skipped', 'translated', 'partial') OR t.attempts >= 3))
+                      AND (t.outcome IN ('skipped', 'translated', 'partial') OR t.attempts >= 3
+                           OR (t.outcome='waiting' AND t.retry_at IS NULL) OR t.retry_at > now()))
     ORDER BY p.discovered_at DESC LIMIT ${opts.limit ?? 30}`;
   const done: TranslateResult[] = [];
   for (const r of rows) {
     if (Date.now() - started > (opts.budgetMs ?? 4 * 60_000) || shutdownSignal.signal.aborted) break;
-    let outcome: "translated" | "partial" | "skipped" | "failed";
-    let reason: string | null = null;
-    // The attempt is recorded against the revision actually read: when the text was revised while the
-    // model was answering, the new revision still has no attempt and is translated on the next run.
-    let revision: number | null = null;
     try {
-      const result = await translateArticle(r.article_id);
-      done.push(result);
-      outcome = result.status;
-      reason = result.reason ?? null;
-      revision = result.revision ?? null;
+      const processed = await processTranslation(r.article_id, r.revision);
+      if (processed.result) done.push(processed.result);
+      if (processed.wait && processed.wait !== "unknown") break;
     } catch (error) {
       // A deploy stops between paid fragments, never aborts a sent request. Received answers stay
       // in receipts and are reused next run; do not mark an interrupted article terminal/partial.
-      if (error instanceof TranslationInterruptedError) break;
-      const message = (error as Error).message;
-      // Switched-off model calls or an exhausted budget: stop this run without counting an attempt.
-      if (/disabled|not configured|budget/i.test(message)) break;
-      done.push({ articleId: r.article_id, status: "skipped", reason: message.slice(0, 200) });
-      outcome = "failed";
-      reason = message.slice(0, 300);
+      if (error instanceof TranslationInterruptedError || shutdownSignal.signal.aborted) break;
+      throw error;
     }
-    await sql`
-      INSERT INTO translation_attempts (article_id, revision, attempts, outcome, reason)
-      SELECT ${r.article_id}, coalesce(${revision}::int, a.revision), 1, ${outcome}, ${reason} FROM articles a WHERE a.id = ${r.article_id}
-      ON CONFLICT (article_id) DO UPDATE SET
-        attempts = CASE WHEN translation_attempts.revision = EXCLUDED.revision THEN translation_attempts.attempts + 1 ELSE 1 END,
-        revision = EXCLUDED.revision, outcome = EXCLUDED.outcome, reason = EXCLUDED.reason, updated_at = now()`;
   }
   const budgetMs = opts.budgetMs ?? 4 * 60_000;
   let quotes = 0;
@@ -334,9 +321,92 @@ export async function translatePending(opts: { limit?: number; budgetMs?: number
     try {
       quotes = await translateQuotes({ budgetMs: left });
     } catch (error) {
-      if (error instanceof TranslationInterruptedError || /disabled|not configured|budget/i.test((error as Error).message)) return { done, quotes };
+      if (shutdownSignal.signal.aborted || error instanceof TranslationInterruptedError || requestWait(error)) return { done, quotes };
       throw error;
     }
   }
   return { done, quotes };
+}
+
+export async function queueTranslation(articleId: string, revision: number, db?: Db): Promise<string | null> {
+  return enqueue(QUEUES.translateBody, { articleId, revision }, { singletonKey: `${articleId}@${revision}` }, db);
+}
+
+/** A release resumes only this revision's translation, including items outside the recent-item scan. */
+export async function resumeTranslationAfterRelease(receiptId: number, articleId: string, revision: number, db: Db): Promise<boolean> {
+  const [current] = await db`SELECT a.id FROM articles a JOIN publications p ON p.article_id=a.id
+    WHERE a.id=${articleId} AND a.revision=${revision} AND p.selected AND p.visibility='public' AND p.body_mode='full'`;
+  if (!current) return false;
+  const legacyReason = `Receipt ${receiptId} has an unknown outcome; it is released once automatically, then from the admin`;
+  const [attempt] = await db`UPDATE translation_attempts SET outcome='waiting',retry_at=now(),wait_receipt_id=NULL,
+      reason=${`receipt ${receiptId} released; resume translation`},
+      attempts=CASE WHEN outcome='failed' AND reason=${legacyReason} THEN greatest(attempts-1,0) ELSE attempts END,updated_at=now()
+    WHERE article_id=${articleId} AND revision=${revision}
+      AND ((outcome='waiting' AND wait_receipt_id=${receiptId}) OR (outcome='failed' AND reason=${legacyReason})) RETURNING article_id`;
+  // A deploy can leave no attempt row at all after the receipt became unknown. A verified consumer
+  // still routes to the same batches; terminal genuine failures are never reopened.
+  if (!attempt) {
+    const [existing] = await db`SELECT article_id FROM translation_attempts WHERE article_id=${articleId} AND revision=${revision}`;
+    if (existing) return false;
+    await db`INSERT INTO translation_attempts(article_id,revision,attempts,outcome,retry_at,reason)
+      VALUES(${articleId},${revision},0,'waiting',now(),${`receipt ${receiptId} released; resume translation`})
+      ON CONFLICT(article_id) DO UPDATE SET revision=EXCLUDED.revision,attempts=0,outcome='waiting',retry_at=now(),wait_receipt_id=NULL,reason=EXCLUDED.reason,updated_at=now()
+      WHERE translation_attempts.revision < EXCLUDED.revision`;
+  }
+  return !!(await queueTranslation(articleId, revision, db));
+}
+
+/** One revision, shared by the periodic scan and the release queue. Only true errors add attempts. */
+export async function processTranslation(articleId: string, revision: number): Promise<{ state: string; result?: TranslateResult; wait?: string }> {
+  const [input] = await sql`SELECT a.revision,t.outcome,t.attempts,t.retry_at FROM articles a
+    LEFT JOIN translation_attempts t ON t.article_id=a.id AND t.revision=a.revision WHERE a.id=${articleId}`;
+  if (!input || input.revision !== revision) return { state: "stale" };
+  if (["skipped","translated","partial"].includes(input.outcome) || input.attempts >= 3
+      || (input.outcome === "waiting" && !input.retry_at) || input.retry_at > new Date()) return { state: "waiting" };
+  let result: TranslateResult | undefined;
+  let error: unknown;
+  try { result = await translateArticle(articleId, revision); }
+  catch (caught) {
+    if (caught instanceof TranslationInterruptedError || shutdownSignal.signal.aborted) throw caught;
+    error = caught;
+  }
+  if (result?.revision !== undefined && result.revision !== revision) return { state: "stale" };
+  const wait = requestWait(error);
+  const unknown = error instanceof ReceiptUnknownError ? error : null;
+  const message = error instanceof Error ? error.message.slice(0,300) : String(error).slice(0,300);
+  const recorded = await recordTranslationAttempt(articleId, revision, result, error);
+  if (!recorded) return { state: "stale" };
+  if (wait || unknown) return { state: "waiting", wait: unknown ? "unknown" : wait!.kind };
+  return { state: result?.status ?? "failed", result: result ?? { articleId,revision,status: "skipped",reason: message } };
+}
+
+/** Commit against the actual input; release recovery uses the same article → receipt lock order. */
+export async function recordTranslationAttempt(articleId: string, revision: number, result: TranslateResult | undefined, error?: unknown): Promise<boolean> {
+  const wait = requestWait(error);
+  const unknown = error instanceof ReceiptUnknownError ? error : null;
+  const message = error instanceof Error ? error.message.slice(0,300) : String(error).slice(0,300);
+  return sql.begin(async tx => {
+    const [article] = await tx`SELECT revision FROM articles WHERE id=${articleId} FOR UPDATE`;
+    if (!article || article.revision !== revision) return false;
+    let receiptStatus: string | undefined;
+    if (unknown) {
+      const [receipt] = await tx`SELECT status FROM receipts WHERE id=${unknown.receiptId} FOR UPDATE`;
+      receiptStatus = receipt?.status;
+    }
+    const waiting = !!wait || !!unknown;
+    const released = !!unknown && receiptStatus !== undefined && receiptStatus !== "unknown";
+    const retryAt = waiting ? unknown && !released ? null : new Date(Date.now() + (wait?.retryAfterSeconds ?? (receiptStatus === "pending" ? 60 : 0)) * 1000)
+      : error ? new Date(Date.now() + 5 * 60_000) : null;
+    const outcome = waiting ? "waiting" : result?.status ?? "failed";
+    const reason = unknown ? `receipt ${unknown.receiptId} outcome unknown` : wait ? `waiting (${wait.kind}): ${message}` : result?.reason ?? (error ? message : null);
+    const failure = !waiting && !!error ? 1 : 0;
+    await tx`INSERT INTO translation_attempts(article_id,revision,attempts,outcome,reason,retry_at,wait_receipt_id)
+      VALUES(${articleId},${revision},${failure},${outcome},${reason},${retryAt},${unknown && !released ? unknown.receiptId : null})
+      ON CONFLICT(article_id) DO UPDATE SET revision=EXCLUDED.revision,
+        attempts=CASE WHEN translation_attempts.revision=EXCLUDED.revision THEN translation_attempts.attempts+${failure} ELSE ${failure} END,
+        outcome=EXCLUDED.outcome,reason=EXCLUDED.reason,retry_at=EXCLUDED.retry_at,wait_receipt_id=EXCLUDED.wait_receipt_id,updated_at=now()
+      WHERE translation_attempts.revision <= EXCLUDED.revision`;
+    if (released && receiptStatus !== "pending") await queueTranslation(articleId, revision, tx);
+    return true;
+  });
 }

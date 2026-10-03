@@ -1,7 +1,7 @@
 // SocialData (X search). Paid per request: every call goes through receipts and the budget.
 import { credential } from "../config.ts";
 import { guardedFetch } from "../lib/http-fetch.ts";
-import { paidRequest, ProviderRejectedError } from "./receipts.ts";
+import { paidRequest, ProviderRejectedError, ProviderUnavailableError } from "./receipts.ts";
 
 export interface SdUser {
   name: string;
@@ -62,7 +62,7 @@ function apiBase(): string {
  */
 export async function searchTweets(query: string, opts: { purpose: string; subject: string; window: string; type?: "Latest" | "Top"; cursor?: string | null }): Promise<SearchResult> {
   const key = credential("collectors", "SOCIALDATA_API_KEY");
-  if (!key) throw new Error("SOCIALDATA_API_KEY is not configured");
+  if (!key) throw new ProviderUnavailableError("configuration", "SOCIALDATA_API_KEY is not configured");
   const type = opts.type ?? "Latest";
   const receipt = await paidRequest(
     { service: "socialdata", purpose: opts.purpose, subject: opts.subject, identity: { query, type, cursor: opts.cursor ?? null, window: opts.window }, requestSummary: { query, type } },
@@ -120,7 +120,7 @@ export interface SdArticle {
  */
 export async function getArticle(tweetId: string, opts: { purpose: string; subject: string }): Promise<SdArticle | null> {
   const key = credential("collectors", "SOCIALDATA_API_KEY");
-  if (!key) throw new Error("SOCIALDATA_API_KEY is not configured");
+  if (!key) throw new ProviderUnavailableError("configuration", "SOCIALDATA_API_KEY is not configured");
   const receipt = await paidRequest(
     { service: "socialdata", purpose: opts.purpose, subject: opts.subject, identity: { article: tweetId }, requestSummary: { article: tweetId } },
     async () => {
@@ -148,7 +148,7 @@ export async function getArticle(tweetId: string, opts: { purpose: string; subje
 /** One tweet by id (context for replies and quotes). Paid; the receipt makes retries free. */
 export async function getTweet(id: string, opts: { purpose: string; subject: string }): Promise<SdTweet | null> {
   const key = credential("collectors", "SOCIALDATA_API_KEY");
-  if (!key) throw new Error("SOCIALDATA_API_KEY is not configured");
+  if (!key) throw new ProviderUnavailableError("configuration", "SOCIALDATA_API_KEY is not configured");
   const receipt = await paidRequest(
     { service: "socialdata", purpose: opts.purpose, subject: opts.subject, identity: { tweet: id }, requestSummary: { tweet: id } },
     async () => {

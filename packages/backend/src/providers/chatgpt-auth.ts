@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { config } from "../config.ts";
 import { guardedFetch } from "../lib/http-fetch.ts";
+import { ProviderUnavailableError } from "./receipts.ts";
 
 export const CHATGPT_ISSUER = "https://auth.openai.com";
 export const CHATGPT_RESOURCE = "https://api.openai.com/v1";
@@ -205,9 +206,9 @@ export async function finishChatGPTAuthorization(pending: ReturnType<typeof crea
 export async function chatGPTAccess(): Promise<{ token: string; registration: string }> {
   return withChatGPTLock(async () => {
     let session = await readChatGPTSession();
-    if (!session?.access_token || !session.scopes.includes(PLAN_SCOPE)) throw new Error("Connect ChatGPT and authorize plan usage with node scripts/chatgpt-auth.ts login");
+    if (!session?.access_token || !session.scopes.includes(PLAN_SCOPE)) throw new ProviderUnavailableError("configuration", "Connect ChatGPT and authorize plan usage with node scripts/chatgpt-auth.ts login");
     if (session.expires_at <= Date.now() + 60_000) {
-      if (!session.refresh_token) throw new Error("ChatGPT session expired; reconnect this profile");
+      if (!session.refresh_token) throw new ProviderUnavailableError("configuration", "ChatGPT session expired; reconnect this profile");
       const token = await tokenRequest(new URLSearchParams({ grant_type: "refresh_token", client_id: session.client_id, refresh_token: session.refresh_token, resource: CHATGPT_RESOURCE }));
       if (token.id_token) {
         const identity = await verifiedIdentity(token.id_token, session.client_id);
@@ -215,7 +216,7 @@ export async function chatGPTAccess(): Promise<{ token: string; registration: st
       }
       session = { ...session, access_token: token.access_token, refresh_token: token.refresh_token, id_token: token.id_token || session.id_token, scopes: token.scope === undefined ? session.scopes : token.scope.split(/\s+/).filter(Boolean), expires_at: Date.now() + token.expires_in * 1000 };
       await saveChatGPTSession(session);
-      if (!session.scopes.includes(PLAN_SCOPE)) throw new Error("ChatGPT plan usage permission was removed; reconnect this profile");
+      if (!session.scopes.includes(PLAN_SCOPE)) throw new ProviderUnavailableError("configuration", "ChatGPT plan usage permission was removed; reconnect this profile");
     }
     return { token: session.access_token!, registration: `${session.client_id}:${session.subject}` };
   });

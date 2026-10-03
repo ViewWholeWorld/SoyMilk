@@ -7,6 +7,7 @@ import { z } from "zod";
 import { REASONING_EFFORTS } from "@aihot/contracts/admin";
 import { config } from "../config.ts";
 import { atomicPrivateJson } from "./chatgpt-auth.ts";
+import { ProviderUnavailableError } from "./receipts.ts";
 
 export const ConnectionInput = z.object({
   id: z.string().uuid().optional(), name: z.string().trim().min(1).max(60),
@@ -32,7 +33,7 @@ export async function readModelConfig(): Promise<StoredConfig> {
     return value;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { active: null, connections: [] };
-    throw new Error("模型配置文件无效，请从备份恢复");
+    throw new ProviderUnavailableError("configuration", "模型配置文件无效，请从备份恢复");
   }
 }
 
@@ -125,5 +126,5 @@ export async function resetCodexIdentity() {
 }
 export async function codexIdentity(): Promise<string> {
   try { return JSON.parse(await readFile(path.join(codexHome(), "identity.json"), "utf8")).generation; }
-  catch { throw new Error("请先在网页连接 Codex 账号"); }
+  catch { throw new ProviderUnavailableError("configuration", "请先在网页连接 Codex 账号"); }
 }

@@ -82,8 +82,8 @@ test("a text corrected while its translation was running is translated again, an
   hold = null;
   await running;
 
-  const [attempt] = await sql<{ revision: number; outcome: string }[]>`SELECT revision, outcome FROM translation_attempts WHERE article_id = ${id}`;
-  assert.deepEqual({ ...attempt }, { revision: 1, outcome: "translated" }, "the attempt is booked on the revision translated");
+  const attempts = await sql`SELECT revision, outcome FROM translation_attempts WHERE article_id = ${id}`;
+  assert.equal(attempts.length, 0, "a result discarded after the input changed does not book an attempt on the current revision");
   const stale = await detail(id);
   assert.equal(stale.body.zh, null, "a translation of the old wording is not shown");
   assert.ok(stale.body.original?.includes("twenty"));
