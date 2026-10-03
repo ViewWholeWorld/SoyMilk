@@ -85,7 +85,7 @@ test("来源退出editorial在后台republish之前已安全", async () => {
     const p = await pair(mode);
     await updateSource(p.sourceA, { patch: { participation_mode: mode }, version: await sourceVersion(p.sourceA) }, "test");
     const [projection] = await sql`SELECT visibility FROM publications WHERE article_id=${p.a}`;
-    assert.equal(projection!.visibility, "public", "验证异步重发尚未执行的窗口");
+    assert.equal(projection!.visibility, mode === "isolated" ? "withdrawn" : "public", "来源收紧与公开投影同事务提交");
     await cleanStory(p);
   }
 });
@@ -177,7 +177,8 @@ for (const mode of ["isolated", "hot_signal"]) {
   test(`来源变为${mode}后事件扩展读取立即排除旧投影`, async () => {
     const p = await pair(`expansion-${mode}`);
     await updateSource(p.sourceA, { patch: { participation_mode: mode }, version: await sourceVersion(p.sourceA) }, "test");
-    assert.equal((await sql`SELECT visibility FROM publications WHERE article_id=${p.a}`)[0]!.visibility, "public");
+    const [projection] = await sql`SELECT visibility, eligible, selected FROM publications WHERE article_id=${p.a}`;
+    assert.deepEqual({ ...projection }, { visibility: mode === "isolated" ? "withdrawn" : "public", eligible: false, selected: false });
     assert.equal((await get(`/api/site/items/${p.a}`)).statusCode, 404);
     await cleanStory(p);
     for (const path of [`/api/site/groups/${p.factPublicId}/reports`, `/api/site/stories/${p.publicId}/developments`, `/api/site/stories/${p.publicId}/followups`]) {

@@ -62,6 +62,7 @@ interface PublicationRow {
   tags: string[];
   score: number | null;
   body_mode: string;
+  syndicate: boolean;
   story_id: number | null;
   fact_id: number | null;
   selected_ready_at: Date | null;
@@ -214,7 +215,7 @@ export async function publishArticleTx(tx: Tx, articleId: string, options: Publi
     }
   }
 
-  const indexable = isIndexable({
+  const indexable = source.participation_mode === "editorial" && isIndexable({
     visibility, hasSummary: !!summary, selected, seoIndexedAt: previous?.seo_indexed_at ?? null, seoExcludedAt: previous?.seo_excluded_at ?? null,
   });
   const searchText = collapseWhitespace(
@@ -232,7 +233,7 @@ export async function publishArticleTx(tx: Tx, articleId: string, options: Publi
 
   const next = {
     visibility, eligible, selected, title: title ?? collapseWhitespace(article.title), original_title: originalTitle, summary, reason,
-    category, tags, score: round1(score), body_mode: bodyMode, story_id: membership?.story_id ?? null, fact_id: membership?.fact_id ?? null,
+    category, tags, score: round1(score), body_mode: bodyMode, syndicate, story_id: membership?.story_id ?? null, fact_id: membership?.fact_id ?? null,
     indexable,
   };
   const changed =
@@ -241,7 +242,7 @@ export async function publishArticleTx(tx: Tx, articleId: string, options: Publi
       stableJson({
         visibility: previous.visibility, eligible: previous.eligible, selected: previous.selected, title: previous.title,
         original_title: previous.original_title, summary: previous.summary, reason: previous.reason, category: previous.category,
-        tags: [...previous.tags].sort(), score: previous.score === null ? null : Number(previous.score), body_mode: previous.body_mode,
+        tags: [...previous.tags].sort(), score: previous.score === null ? null : Number(previous.score), body_mode: previous.body_mode, syndicate: previous.syndicate,
         story_id: previous.story_id, fact_id: previous.fact_id, indexable: previous.indexable,
       });
   const revision = previous ? previous.revision + (changed ? 1 : 0) : 1;
@@ -329,13 +330,32 @@ export async function publishArticleTx(tx: Tx, articleId: string, options: Publi
     (visibility === "withdrawn" || !eligible ||
       (previous!.visibility === "public" && visibility !== "public") ||
       (previous!.selected && !selected) ||
-      (previous!.body_mode === "full" && bodyMode !== "full"));
+      (previous!.body_mode === "full" && bodyMode !== "full") ||
+      (previous!.syndicate && !syndicate));
   // 全文许可和精选排序不是摘要撤回；只在事件输入的权限或文字变化时同步失效。
   if (previous && (previous.visibility === "public" || visibility === "public") &&
       (previous.visibility !== visibility || previous.eligible !== eligible || previous.title !== next.title || previous.summary !== summary)) {
     await invalidateStoryInputs(tx, [articleId], now);
   }
   return { articleId, changed, selected, visibility, ledger, reduced };
+}
+
+/** Lock all articles before touching event inputs, preserving the article → story lock order. */
+export async function restrictSourcePublications(tx: Tx, sourceId: string): Promise<void> {
+  const articles = await tx<{ id: string }[]>`
+    SELECT a.id FROM articles a WHERE a.source_id = ${sourceId}
+    ORDER BY a.id FOR UPDATE`;
+  // The lock wait can span a worker's first publication. Re-read after it commits, so a projection
+  // absent from the first statement's snapshot cannot escape the restriction.
+  const published = await tx<{ article_id: string }[]>`SELECT article_id FROM publications
+    WHERE article_id = ANY(${articles.map(article => article.id)}::text[]) ORDER BY article_id`;
+  if (published.length) {
+    // A non-selected first item can invalidate a story before a later selected item removes its
+    // ledger entry. Take the same report → ledger → story order as a single publication first.
+    await tx`SELECT pg_advisory_xact_lock_shared(hashtext('report_candidates'))`;
+    await tx`SELECT pg_advisory_xact_lock(hashtext('selected_ledger'))`;
+  }
+  for (const article of published) await publishArticleTx(tx, article.article_id);
 }
 
 /** The search-index decision and resulting projection share the editor's transaction. */

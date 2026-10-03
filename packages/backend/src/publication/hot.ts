@@ -5,6 +5,7 @@ import { proxiedImage, proxiedImageSet } from "../media/imgproxy.ts";
 
 import { storedHotRanking, tierRank, type HotEntry, type HotRanking } from "../events/hot.ts";
 import { evidenceCondition, listedCondition } from "./scope.ts";
+import { publicationCacheEpoch, readPublicationCache, registerPublicationCache } from "./cache.ts";
 const MAX_FACES = 6;
 
 export function latestHotRanking(): Promise<HotRanking | null> {
@@ -39,18 +40,24 @@ interface Extras {
 }
 let extrasCache: { rankingId: number; extras: Extras } | null = null;
 const extrasPending = new Map<number, Promise<Extras>>();
+registerPublicationCache(() => { extrasCache = null; extrasPending.clear(); });
 
 async function readExtras(ranking: HotRanking): Promise<Extras> {
+  return readPublicationCache(() => cachedExtras(ranking));
+}
+
+async function cachedExtras(ranking: HotRanking): Promise<Extras> {
   if (extrasCache?.rankingId === ranking.id) return extrasCache.extras;
   const pending = extrasPending.get(ranking.id);
   if (pending) return pending;
   const load = queryExtras(ranking);
   extrasPending.set(ranking.id, load);
   try { return await load; }
-  finally { extrasPending.delete(ranking.id); }
+  finally { if (extrasPending.get(ranking.id) === load) extrasPending.delete(ranking.id); }
 }
 
 async function queryExtras(ranking: HotRanking): Promise<Extras> {
+  const epoch = publicationCacheEpoch();
   const ids = ranking.entries.map((e) => e.storyId);
   const faces = await sql<{ name: string; icon_url: string | null; avatar: string | null }[]>`
       SELECT DISTINCT ON (s.id) s.name, s.icon_url, a.x_post->>'avatarUrl' AS avatar
@@ -61,7 +68,7 @@ async function queryExtras(ranking: HotRanking): Promise<Extras> {
   const extras: Extras = {
     faces: new Map(faces.map((f) => [f.name, f.icon_url ?? f.avatar])),
   };
-  extrasCache = { rankingId: ranking.id, extras };
+  if (epoch === publicationCacheEpoch()) extrasCache = { rankingId: ranking.id, extras };
   return extras;
 }
 

@@ -3,7 +3,7 @@
 // counts are read again, so no reader waits for the full-table counts.
 import type { SiteStats } from "@aihot/contracts/site";
 import { sql } from "../db.ts";
-import { cached } from "../lib/cache.ts";
+import { publicationCached } from "../publication/cache.ts";
 import { selectedCondition } from "../publication/scope.ts";
 
 export type { SiteStats };
@@ -11,7 +11,7 @@ export type { SiteStats };
 /** How many sources the about page's river draws, at most. */
 const SAMPLE = 180;
 
-const stats = cached(() => querySiteStats(new Date()), { freshMs: 10 * 60_000, maxStaleMs: 60 * 60_000 });
+const stats = publicationCached(() => querySiteStats(new Date()), { freshMs: 10 * 60_000, maxStaleMs: 60 * 60_000 });
 
 export function loadSiteStats(): Promise<SiteStats> {
   return stats.get();

@@ -108,14 +108,14 @@ test("revoking a source's licence takes its articles off every exit", async () =
   const [queued] = await sql<{ value: { status: string } }[]>`SELECT value FROM settings WHERE key = ${`republish.source:${SOURCE}`}`;
   assert.equal(queued?.value.status, "queued", "the admin change queues a background republish");
 
-  const result = await republishSource(SOURCE); // what the queued job runs
-  assert.ok(result.reduced >= 1);
   assert.equal((await get(`/api/site/items/${id}`)).status, 404);
   assert.equal((await get(`/items/${id}/markdown`)).status, 404);
   assert.equal((await get(`/api/site/stories/${story}`)).status, 404, "the story drops an isolated source's last report");
   assert.equal((await get(`/api/v1/stories/${story}`)).status, 404);
   assert.ok(!(await get("/feed/full.xml")).body.includes(`FULLTEXT-${T}`), "full feed drops the body");
   assert.ok(!(await get("/api/v1/items?mode=selected")).body.includes(id), "v1 drops the item");
+  const result = await republishSource(SOURCE); // repeating the queued job is harmless
+  assert.equal(result.reduced, 0, "the admin transaction already applied the restriction");
 
   await sql`UPDATE sources SET participation_mode = 'editorial', site_fulltext = true, syndicate_fulltext = true WHERE id = ${SOURCE}`;
 });

@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { REPO_ROOT } from "../config.ts";
 import { sql } from "../db.ts";
-import { cached } from "../lib/cache.ts";
+import { publicationCached } from "./cache.ts";
 import { ITEM_COLUMNS, ITEM_FROM, toFeedItemSummary, type ItemRow } from "./items.ts";
 
 export interface TopicRow {
@@ -19,13 +19,13 @@ export interface TopicRow {
 }
 
 type TopicCount = { slug: string; total: number; recent: number; pages: number; indexable: boolean; latest: Date | null };
-const topicsCache = cached(
+const topicsCache = publicationCached(
   () => sql<TopicRow[]>`SELECT slug, name, grp, entity_id, tags, definition, related, position FROM topics ORDER BY position`,
   { freshMs: 60_000, maxStaleMs: 10 * 60_000 },
 );
 export interface TopicCountSnapshot { counts: TopicCount[]; refreshAt: string | null }
 // 已知的发布或近期窗口截止必须同步刷新，不能继续返回后台更新中的旧统计。
-const countsCache = cached(() => queryTopicCounts(new Date()), {
+const countsCache = publicationCached(() => queryTopicCounts(new Date()), {
   freshMs: 60_000, maxStaleMs: 10 * 60_000,
   expiresAt: (value) => value.refreshAt ? Date.parse(value.refreshAt) : null,
 });

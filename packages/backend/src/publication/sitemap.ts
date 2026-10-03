@@ -1,14 +1,14 @@
 import { evidenceCondition, listedCondition, releasedCondition, selectedCondition } from "./scope.ts";
 // Sitemap from the same public metadata as pages: reports, topics and their pages,
 // the latest 500 stories, leaderboard pages and indexable items. Cached ~5 minutes and rebuilt in the
-// background after that (crawlers get the previous copy meanwhile); if the database fails, the last
-// successful sitemap is served (never an empty one). Bounded.
+// background after that (crawlers get the previous copy meanwhile). A fallback snapshot must share
+// the current permission epoch; when that epoch cannot be checked, the request fails. Bounded.
 import { FEATURES } from "@aihot/industry/features";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { config } from "../config.ts";
 import { sql } from "../db.ts";
-import { cached } from "../lib/cache.ts";
+import { publicationCached, publicationCacheEpoch } from "./cache.ts";
 import { escapeXml } from "../lib/text.ts";
 import { siteUrl } from "./links.ts";
 import { leaderboardUrls } from "../leaderboard/read.ts";
@@ -21,10 +21,11 @@ async function leaderboardDetailUrls(): Promise<string[]> {
 
 const MAX_URLS = 45_000;
 const TTL_MS = 5 * 60 * 1000;
-const CACHE_FILE = path.join(config.dataDir, "sitemap-last.xml");
+const CACHE_FILE = path.join(config.dataDir, "sitemap-last.json");
 
 interface SitemapSnapshot { xml: string; refreshAt: string | null }
-let lastGood: SitemapSnapshot | null = null;
+interface SavedSitemap extends SitemapSnapshot { permissionEpoch: number }
+let lastGood: SavedSitemap | null = null;
 
 interface Entry {
   loc: string;
@@ -98,7 +99,7 @@ async function build(): Promise<SitemapSnapshot> {
   return { xml: `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${body}\n</urlset>\n`, refreshAt: topics.refreshAt };
 }
 
-const sitemap = cached(refreshSitemap, {
+const sitemap = publicationCached(refreshSitemap, {
   freshMs: TTL_MS, maxStaleMs: 60 * 60_000,
   expiresAt: (value) => value.refreshAt ? Date.parse(value.refreshAt) : null,
 });
@@ -112,17 +113,20 @@ export function sitemapSnapshot(): Promise<SitemapSnapshot> {
 }
 
 async function refreshSitemap(): Promise<SitemapSnapshot> {
+  const permissionEpoch = publicationCacheEpoch();
   try {
     const snapshot = await build();
-    lastGood = snapshot;
-    await mkdir(path.dirname(CACHE_FILE), { recursive: true });
-    await writeFile(CACHE_FILE, snapshot.xml).catch(() => {});
+    if (permissionEpoch === publicationCacheEpoch()) {
+      lastGood = { ...snapshot, permissionEpoch };
+      await mkdir(path.dirname(CACHE_FILE), { recursive: true });
+      await writeFile(CACHE_FILE, JSON.stringify(lastGood)).catch(() => {});
+    }
     return snapshot;
   } catch (error) {
     // 回退只能明确标为过期；磁盘旧文档也不能借本次读取获得新的缓存寿命。
-    if (lastGood) return { xml: lastGood.xml, refreshAt: new Date(0).toISOString() };
-    const last = await readFile(CACHE_FILE, "utf8").catch(() => null);
-    if (last) return { xml: last, refreshAt: new Date(0).toISOString() };
+    if (lastGood?.permissionEpoch === permissionEpoch) return { xml: lastGood.xml, refreshAt: new Date(0).toISOString() };
+    const last: SavedSitemap | null = await readFile(CACHE_FILE, "utf8").then(text => JSON.parse(text)).catch(() => null);
+    if (last?.permissionEpoch === permissionEpoch && typeof last.xml === "string") return { xml: last.xml, refreshAt: new Date(0).toISOString() };
     throw error;
   }
 }

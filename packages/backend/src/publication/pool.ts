@@ -1,4 +1,5 @@
 import { listedCondition } from "./scope.ts";
+import { publicationCacheEpoch, readPublicationCache, registerPublicationCache } from "./cache.ts";
 // Public pool (/all) with numeric pages, and search in its two orderings.
 import type { PoolResponse, TimelineFilters } from "@aihot/contracts/site";
 import { beijingDate, beijingMidnight } from "@aihot/contracts/time";
@@ -87,20 +88,27 @@ export function publicMatchCondition(terms: string[]) {
 /** Unfiltered-by-search totals only set the page count; they are reused for 30 seconds per filter. */
 const countCache = new Map<string, { at: number; n: number }>();
 const countPending = new Map<string, Promise<number>>();
+registerPublicationCache(() => { countCache.clear(); countPending.clear(); });
 async function poolCount(key: string | null, query: () => Promise<Array<{ n: number }>>): Promise<number> {
   if (key === null) return Number(one(await query()).n);
+  return readPublicationCache(() => cachedPoolCount(key, query));
+}
+async function cachedPoolCount(key: string, query: () => Promise<Array<{ n: number }>>): Promise<number> {
+  const epoch = publicationCacheEpoch();
   const hit = countCache.get(key);
   if (hit && Date.now() - hit.at < 30_000) return hit.n;
   const pending = countPending.get(key);
   if (pending) return pending;
   const load = (async () => {
     const n = Number(one(await query()).n);
-    if (countCache.size >= 200) countCache.delete(countCache.keys().next().value!);
-    countCache.set(key, { at: Date.now(), n });
+    if (epoch === publicationCacheEpoch()) {
+      if (countCache.size >= 200) countCache.delete(countCache.keys().next().value!);
+      countCache.set(key, { at: Date.now(), n });
+    }
     return n;
   })();
   countPending.set(key, load);
-  try { return await load; } finally { countPending.delete(key); }
+  try { return await load; } finally { if (countPending.get(key) === load) countPending.delete(key); }
 }
 
 export interface PoolQuery extends TimelineFilters {

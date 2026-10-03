@@ -3,7 +3,8 @@
 import type { ReportCitation, ReportDetail, ReportIndexEntry, ReportNavigationEntry, ReportKind } from "@aihot/contracts/site";
 import { sql } from "../db.ts";
 import { listedCondition } from "./scope.ts";
-import { cached, type Cached } from "../lib/cache.ts";
+import type { Cached } from "../lib/cache.ts";
+import { publicationCached } from "./cache.ts";
 import { proxiedImage, proxiedImageSet } from "../media/imgproxy.ts";
 import { dailyUrl, itemUrl, siteUrl } from "./links.ts";
 import { SITE, withSubject } from "@aihot/industry/site";
@@ -260,14 +261,14 @@ export async function loadReport(kind: ReportKind, key: string): Promise<ReportD
 /**
  * The newest 400 issues of a kind with their withdrawn headline candidates. Every archive, navigation
  * and feed of that kind reads this; it is rebuilt at most once a minute per process (a new issue or a
- * withdrawal shows within a minute, like the pages' own caches).
+ * new issue shows within a minute; source permission restrictions invalidate it on the next read).
  */
 const INDEX_LIMIT = 400;
 const indexes = new Map<ReportKind, Cached<{ rows: Awaited<ReturnType<typeof reportIndexRows>>; gone: Set<string> }>>();
 export function reportIndex(kind: ReportKind) {
   let entry = indexes.get(kind);
   if (!entry) {
-    entry = cached(async () => {
+    entry = publicationCached(async () => {
       const rows = await reportIndexRows(kind, INDEX_LIMIT);
       return { rows, gone: await unavailableHeadlineIds(rows, kind === "daily" ? "daily" : "periodic") };
     }, { freshMs: 60_000, maxStaleMs: 10 * 60_000 });

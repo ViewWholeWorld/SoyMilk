@@ -8,6 +8,7 @@ import { behindSources, currentSignals, heatSeries, sourceClocks } from "../even
 import { evidenceCondition, listedCondition, storyReportCondition } from "./scope.ts";
 import { itemUrl, storyApiUrl, storyUrl } from "./links.ts";
 import { SITE } from "@aihot/industry/site";
+import { readPublicationCache, registerPublicationCache } from "./cache.ts";
 
 function storyStatusFor(latestAt: Date | null, now = Date.now()): "active" | "watching" | "settled" {
   if (!latestAt) return "settled";
@@ -198,15 +199,20 @@ async function sparklines(storyIds: number[], at: Date): Promise<Map<number, Arr
 // Coalesce concurrent reads, but re-check visibility and full-text permission on later requests.
 type HotCoverMap = Map<number, { url: string; width: number | null; height: number | null }>;
 const coversPending = new Map<number, Promise<HotCoverMap>>();
+registerPublicationCache(() => coversPending.clear());
 
 /** A picture per story from its public full-text reports, the representative first, wide enough for a card. */
 async function hotCovers(rankingId: number, entries: Array<{ storyId: number; representativeItemId: string | null }>, at: Date) {
+  return readPublicationCache(() => pendingHotCovers(rankingId, entries, at));
+}
+
+async function pendingHotCovers(rankingId: number, entries: Array<{ storyId: number; representativeItemId: string | null }>, at: Date) {
   const pending = coversPending.get(rankingId);
   if (pending) return pending;
   const load = queryHotCovers(entries, at);
   coversPending.set(rankingId, load);
   try { return await load; }
-  finally { coversPending.delete(rankingId); }
+  finally { if (coversPending.get(rankingId) === load) coversPending.delete(rankingId); }
 }
 
 async function queryHotCovers(entries: Array<{ storyId: number; representativeItemId: string | null }>, at: Date) {

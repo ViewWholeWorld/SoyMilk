@@ -11,6 +11,16 @@ export interface SourceFacts {
   syndicate_fulltext: boolean;
 }
 
+/** Restrictions take effect in the source edit transaction; expansions can wait for the worker. */
+export function sourcePermissionsReduced(
+  before: Pick<SourceFacts, "participation_mode" | "site_fulltext" | "syndicate_fulltext">,
+  after: Pick<SourceFacts, "participation_mode" | "site_fulltext" | "syndicate_fulltext">,
+): boolean {
+  return (before.participation_mode !== after.participation_mode && after.participation_mode !== "editorial")
+    || (before.site_fulltext && !after.site_fulltext)
+    || (before.syndicate_fulltext && !after.syndicate_fulltext);
+}
+
 export function channelOf(sourceKind: string, hasXPost: boolean): "x" | "news" {
   return sourceKind === "x_search" || hasXPost ? "x" : "news";
 }

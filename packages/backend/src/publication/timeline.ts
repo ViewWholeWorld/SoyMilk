@@ -1,4 +1,5 @@
 import { selectedCondition, pendingReleaseCondition, listedCondition } from "./scope.ts";
+import { publicationCacheEpoch, readPublicationCache, registerPublicationCache } from "./cache.ts";
 // Home timeline: selected items folded into reading groups (reference SELECTED_READING):
 // one card per story, per fact outside a story, or per standalone article. A card sits at its latest
 // development's first appearance, so a new development brings it back up while a representative swap
@@ -68,7 +69,12 @@ interface GroupedSnapshot {
 }
 const groupedCache = new Map<string, { at: number; data: GroupedSnapshot }>();
 const groupedPending = new Map<string, Promise<GroupedSnapshot>>();
+registerPublicationCache(() => { groupedCache.clear(); groupedPending.clear(); });
 async function groupedAnchors(q: TimelineQuery, now: Date): Promise<GroupedSnapshot> {
+  return readPublicationCache(() => cachedGroupedAnchors(q, now));
+}
+async function cachedGroupedAnchors(q: TimelineQuery, now: Date): Promise<GroupedSnapshot> {
+  const epoch = publicationCacheEpoch();
   const key = binding(q);
   const expired = (data: GroupedSnapshot) => data.refreshAt !== null && now.getTime() >= Date.parse(data.refreshAt);
   const cached = q.now ? undefined : groupedCache.get(key);
@@ -77,16 +83,18 @@ async function groupedAnchors(q: TimelineQuery, now: Date): Promise<GroupedSnaps
   if (pending) {
     const data = await pending;
     // A reader after the release must not inherit a still-running pre-release snapshot.
-    return expired(data) ? groupedAnchors(q, now) : data;
+    return expired(data) ? cachedGroupedAnchors(q, now) : data;
   }
   const load = Promise.all([queryGroupedAnchors(q, now), nextRelease(q, now)])
     .then(([rows, refreshAt]) => ({ rows, refreshAt }));
   if (q.now) return load;
   const work = load.then((data) => {
-    if (groupedCache.size >= 50) groupedCache.delete(groupedCache.keys().next().value!);
-    groupedCache.set(key, { at: Date.now(), data });
+    if (epoch === publicationCacheEpoch()) {
+      if (groupedCache.size >= 50) groupedCache.delete(groupedCache.keys().next().value!);
+      groupedCache.set(key, { at: Date.now(), data });
+    }
     return data;
-  }).finally(() => { groupedPending.delete(key); });
+  }).finally(() => { if (groupedPending.get(key) === work) groupedPending.delete(key); });
   groupedPending.set(key, work);
   return work;
 }

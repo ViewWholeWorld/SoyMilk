@@ -8,6 +8,9 @@ import { enqueue, QUEUES } from "../jobs/queue.ts";
 import { invalidateStoryInputs } from "../events/derived-content.ts";
 import { resumeSourceArticles } from "../jobs/content.ts";
 import { republishKey } from "../jobs/publication.ts";
+import { restrictSourcePublications } from "../publication/publish.ts";
+import { advancePublicationPermissions } from "../publication/cache.ts";
+import { sourcePermissionsReduced, type SourceFacts } from "../publication/rules.ts";
 import { normalizeUrl } from "../lib/url.ts";
 import { fetchJsonList } from "../sources/json-list.ts";
 import { fetchRss } from "../sources/rss.ts";
@@ -115,6 +118,8 @@ export async function updateSource(id: string, input: { patch: unknown; version:
   return sql.begin(async (tx) => {
     // Creation and address edits share the lock: checking then inserting must not race.
     if (patch.config) await tx`SELECT pg_advisory_xact_lock(hashtext('admin-source-identity'))`;
+    // The source lock also blocks new article inserts through their foreign key while restrictions
+    // lock and re-read existing articles. Publication writes do not acquire a source foreign-key lock.
     const [before] = await tx`SELECT * FROM sources WHERE id = ${id} FOR UPDATE`;
     if (!before) return null;
     if (new Date(before.updated_at as Date).toISOString() !== input.version) throw new Conflict("信源已被其他操作修改，请刷新后再改");
@@ -136,18 +141,23 @@ export async function updateSource(id: string, input: { patch: unknown; version:
     if (before.participation_mode !== "editorial" && after!.participation_mode === "editorial") {
       await resumeSourceArticles(id, tx);
     }
+    const restricted = sourcePermissionsReduced(before as unknown as SourceFacts, after as unknown as SourceFacts);
+    if (restricted) {
+      await restrictSourcePublications(tx, id);
+    }
     if (before.participation_mode === "editorial" && after!.participation_mode !== "editorial") {
       const articles = await tx<{ id: string }[]>`SELECT id FROM articles WHERE source_id = ${id}`;
       await invalidateStoryInputs(tx, articles.map((row) => row.id), new Date());
     }
     await audit(actor, "source.update", `source:${id}`, input.reason ?? null, Object.fromEntries(keys.map((k) => [k, before[k]])), patch, { db: tx });
-    // What public exits show for this source's articles is derived from these fields: re-derive them
-    // all (in the worker) so a revoked licence or an isolated source stops on every exit.
+    // Restrictions above are already committed with this edit; the worker handles expansions and
+    // metadata updates, and safely repeats the projection after a restricted edit.
     if (keys.some((k) => PUBLICATION_FIELDS.includes(k) && JSON.stringify(before[k]) !== JSON.stringify(patch[k]))) {
       await tx`INSERT INTO settings (key, value, updated_by) VALUES (${republishKey(id)}, ${tx.json({ status: "queued", queuedAt: new Date().toISOString() })}, ${actor})
                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()`;
       await enqueue(QUEUES.republishSource, { sourceId: id }, { singletonKey: id }, tx);
     }
+    if (restricted) await advancePublicationPermissions(tx);
     return after;
   });
 }
