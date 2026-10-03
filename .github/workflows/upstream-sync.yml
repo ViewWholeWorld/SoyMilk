@@ -38,6 +38,9 @@ jobs:
   validate:
     needs: prepare
     if: needs.prepare.outputs.changed == 'true'
+    permissions:
+      contents: write
+      packages: write
     uses: ./.github/workflows/check.yml
     with:
       ref: ${{ needs.prepare.outputs.sha }}

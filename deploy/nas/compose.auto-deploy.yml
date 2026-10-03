@@ -1,0 +1,26 @@
+name: soymilk-deployer
+services:
+  deployer:
+    container_name: soymilk-auto-deploy
+    image: ${SOYMILK_CONTROL_IMAGE:?Set a pinned local controller image}
+    user: "${SOYMILK_DEPLOY_UID:-1000}:0"
+    restart: unless-stopped
+    network_mode: host
+    read_only: true
+    tmpfs:
+      - /tmp
+    stop_grace_period: 12m
+    entrypoint: [flock, --no-fork, --nonblock, --conflict-exit-code, "0"]
+    command: ["${SOYMILK_DEPLOY_ROOT:?Set the existing deployment path}/.data/auto-deploy/run.lock", node, "${SOYMILK_DEPLOY_ROOT}/deploy/nas/auto-update.ts"]
+    environment:
+      SOYMILK_DEPLOY_ROOT: ${SOYMILK_DEPLOY_ROOT}
+      SOYMILK_DOCKER: /usr/local/bin/docker
+      HOME: /tmp
+      HTTP_PROXY: http://127.0.0.1:17890
+      HTTPS_PROXY: http://127.0.0.1:17890
+      NO_PROXY: localhost,127.0.0.1
+    volumes:
+      - ${SOYMILK_DEPLOY_ROOT}:${SOYMILK_DEPLOY_ROOT}
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /share/CACHEDEV1_DATA/.qpkg/container-station/usr/bin/.libs/docker:/usr/local/bin/docker:ro
+      - /usr/local/lib/docker/cli-plugins:/usr/local/lib/docker/cli-plugins:ro

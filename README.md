@@ -56,6 +56,8 @@ Fork 仍可通过 upstream 获取和合并源仓库更新；合并时保留本�
 
 `Sync Upstream` 每小时检查上游，候选合并通过完整 CI 后才进入 `main`；冲突或定制、迁移、部署及模型保护代码变化会暂停并创建待处理 Issue。见[自动更新](docs/auto-deploy.md)。
 
+`main` 的完整 CI 通过后发布 NAS 兼容的固定摘要镜像。独立 NAS 部署容器每 15 分钟检查并拉取，备份后更新和冒烟检查；失败回退应用，不恢复旧数据库。电脑无需保持开机；涉及迁移和基础 Compose 变化时需要人工确认。
+
 ## 来源与许可
 
 原框架来自 [KKKKhazix/AIHOT](https://github.com/KKKKhazix/AIHOT)。代码使用 [MIT 许可证](LICENSE)，第三方字体和标志等归属见 [NOTICE](NOTICE)。本站使用 SoyMilk 名称和品牌；条款与隐私页目前为使用者认可的私网试用模板，公开上线前需另行确认。

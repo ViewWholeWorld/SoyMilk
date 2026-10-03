@@ -132,3 +132,67 @@ jobs:
       - name: Stop
         if: always()
         run: docker compose down -v
+
+  publish:
+    needs: [check, docker]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && !inputs.ref
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Build validated NAS image
+        env:
+          REVISION: ${{ github.sha }}
+        run: |
+          docker build -f deploy/nas/Dockerfile --label "org.opencontainers.image.source=https://github.com/ViewWholeWorld/SoyMilk" --label "org.opencontainers.image.revision=$REVISION" -t "ghcr.io/viewwholeworld/soymilk:sha-$REVISION" .
+      - name: Isolated NAS image startup and smoke
+        env:
+          REVISION: ${{ github.sha }}
+        run: |
+          node scripts/init-env.ts --llm-key ci-not-a-real-key
+          sed -i 's/^COLLECT_ENABLED=.*/COLLECT_ENABLED=false/; s/^MODEL_CALLS_ENABLED=.*/MODEL_CALLS_ENABLED=false/' .env
+          printf '%s\n' 'MCP_ALLOWED_HOSTS=web' 'FEISHU_CONTENT_PUSH_ENABLED=false' 'FEISHU_INTERNAL_ENABLED=false' 'INDEXNOW_SUBMIT_ENABLED=false' >> .env
+          docker tag "ghcr.io/viewwholeworld/soymilk:sha-$REVISION" aihot-app
+          docker compose up -d --no-build
+          for i in $(seq 1 90); do curl -fsS -o /dev/null http://127.0.0.1:3000/api/health 2>/dev/null && break; sleep 2; done
+          docker compose run --rm --no-deps --entrypoint node setup scripts/smoke.ts --base http://web:3000
+      - name: Publish immutable image and deployment channel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVISION: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker push "ghcr.io/viewwholeworld/soymilk:sha-$REVISION"
+          image=$(docker image inspect "ghcr.io/viewwholeworld/soymilk:sha-$REVISION" --format '{{index .RepoDigests 0}}')
+          node deploy/nas/release-manifest.ts create . "$REVISION" "$image" "$RUNNER_TEMP/release.json"
+          # Never publish a stale run after main has moved.
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$REVISION"
+          if git ls-remote --exit-code --heads origin deployment-channel; then
+            git fetch origin deployment-channel
+            git checkout -B deployment-channel origin/deployment-channel
+          else
+            git checkout --orphan deployment-channel
+            git rm -rf .
+          fi
+          cp "$RUNNER_TEMP/release.json" release.json
+          git add release.json
+          if ! git diff --cached --quiet; then
+            git -c user.name=github-actions[bot] -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "Publish validated deployment $REVISION"
+            git push origin HEAD:deployment-channel
+          fi
+          docker logout ghcr.io
+      - name: Stop isolated NAS smoke site
+        if: always()
+        run: docker compose -p aihot down -v || true

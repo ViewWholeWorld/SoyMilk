@@ -41,9 +41,11 @@ JS
 
 更新 NAS 统一通过 `deploy/nas/compose.sh`，该入口加载私有 NAS 覆盖、`compose.codex-worker.yml` 和 `compose.web-time.yml`。这些 NAS 覆盖文件保存在部署目录，不应误以为仅运行根目录 Compose 就会保留正式配置。
 
-后续更新网页时同步更新 `compose.web-time.yml` 指向的镜像；更新 API/worker 时核对 `compose.codex-worker.yml`。不要只重建根目录镜像却仍由覆盖文件指向旧版本。
+自动部署启用后，入口在三个既有私有覆盖之后加载 `compose.release.yml`，统一固定 setup/API/worker/web 的镜像摘要。后续手动部署也须核对这个最后覆盖，不能只重建根目录镜像或修改较早的 worker/web 覆盖却仍运行旧版本。环境、网络、卷及并发设置仍来自原私有覆盖。
 
 上游自动同步由 `Sync Upstream` 每小时检查，先构造候选并运行完整 `Check`，通过后才推进 `main`。冲突、受保护的定制/迁移/部署/模型保护文件变更会暂停并创建 Issue；详见[自动更新](auto-deploy.md)。
+
+`Check` 的两个验证作业通过后发布 Bookworm NAS 镜像及 `deployment-channel` 固定摘要清单。独立 `soymilk-auto-deploy` 容器每 15 分钟自行拉取，Docker 重启策略覆盖 NAS 重启，不依赖电脑或系统 cron。部署前正常结束 worker 任务并备份数据库与附件，验证后记录 `.data/auto-deploy/status.json`；失败只回退应用镜像，保留数据库与付费回执。任何数据库迁移或基础 Compose 变化暂停等待人工确认，NAS 推送通知尚未配置。
 
 北京时间 2026-10-03 11:20:39 已部署网页时间说明，web 镜像为 `soymilk-nas-web:timeline-time`，SHA256 为 `1bd5f533ea1a485029428603fec687f779c34da4b427ae43da4a7a54f443fbb4`。API 和 worker 的容器 ID、镜像及启动时间保持原样，继续使用 `soymilk-nas-app:codex-worker`。网页回退点为 `backups/web-time-20261003-112033`，保留原覆盖入口和旧网页镜像，不涉及数据库恢复；后续维护仍须现场核对实际镜像。
 

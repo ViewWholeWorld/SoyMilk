@@ -9,3 +9,9 @@ apps/web/.react-router
 .git
 .github
 *.log
+.docker
+backups
+deploy/nas/compose.override.yml
+deploy/nas/compose.codex-worker.yml
+deploy/nas/compose.web-time.yml
+deploy/nas/compose.release.yml
