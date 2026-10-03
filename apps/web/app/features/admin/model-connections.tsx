@@ -54,7 +54,9 @@ export function ModelConnections({ configuration: c, onCodexModels }: { configur
   useEffect(() => { onCodexModels(catalog); }, [catalog, onCodexModels]);
   useEffect(() => {
     let live = true;
-    get<AdminCodexAccount>(`${ROOT}/codex`).then((a) => { if (live) { setAccount(a); if (a.pendingLogin) setLogin(a.pendingLogin); } }).catch(() => {});
+    get<AdminCodexAccount>(`${ROOT}/codex`).then((a) => { if (live) { setAccount(a); if (a.pendingLogin) setLogin(a.pendingLogin); } }).catch(() => {
+      if (live) setError("暂时无法读取账号状态，任务可能正在运行。点击刷新状态重试。");
+    });
     return () => { live = false; };
   }, []);
   useEffect(() => {
@@ -118,7 +120,7 @@ export function ModelConnections({ configuration: c, onCodexModels }: { configur
   return <div className="mb-6 grid gap-5">
     {!c.modelCallsEnabled && <div className="rounded-control bg-bg-sunk p-4 text-[13px] text-ink-2">模型调用当前关闭{!c.collectEnabled ? "，采集也已关闭" : ""}。保存连接或登录账号不会启动任务。</div>}
     <div className="grid items-start gap-5 xl:grid-cols-[1fr_1.3fr]">
-      <Card title="Codex 账号" right={<Badge tone={account?.connected ? "accent" : "muted"}>{account?.connected ? "已连接" : "未连接"}</Badge>}>
+      <Card title="Codex 账号" right={<Badge tone={account?.connected ? "accent" : "muted"}>{account === null ? "待确认" : account.connected ? "已连接" : "未连接"}</Badge>}>
         <p className="text-[13px] leading-6 text-ink-3">使用 ChatGPT 账号授权，调用计入账号的 Codex 用量。</p>
         {account?.connected && <div className="mt-3 text-[13px]"><p>{account.email ?? "ChatGPT 账号"}</p><p className="mt-1 text-ink-3">{account.plan ?? ""}</p></div>}
         <div className="mt-4 flex flex-wrap gap-2">

@@ -13,13 +13,13 @@ import { config } from "@aihot/backend/config";
 import { closeDb, sql } from "@aihot/backend/db";
 import { passwordLogin, SESSION_COOKIE, sessionPrincipal } from "@aihot/backend/admin/auth";
 import { saveConnection } from "@aihot/backend/admin/model-config";
-import { codexLoginStatus, codexModels, codexStatus, cancelCodexLogin, CodexServer, openCodexServer, requestCodex, startCodexLogin } from "@aihot/backend/providers/codex";
+import { codexLoginStatus, codexModels, codexStatus, cancelCodexLogin, CodexServer, openCodexServer, requestCodex, startCodexLogin, withCodexCall } from "@aihot/backend/providers/codex";
 import { modelsOverview } from "@aihot/backend/admin/models";
 import { invalidateModelCache, modelFor } from "@aihot/backend/editorial/models";
 import { sha256 } from "@aihot/backend/lib/ids";
 import { deleteModelConnection, modelConfiguration, readModelConfig, saveModelConnection, selectModelConnection } from "@aihot/backend/providers/model-config";
 import { chatJson, registeredModels } from "@aihot/backend/providers/llm";
-import { BudgetExceededError, ProviderRejectedError, paidRequest } from "@aihot/backend/providers/receipts";
+import { BudgetExceededError, ProviderRejectedError, ReceiptBusyError, paidRequest } from "@aihot/backend/providers/receipts";
 import { registerAdmin } from "../apps/api/src/routes/admin.ts";
 import { registerAdminAuth } from "../apps/api/src/routes/admin-auth.ts";
 
@@ -85,6 +85,29 @@ test("closed model valve prevents API and Codex calls", async () => {
   await selectModelConnection(connection.id);
 });
 
+test("Codex model steps queue locally, recover after a failure, and treat account contention as waiting", async () => {
+  const order: string[] = [];
+  let entered!: () => void; let release!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const first = withCodexCall(async () => {
+    order.push("first"); entered(); await held;
+    order.push("failed"); throw new Error("fixture failure");
+  });
+  const rejected = assert.rejects(first, /fixture failure/);
+  const next = withCodexCall(async () => { order.push("next"); return "completed"; })
+    .then((value) => ({ value }), (error: unknown) => ({ error }));
+  await started;
+  await delay(15_200); // A normal model answer can outlast the file lease's 15-second wait.
+  assert.deepEqual(order, ["first"], "the second step waits before acquiring the file lease");
+  release(); await rejected;
+  assert.deepEqual(await next, { value: "completed" });
+  assert.deepEqual(order, ["first", "failed", "next"]);
+  await assert.rejects(stat(path.join(dir, "model-config/codex.lock")), { code: "ENOENT" });
+  await assert.rejects(withCodexCall(async () => {
+    throw Object.assign(new Error("fixture login owns the account"), { statusCode: 409 });
+  }), ReceiptBusyError);
+});
 test("configured API calls retain receipts, redaction, reuse and budget limits", async () => {
   config.modelCallsEnabled = true;
   const purpose = `model_config_test_${Date.now()}`;

@@ -57,6 +57,16 @@ export async function privateLease<T>(name: string, work: () => Promise<T>): Pro
   finally { await rmdir(lock).catch(() => {}); }
 }
 
+/** Management requests ask the worker to drain before competing for the account lease. */
+export const withCodexAdmin = <T>(work: () => Promise<T>) => privateLease("codex-admin", () => privateLease("codex", work));
+export async function codexAdminPending(): Promise<boolean> {
+  const marker = await stat(path.join(config.dataDir, "model-config", "codex-admin.lock")).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  });
+  return !!marker && Date.now() - marker.mtimeMs < 20 * 60_000;
+}
+
 export const publicConnection = ({ apiKey, generation, ...c }: ModelConnection) => ({ ...c, keyConfigured: !!apiKey });
 export async function modelConfiguration() {
   const c = await readModelConfig();

@@ -8,11 +8,39 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import { config } from "../config.ts";
-import { codexHome, privateLease, resetCodexIdentity } from "./model-config.ts";
+import { codexHome, privateLease, resetCodexIdentity, withCodexAdmin } from "./model-config.ts";
+import { ReceiptBusyError } from "./receipts.ts";
 import type { ContentPart } from "./llm.ts";
+
+let pendingCalls: Promise<void> = Promise.resolve();
+
+/** Model steps share one account; wait locally before competing for the cross-process lease. */
+export function withCodexCall<T>(work: () => Promise<T>): Promise<T> {
+  const result = pendingCalls.then(() => privateLease("codex", work)).catch((error: unknown) => {
+    // Another process may own the account for login. No paid request has started: wait and retry.
+    if ((error as { statusCode?: number })?.statusCode === 409) throw new ReceiptBusyError("Codex 账号正在使用，请稍后重试");
+    throw error;
+  });
+  pendingCalls = result.then(() => undefined, () => undefined);
+  return result;
+}
 
 type Message = { id?: number | string; method?: string; params?: any; result?: any; error?: unknown };
 type Pending = { resolve: (value: any) => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
+export class CodexLimitError extends Error {
+  readonly kind: "quota" | "rate";
+  constructor(kind: "quota" | "rate") {
+    super(kind === "quota" ? "Codex 订阅额度已用完，等待重置" : "Codex 请求受到限流，稍后重试");
+    this.kind = kind;
+  }
+}
+function limitError(error: any): CodexLimitError | null {
+  const info = error?.codexErrorInfo ?? error?.data?.codexErrorInfo;
+  const variant = typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] : "";
+  if (variant?.toLowerCase() === "usagelimitexceeded") return new CodexLimitError("quota");
+  const status = error?.httpStatusCode ?? info?.httpStatusCode ?? (variant ? info?.[variant]?.httpStatusCode : null);
+  return status === 429 ? new CodexLimitError("rate") : null;
+}
 export interface CodexAccount { connected: boolean; email: string | null; plan: string | null; loginInProgress?: boolean; pendingLogin?: CodexLogin | null }
 export interface CodexLogin { id: string; state: "pending" | "success" | "failed" | "cancelled"; verificationUrl: string; userCode: string; expiresAt: number; error: string | null }
 
@@ -36,7 +64,7 @@ export class CodexServer {
         child.stdin.write(JSON.stringify({ id: m.id, error: { code: -32601, message: "This integration does not allow tools" } }) + "\n");
       } else if (m.id !== undefined) {
         const p = this.requests.get(m.id);
-        if (p) { clearTimeout(p.timer); this.requests.delete(m.id); m.error ? p.reject(new Error("Codex 请求失败，请检查账号授权和模型名称")) : p.resolve(m.result); }
+        if (p) { clearTimeout(p.timer); this.requests.delete(m.id); m.error ? p.reject(limitError(m.error) ?? new Error("Codex 请求失败，请检查账号授权和模型名称")) : p.resolve(m.result); }
       } else for (const listener of this.listeners) listener(m);
     });
     const failed = () => {
@@ -99,7 +127,7 @@ async function account(server: CodexServer): Promise<CodexAccount> {
 let login: { owner: string; view: CodexLogin; account: CodexAccount; cancel: () => Promise<void> } | null = null;
 export async function codexStatus(owner?: string): Promise<CodexAccount> {
   if (login?.view.state === "pending") return { ...login.account, loginInProgress: true, pendingLogin: login.owner === owner ? login.view : null };
-  return privateLease("codex", async () => { const server = await openCodexServer(); try { return await account(server); } finally { await server.stop(); } });
+  return withCodexAdmin(async () => { const server = await openCodexServer(); try { return await account(server); } finally { await server.stop(); } });
 }
 export async function startCodexLogin(owner: string, open = openCodexServer, restart = false): Promise<CodexLogin> {
   if (restart && login?.view.state === "pending") await login.cancel();
@@ -110,7 +138,7 @@ export async function startCodexLogin(owner: string, open = openCodexServer, res
   let ready!: (v: CodexLogin) => void;
   let reject!: (e: unknown) => void;
   const started = new Promise<CodexLogin>((yes, no) => { ready = yes; reject = no; });
-  void privateLease("codex", async () => {
+  void withCodexAdmin(async () => {
     const server = await open();
     let finish!: () => void;
     const done = new Promise<void>((resolve) => { finish = resolve; });
@@ -159,14 +187,14 @@ export function codexLoginStatus(owner: string, id: string): CodexLogin {
 }
 export async function cancelCodexLogin(owner: string, id: string) { codexLoginStatus(owner, id); await login!.cancel(); return login!.view; }
 export async function logoutCodex() {
-  return privateLease("codex", async () => {
+  return withCodexAdmin(async () => {
     const server = await openCodexServer();
     try { await server.request("account/logout", {}); await resetCodexIdentity(); return { connected: false }; }
     finally { await server.stop(); }
   });
 }
 export async function codexModels(open = openCodexServer) {
-  return privateLease("codex", async () => {
+  return withCodexAdmin(async () => {
     const server = await open();
     try {
       if (!(await account(server)).connected) throw Object.assign(new Error("请先连接 Codex 账号"), { statusCode: 400 });
@@ -185,11 +213,13 @@ export async function requestCodex(server: CodexServer, model: string, system: s
   const threadId = t.thread.id;
   let text = "";
   let usage: Record<string, unknown> | null = null;
+  let limited: CodexLimitError | null = null;
   let finish!: (v: any) => void; let fail!: (e: Error) => void;
   const done = new Promise<any>((resolve, reject) => { finish = resolve; fail = reject; });
   const off = server.observe((m) => {
     if (m.method === "connection/closed") { fail(new Error("Codex 在响应完成前断开连接")); return; }
     if (m.params?.threadId !== threadId) return;
+    if (m.method === "error") limited = limitError(m.params.error);
     if (m.method === "turn/plan/updated" || (m.method === "item/started" && !["agentMessage", "userMessage", "reasoning"].includes(m.params.item?.type))) {
       fail(new Error("Codex 尝试使用工具，已停止；执行结果未知")); server.close(); return;
     }
@@ -205,7 +235,7 @@ export async function requestCodex(server: CodexServer, model: string, system: s
         usage.completion_tokens_details = { reasoning_tokens: u.reasoningOutputTokens };
     }
     if (m.method === "turn/completed") {
-      m.params.turn.status === "completed" && text ? finish({ id: m.params.turn.id, choices: [{ message: { content: text } }], usage }) : fail(new Error("Codex 未完成响应，执行结果未知"));
+      m.params.turn.status === "completed" && text ? finish({ id: m.params.turn.id, choices: [{ message: { content: text } }], usage }) : fail(limited ?? limitError(m.params.turn.error) ?? new Error("Codex 未完成响应，执行结果未知"));
     }
   });
   const timer = setTimeout(() => { fail(new Error("Codex 响应超时，执行结果未知")); server.close(); }, Math.min(timeout, 180_000));

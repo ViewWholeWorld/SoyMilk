@@ -11,8 +11,11 @@ import { registerPublicationJobs } from "@aihot/backend/jobs/publication";
 import { registerSchedules } from "./schedules.ts";
 import { ensureContentTargets } from "@aihot/backend/notify/deliver";
 import { startHeartbeat } from "@aihot/backend/operations/heartbeat";
+import { startCodexWorker, stopCodexWorker } from "@aihot/backend/providers/codex-session";
+import { shutdownSignal } from "@aihot/backend/lib/shutdown";
 
 assertProductionSecrets([["auth", "IMG_PROXY_SIGN_SECRET"]]);
+if (process.env.CODEX_REUSE_ENABLED === "true") startCodexWorker(Number(process.env.CODEX_CONCURRENCY || 2));
 
 await ensureContentTargets();
 const boss = await getBoss();
@@ -36,7 +39,10 @@ const shutdown = async () => {
   stopping = true;
   console.log(JSON.stringify({ level: "info", msg: "worker stopping" }));
   clearInterval(heartbeat);
+  shutdownSignal.abort();
+  const codexStopped = stopCodexWorker();
   await stopBoss();
+  await codexStopped;
   await closeDb();
   process.exit(0);
 };

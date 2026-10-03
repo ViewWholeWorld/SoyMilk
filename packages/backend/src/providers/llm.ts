@@ -9,8 +9,9 @@ import { completeReceipt, paidRequest, ProviderRejectedError, rejectReceivedResp
 import { sql } from "../db.ts";
 import { chatGPTAccess } from "./chatgpt-auth.ts";
 import { chatGPTBody, requestChatGPT } from "./chatgpt.ts";
-import { codexIdentity, privateLease, readModelConfig } from "./model-config.ts";
-import { openCodexServer, requestCodex, type CodexServer } from "./codex.ts";
+import { codexIdentity, readModelConfig } from "./model-config.ts";
+import { requestCodex, type CodexServer } from "./codex.ts";
+import { withCodexServer } from "./codex-session.ts";
 import { guardedFetch, type GuardedResponse } from "../lib/http-fetch.ts";
 
 export interface ModelSpec {
@@ -188,14 +189,11 @@ export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): P
   if (!["api-key", "chatgpt", "codex"].includes(authMode)) throw new Error("LLM_AUTH_MODE must be api-key, chatgpt or codex");
   if (authMode === "codex") {
     if (!spec.model) throw new Error("请配置 Codex 模型名");
-    return privateLease("codex", async () => {
-      const server = await openCodexServer();
-      try {
-        const a = await server.request("account/read", { refreshToken: false });
-        if (a.account?.type !== "chatgpt") throw new Error("请先在网页连接 Codex 账号");
-        const generation = await codexIdentity();
-        return await executeChatJson(opts, spec, null, null, null, { server, generation });
-      } finally { await server.stop(); }
+    return withCodexServer(async (server) => {
+      const a = await server.request("account/read", { refreshToken: false });
+      if (a.account?.type !== "chatgpt") throw new Error("请先在网页连接 Codex 账号");
+      const generation = await codexIdentity();
+      return await executeChatJson(opts, spec, null, null, null, { server, generation });
     });
   }
   const chatgpt = authMode === "chatgpt";
