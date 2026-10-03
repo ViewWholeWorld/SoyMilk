@@ -29,7 +29,7 @@ export function prepareCandidate(cwd: string, runId: string, upstream = "https:/
     return { changed: "false", base, sha: base, branch: "" };
   }
   const ancestor = git("merge-base", base, upstreamSha);
-  const files = git("diff", "--name-only", "-z", ancestor, upstreamSha).split("\0").filter(Boolean);
+  const files = git("diff", "--no-renames", "--name-only", "-z", ancestor, upstreamSha).split("\0").filter(Boolean);
   const guarded = requiresReview(files);
   if (guarded.length) throw new Error(`Manual review required for: ${guarded.join(", ")}`);
   const branch = `codex/upstream-sync-${runId}`;

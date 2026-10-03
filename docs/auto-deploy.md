@@ -6,6 +6,8 @@
 
 Conflicts, failed tests, concurrent edits to `main`, and upstream changes to `industry/`, migration files, deployment/workflow definitions, provider protection, or bootstrap budget code stop automatic promotion. An issue named `Automatic upstream sync needs attention` links to the failed run; GitHub notification preferences control its delivery. Candidate branches are removed after the run. No force push is made to `main`.
 
+Protected-path checks include both sides of renames: moving a protected file outside its original directory still requires review. The regression test verifies this against real, isolated Git repositories.
+
 Database migrations always require manual review, even when they appear additive. This conservative gate avoids making an unverified compatibility decision. Existing SoyMilk industry, model/account settings, budgets and NAS overrides must be preserved when resolving a stopped update.
 
 ## Validated Images
@@ -59,5 +61,7 @@ The controller is installed separately from app releases and is not self-updated
 The `check` and `docker` jobs of [Check #6](https://github.com/ViewWholeWorld/SoyMilk/actions/runs/37107702823), on deployment feature commit `bfafb45`, passed with 621 backend tests, zero failures/cancellations/skips, about 144 seconds, and 31 web tests. Four deployment tests account for the increase from 617; the baseline failures remain resolved. Image publication and live deployment are separate checks, not inferred from these test totals.
 
 The same run's `publish` job also passed the Bookworm image build and isolated startup/smoke check, then published the immutable image and channel. The NAS controller was installed paused while the original news services kept running; live cutover is verified separately before enabling its ongoing polling.
+
+Final shutdown-order commit `4f8e99b` passed all three jobs of [Check #7](https://github.com/ViewWholeWorld/SoyMilk/actions/runs/37108078497): 621 backend tests, zero failures/cancellations/skips, 31 web tests, and both Docker image checks. Deployment status and live smoke are checked separately through the operations commands above.
 
 Deployment unit tests exercise strict manifest parsing, immutable image overrides, portable migration fingerprints, operation ordering, compatibility rejection and application-only rollback on backup/migration/start/smoke failures. Full CI must pass on the release before the NAS can see it in the channel. Empty-site CI skips the existing three leaderboard pages when no data exists; the deployed site's smoke check validates the live public pages independently.

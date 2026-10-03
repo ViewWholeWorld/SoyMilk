@@ -30,6 +30,8 @@ test("candidate is a merge preserving customization; no-op and guarded changes n
     mkdirSync(upstream);
     git(upstream, "init", "-b", "main");
     writeFileSync(path.join(upstream, "feed.txt"), "baseline\n");
+    mkdirSync(path.join(upstream, "deploy"));
+    writeFileSync(path.join(upstream, "deploy", "protected.txt"), "deployment contract\n");
     git(upstream, "add", "."); git(upstream, "commit", "-m", "baseline");
     git(root, "clone", "--bare", upstream, origin);
     git(root, "clone", origin, work);
@@ -46,9 +48,8 @@ test("candidate is a merge preserving customization; no-op and guarded changes n
     assert.equal(git(work, "show", "HEAD:industry/site.ts"), "SoyMilk");
     assert.equal(git(work, "rev-parse", "origin/main"), base);
     assert.equal(git(work, "rev-list", "--parents", "-n", "1", "HEAD").split(" ").length, 3);
-    mkdirSync(path.join(upstream, "industry"));
-    writeFileSync(path.join(upstream, "industry", "site.ts"), "Example\n");
-    git(upstream, "add", "."); git(upstream, "commit", "-m", "change industry");
+    git(upstream, "mv", "deploy/protected.txt", "moved.txt");
+    git(upstream, "commit", "-m", "move protected deployment file");
     assert.throws(() => prepareCandidate(work, "3", upstream), /Manual review required/);
     assert.equal(git(work, "rev-parse", "origin/main"), base);
   } finally {
