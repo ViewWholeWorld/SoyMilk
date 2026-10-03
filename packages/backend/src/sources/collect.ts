@@ -119,6 +119,12 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
     }
     found = candidates.length;
     candidates = candidates.filter((c) => allowed(c.url, source)).map((c) => rewriteUrl(c, source)).filter((c) => !noiseFiltered(c, source));
+    // Some feeds include their entire archive. Apply an optional news window on every poll,
+    // before first-import limits or paid processing; undated entries remain eligible.
+    if (source.kind === "rss" && source.config.maxItemAgeDays !== undefined) {
+      const cutoff = Date.now() - source.config.maxItemAgeDays * DAY_MS;
+      candidates = candidates.filter((c) => !c.publishedAt || !Number.isFinite(c.publishedAt.getTime()) || c.publishedAt.getTime() >= cutoff);
+    }
     if (source.config.sortByPublishedAt) candidates.sort((a, b) => (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0));
     // Deduplicate before enrichment and limits: URL aliases must neither buy duplicate detail reads
     // nor crowd other articles out of the window. Use exactly the identity the material will store.

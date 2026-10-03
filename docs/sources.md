@@ -33,6 +33,8 @@
 
 可选：`summaryIsBody`（订阅里的摘要就是全文）、`allowCategories` / `denyCategories`（按订阅里的分类过滤）。
 
+新闻源可设置 `maxItemAgeDays`（正数，例如 `7`），每次采集只保存最近这些天发布的条目，避免包含完整历史的订阅在第二次采集时导入大量旧文。没有有效发布时间的条目仍会保留；已有文章不删除。不设置时保持原来的采集范围。可以配合 `sortByPublishedAt: true` 和 `_aihot.initialBackfillLimit`，先导入少量最新内容。
+
 ### web_list
 
 支持普通 CSS 选择器，`div` 列表也能采集。关键是 `itemSelector` 要选中**每条新闻**，而不是包住所有新闻的容器。例如：

@@ -8,8 +8,8 @@
     },
     {
       "key": "field",
-      "name": "技术方向",
-      "blurb": "按技术领域深挖：Agent、多模态、具身智能……"
+      "name": "兴趣与技术",
+      "blurb": "游戏、科技、经济、影视、自托管与科学，以及 AI 技术方向"
     },
     {
       "key": "genre",
@@ -573,6 +573,73 @@
         "safety",
         "trends"
       ]
+    },
+    {
+      "slug": "games",
+      "name": "游戏",
+      "group": "field",
+      "tags": [
+        "游戏"
+      ],
+      "definition": "重要游戏、游戏开发、平台与产业动态。",
+      "related": []
+    },
+    {
+      "slug": "technology",
+      "name": "科技",
+      "group": "field",
+      "tags": [
+        "科技",
+        "硬件/芯片",
+        "网络安全"
+      ],
+      "definition": "硬件、软件、芯片、网络安全与开发工具。",
+      "related": []
+    },
+    {
+      "slug": "economy",
+      "name": "经济",
+      "group": "field",
+      "tags": [
+        "经济",
+        "宏观/市场"
+      ],
+      "definition": "宏观经济、金融市场、贸易、政策与产业。",
+      "related": []
+    },
+    {
+      "slug": "entertainment",
+      "name": "影视与娱乐",
+      "group": "field",
+      "tags": [
+        "娱乐",
+        "影视",
+        "流媒体",
+        "动漫"
+      ],
+      "definition": "电影、电视剧、流媒体、动漫与娱乐产业。",
+      "related": []
+    },
+    {
+      "slug": "self-hosting",
+      "name": "自托管与 NAS",
+      "group": "field",
+      "tags": [
+        "自托管",
+        "部署/工程"
+      ],
+      "definition": "NAS、Docker、网络与自托管工具的实践。",
+      "related": []
+    },
+    {
+      "slug": "science",
+      "name": "科学",
+      "group": "field",
+      "tags": [
+        "科学"
+      ],
+      "definition": "科学研究及其实际影响。",
+      "related": []
     }
   ]
 }

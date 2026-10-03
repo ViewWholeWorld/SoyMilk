@@ -9,13 +9,13 @@ export const SITE = {
    * 行业词：拼进默认说法里，比如“AI 日报”“AI 动态”。
    * 改成“法律”“HR”“黄金”之类，页面上就会变成“法律日报”“法律动态”。
    */
-  subject: "AI",
+  subject: "兴趣",
   /** 首页的完整标题（浏览器标签、搜索结果）。 */
-  homeTitle: "SoyMilk — AI 行业动态 · 每日精选与日报",
+  homeTitle: "SoyMilk — 游戏 · AI · 科技 · 经济 · 娱乐",
   /** 一句话介绍：搜索引擎、分享卡片、RSS、llms.txt 会用。 */
-  description: "自动盯住上百个信源，用模型摘要、打分、精选，把同一件事的多篇报道归到一起，每天早上出一份日报。",
+  description: "关注游戏、AI、科技、经济与娱乐，用模型写中文摘要、筛选重要消息、归并同一事件，每天生成日报。",
   /** 首页左上角和侧边栏下面的一行小字。 */
-  tagline: "值得关注的 AI 动态",
+  tagline: "游戏 · AI · 科技 · 经济 · 娱乐",
   /** 界面语言（HTML lang、og:locale）。 */
   locale: "zh-CN",
   /** 默认域名，只在没设置 SITE_URL 时使用。 */
@@ -45,7 +45,7 @@ export const SITE = {
 export const ABOUT = {
   kicker: `关于 ${SITE.name}`,
   /** 大标题：第一行正常颜色，第二行强调色。 */
-  headline: ["AI 圈每天都有新动静，", "值得看的，只有几条。"] as [string, string],
+  headline: ["关注的领域每天都有新动静，", "值得看的，只有几条。"] as [string, string],
   /** 标题下面的一段话。{sources} 会换成实时的信源数。 */
   lead: `${SITE.name} 替你盯着 {sources} 个信源：抓取、归并、打分、精选，每天早上 8 点出一份日报。免费，不用注册。`,
   /** 信源河动画下面的四个环节。 */
