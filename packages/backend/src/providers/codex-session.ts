@@ -4,7 +4,12 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { CodexLimitError, openCodexServer, withCodexCall, type CodexServer } from "./codex.ts";
 import { codexAdminPending } from "./model-config.ts";
-import { BudgetExceededError, ReceiptBusyError } from "./receipts.ts";
+import { BudgetExceededError, ReceiptBusyError, ReceiptUnknownError } from "./receipts.ts";
+
+function codexLimit(error: unknown): CodexLimitError | null {
+  const cause = error instanceof ReceiptUnknownError ? error.cause : error;
+  return cause instanceof CodexLimitError ? cause : null;
+}
 
 class Slots {
   private active = 0;
@@ -141,7 +146,8 @@ export class CodexWorker {
         adminSince = 0;
         await withCodexSession(() => this.batch(), { concurrency: this.options.concurrency, open: this.options.open });
       } catch (error) {
-        if (error instanceof CodexLimitError) this.limitReached(error);
+        const limited = codexLimit(error);
+        if (limited) this.limitReached(limited);
         this.rejectWaiting(error);
       }
       // A waiting management process can acquire the released lease before another batch starts.
@@ -166,7 +172,8 @@ export class CodexWorker {
           const item = this.queue.shift()!;
           this.active++; calls++; peak = Math.max(peak, this.active);
           const task = withCodexServer(item.work).then(item.resolve, (error: unknown) => {
-            if (error instanceof CodexLimitError) this.limitReached(error);
+            const limited = codexLimit(error);
+            if (limited) this.limitReached(limited);
             item.reject(error);
           }).finally(() => { this.active--; running.delete(task); idleAt = Date.now(); });
           running.add(task);

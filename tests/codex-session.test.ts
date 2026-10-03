@@ -12,7 +12,7 @@ import { CodexServer, requestCodex } from "@aihot/backend/providers/codex";
 import { CodexWorker, withCodexServer, withCodexSession } from "@aihot/backend/providers/codex-session";
 import { chatJson } from "@aihot/backend/providers/llm";
 import { resetCodexIdentity, saveModelConnection, withCodexAdmin } from "@aihot/backend/providers/model-config";
-import { BudgetExceededError, paidRequest } from "@aihot/backend/providers/receipts";
+import { BudgetExceededError, paidRequest, ReceiptUnknownError } from "@aihot/backend/providers/receipts";
 import { setTimeout as delay } from "node:timers/promises";
 import { gate } from "./setup.ts";
 import { CodexLimitError } from "@aihot/backend/providers/codex";
@@ -179,11 +179,15 @@ test("a long device login sends waiting jobs back to retry before their queue le
 for (const kind of ["rate","quota"] as const) test("upstream "+kind+" stops new requests while its paid peer settles", async () => {
   const pool = worker();
   try {
-    const outcomes = await Promise.allSettled([turn(pool,kind),turn(pool,"slow"),turn(pool,"queued")]);
+    const limited = pool.call((server) => paidRequest({ service: "session-limit-"+T, purpose: "guard", identity: { T,kind } },
+      async () => ({ response: await requestCodex(server,"fixture-model","",kind,true,2000) })));
+    const outcomes = await Promise.allSettled([limited,turn(pool,"slow"),turn(pool,"queued")]);
     assert.equal(outcomes[0]!.status, "rejected");
     if (outcomes[0]!.status === "rejected") {
-      assert.ok(outcomes[0].reason instanceof CodexLimitError);
-      assert.equal(outcomes[0].reason.kind,kind);
+      assert.ok(outcomes[0].reason instanceof ReceiptUnknownError);
+      assert.ok(outcomes[0].reason.cause instanceof CodexLimitError);
+      assert.equal(outcomes[0].reason.cause.kind,kind);
+      assert.equal((await sql`SELECT status FROM receipts WHERE id=${outcomes[0].reason.receiptId}`)[0]!.status,"unknown");
     }
     assert.equal(outcomes[1]!.status, "fulfilled");
     assert.equal(outcomes[2]!.status, "rejected");

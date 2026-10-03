@@ -141,9 +141,9 @@ async function stoppedArticle(purpose: string, needsBody = false) {
   const subject = needsBody ? `article:${articleId}` : `article:${articleId}@1`;
   await assert.rejects(paidRequest({ service: "invariant-unbudgeted", purpose, subject, identity: { key } },
     () => Promise.reject(new Error("socket hang up after sending"))));
-  await sql`UPDATE articles SET processing_state = 'failed', processing_attempts = 3,
-    processing_retry_at = now() + interval '1 hour', processing_error = 'receipt outcome unknown' WHERE id = ${articleId}`;
   const [receipt] = await sql<{ id: number }[]>`SELECT id FROM receipts WHERE subject = ${subject}`;
+  await sql`UPDATE articles SET processing_state = 'failed', processing_attempts = 3,
+    processing_retry_at = now() + interval '1 hour', processing_error = ${`receipt ${receipt!.id} outcome unknown`} WHERE id = ${articleId}`;
   return { articleId, receiptId: receipt!.id };
 }
 

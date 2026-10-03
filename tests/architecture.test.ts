@@ -63,7 +63,7 @@ test("public routes read content only through the public read layer", () => {
 // receipts, content pushes, grouping, and the audit trail. Other modules read them freely.
 const OWNERS: Record<string, string> = {
   publications: "publication/", selected_ledger: "publication/", selected_state: "publication/", pool_search: "publication/",
-  receipts: "providers/receipts.ts", receipt_attempts: "providers/receipts.ts",
+  receipts: "providers/receipts.ts", receipt_attempts: "providers/receipts.ts", receipt_consumers: "providers/receipts.ts",
   deliveries: "notify/",
   facts: "events/", fact_articles: "events/", stories: "events/", story_signals: "events/", story_aliases: "events/", story_links: "events/",
   story_digests: "events/", grouping_decisions: "events/", grouping_overrides: "events/", regroup_pending: "events/",

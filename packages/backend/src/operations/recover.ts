@@ -5,21 +5,34 @@
 // receipt lets its request call again, and an article that stopped on it goes back to processing.
 import { audit, Conflict } from "../audit.ts";
 import { sql } from "../db.ts";
-import { resumeAfterRelease } from "../jobs/content.ts";
+import { receiptArticleSubject, resumeAfterRelease } from "../jobs/content.ts";
 import { retryReleasedReceiptJobs } from "../jobs/queue.ts";
 import { markStaleDeliveries } from "../notify/deliver.ts";
-import { markStalePendingReceipts, releaseUnknownReceipt } from "../providers/receipts.ts";
+import { consumersForRelease, markStalePendingReceipts, releaseUnknownReceipt } from "../providers/receipts.ts";
 
 const AUTO_RELEASE_AFTER_MS = 30 * 60_000;
 const AUTO_RELEASE_NOTE = "自动放行：结果未知超过 30 分钟，未核对是否计费";
 
 async function release(id: number, error: string, actor: string, note: string, billed: boolean | null) {
   return sql.begin(async (tx) => {
+    const consumers = await consumersForRelease(tx, id);
+    if (!consumers) return null;
+    const articles = [...new Set(consumers.subjects.map((subject) => receiptArticleSubject({ purpose: consumers.purpose, subject })?.articleId)
+      .filter((article): article is string => !!article))].sort();
+    // Match analysis commits and unknown handlers: service guard, all articles in order, then receipt.
+    if (articles.length) await tx`SELECT id FROM articles WHERE id = ANY(${articles}::text[]) ORDER BY id FOR UPDATE`;
+    if (billed === null) {
+      const [eligible] = await tx`SELECT id FROM receipts r WHERE id=${id} AND status='unknown'
+        AND NOT EXISTS(SELECT 1 FROM receipt_attempts a WHERE a.receipt_id=r.id AND a.error LIKE ${AUTO_RELEASE_NOTE + "%"}) FOR UPDATE`;
+      if (!eligible) return null;
+    }
     const receipt = await releaseUnknownReceipt(tx, id, error);
     if (!receipt) return null;
-    const requeued = await resumeAfterRelease(receipt, tx);
-    await audit(actor, "receipt.release", `receipt:${id}`, note, { status: "unknown" }, { status: "failed", billed, requeued }, { db: tx });
-    return { id, status: "failed", subject: receipt.subject, purpose: receipt.purpose, requeued };
+    let requeuedCount = 0;
+    for (const subject of consumers.subjects) if (await resumeAfterRelease({ id, purpose: receipt.purpose, subject }, tx)) requeuedCount++;
+    const requeued = requeuedCount > 0;
+    await audit(actor, "receipt.release", `receipt:${id}`, note, { status: "unknown" }, { status: "failed", billed, requeued, requeuedCount }, { db: tx });
+    return { id, status: "failed", subject: receipt.subject, purpose: receipt.purpose, requeued, requeuedCount };
   });
 }
 
@@ -48,7 +61,7 @@ export async function autoReleaseUnknownReceipts(now = Date.now()) {
   for (const r of rows) {
     const done = await release(r.id, AUTO_RELEASE_NOTE, "ops.recover", "结果未知，自动放行一次", null);
     if (done) released += 1;
-    if (done?.requeued) requeued += 1;
+    requeued += done?.requeuedCount ?? 0;
   }
   return { released, requeued };
 }

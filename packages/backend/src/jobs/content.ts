@@ -156,13 +156,36 @@ async function processRevision(articleId: string, row: NonNullable<Awaited<Retur
   } catch (error) {
     if (error instanceof AnalysisInterruptedError || shutdownSignal.signal.aborted) throw error;
     if (error instanceof ReceiptUnknownError) {
-      // The provider may have billed this request: stop; ops.recover releases it once and requeues the article.
-      await sql`UPDATE articles SET processing_state = 'failed', processing_error = ${`receipt ${error.receiptId} outcome unknown`}
-                WHERE id = ${articleId} AND revision = ${row.revision}`;
-      return { state: "unknown-receipt" };
+      return stopOnUnknownReceipt(articleId, row.revision, opts.attemptTag ?? null, error);
     }
     throw error;
   }
+}
+
+async function stopOnUnknownReceipt(articleId: string, revision: number, attemptTag: string | null, error: ReceiptUnknownError): Promise<{ state: string }> {
+  return sql.begin(async (tx) => {
+    // The same article -> receipt order is used by analysis commits and release recovery.
+    const [article] = await tx<{ revision: number; processing_state: string; processing_attempt_tag: string | null }[]>`
+      SELECT revision,processing_state,processing_attempt_tag FROM articles WHERE id=${articleId} FOR UPDATE`;
+    if (!article) return { state: "missing" };
+    if (article.revision !== revision || article.processing_attempt_tag !== attemptTag
+      || !["new", "processing", "failed"].includes(article.processing_state)) return { state: "stale" };
+    const [receipt] = await tx<{ status: string }[]>`SELECT status FROM receipts WHERE id=${error.receiptId} FOR UPDATE`;
+    if (!receipt || receipt.status === "unknown") {
+      await tx`UPDATE articles SET processing_state='failed',processing_error=${`receipt ${error.receiptId} outcome unknown`},
+        processing_retry_at=NULL,processing_queued_at=NULL WHERE id=${articleId}`;
+      return { state: "unknown-receipt" };
+    }
+    // Release may have committed while this caller was finishing another paid analysis stage.
+    await tx`UPDATE articles SET processing_state='new',processing_attempts=0,processing_error=NULL,
+      processing_retry_at=NULL,processing_queued_at=NULL WHERE id=${articleId}`;
+    if (receipt.status === "pending") {
+      await tx`UPDATE articles SET processing_retry_at=now()+interval '1 minute' WHERE id=${articleId}`;
+    } else if (!(await queueProcessing(articleId, { db: tx }))) {
+      await tx`UPDATE articles SET processing_queued_at=NULL WHERE id=${articleId}`;
+    }
+    return { state: "waiting" };
+  });
 }
 
 /** Waits and retries for passing trouble; marks "failed" for refusals and exhausted retries. */
@@ -213,7 +236,7 @@ export async function registerContentJobs(boss: PgBoss, concurrency = Number(pro
  */
 export async function registerExtractionJobs(boss: PgBoss) {
   await work(boss, QUEUES.extractBody, { localConcurrency: 4, pollingIntervalSeconds: 2 }, async ({ articleId }) => {
-    const [input] = await sql<{ revision: number }[]>`SELECT revision FROM articles WHERE id = ${articleId}`;
+    const [input] = await sql<{ revision: number; processing_attempt_tag: string | null }[]>`SELECT revision,processing_attempt_tag FROM articles WHERE id = ${articleId}`;
     if (!input) return { state: "missing" };
     try {
       const state = await extractArticleBody(articleId);
@@ -221,6 +244,8 @@ export async function registerExtractionJobs(boss: PgBoss) {
       await queueProcessing(articleId);
       return { state };
     } catch (error) {
+      if (shutdownSignal.signal.aborted) throw error;
+      if (error instanceof ReceiptUnknownError) return stopOnUnknownReceipt(articleId, input.revision, input.processing_attempt_tag, error);
       const message = String(error instanceof Error ? error.message : error).slice(0, 500);
       const [a] = await sql<{ processing_attempts: number }[]>`
         UPDATE articles SET processing_attempts = processing_attempts + 1, processing_error = ${`extract: ${message}`},
@@ -264,12 +289,24 @@ const ARTICLE_STEPS = new Set([
  * After a receipt is released (operations/recover.ts), the article that stopped on it goes straight
  * back to processing: one action, not two. Returns whether it was queued.
  */
-export async function resumeAfterRelease(receipt: { purpose: string; subject: string | null }, db: Db): Promise<boolean> {
-  const article = ARTICLE_STEPS.has(receipt.purpose) ? /^article:([^@:#]+)/.exec(receipt.subject ?? "")?.[1] : undefined;
+export function receiptArticleSubject(receipt: { purpose: string; subject: string | null }): { articleId: string; revision: number | null } | null {
+  if (!ARTICLE_STEPS.has(receipt.purpose)) return null;
+  const match = /^article:([^@:#]+)(?:@([1-9]\d*))?$/.exec(receipt.subject ?? "");
+  if (!match || (!match[2] && !["body_fallback", "x_article"].includes(receipt.purpose))) return null;
+  return { articleId: match[1]!, revision: match[2] ? Number(match[2]) : null };
+}
+
+export async function resumeAfterRelease(receipt: { id: number; purpose: string; subject: string | null }, db: Db): Promise<boolean> {
+  const article = receiptArticleSubject(receipt);
   if (!article) return false;
   const [a] = await db`UPDATE articles SET processing_state = 'new', processing_attempts = 0, processing_retry_at = NULL, processing_error = NULL
-                        WHERE id = ${article} AND processing_state = 'failed' RETURNING id`;
-  return !!a && !!(await queueProcessing(article, { db }));
+                        WHERE id = ${article.articleId} AND processing_state = 'failed'
+                          AND (${article.revision}::integer IS NULL OR revision=${article.revision})
+                          AND processing_error=${`receipt ${receipt.id} outcome unknown`} RETURNING id`;
+  if (!a) return false;
+  const queued = await queueProcessing(article.articleId, { db });
+  if (!queued) await db`UPDATE articles SET processing_queued_at=NULL WHERE id=${article.articleId}`;
+  return !!queued;
 }
 
 /** How the runs page groups failures: the message with ids and numbers masked. */

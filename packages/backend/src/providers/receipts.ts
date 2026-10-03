@@ -24,8 +24,8 @@ export class ReceiptBusyError extends Error {}
 
 export class ReceiptUnknownError extends Error {
   readonly receiptId: number;
-  constructor(receiptId: number, message: string) {
-    super(message);
+  constructor(receiptId: number, message: string, options?: ErrorOptions) {
+    super(message, options);
     this.receiptId = receiptId;
   }
 }
@@ -76,6 +76,7 @@ export function logicalKeyFor(req: ReceiptRequest): string {
 
 interface ReceiptRow {
   id: number;
+  subject: string | null;
   status: string;
   response: unknown;
   created_at: Date;
@@ -115,7 +116,8 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
     // Serialise budget checks per service so concurrent workers cannot overshoot.
     await tx`SELECT pg_advisory_xact_lock(hashtext(${"budget:" + req.service}))`;
     const [existing] = await tx<ReceiptRow[]>`
-      SELECT id, status, response, created_at, updated_at FROM receipts WHERE logical_key = ${logicalKey} FOR UPDATE`;
+      SELECT id, subject, status, response, created_at, updated_at FROM receipts WHERE logical_key = ${logicalKey} FOR UPDATE`;
+    if (existing) await registerConsumers(tx, existing.id, [existing.subject, req.subject]);
     if (existing?.status === "received" || existing?.status === "completed") return { kind: "reuse" as const, row: existing };
     // Finish business writes from saved answers during shutdown, but never reserve or send the
     // next paid page/batch. An answer already in flight still saves below, without this check.
@@ -140,6 +142,7 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
       VALUES (${logicalKey}, ${req.service}, ${req.model ?? null}, ${req.purpose}, ${req.subject ?? null}, 'pending',
               ${tx.json((req.requestSummary ?? {}) as never)}, 1)
       RETURNING id`;
+    await registerConsumers(tx, row!.id, [req.subject]);
     const attemptId = await startAttempt(tx, row!.id, 1, req);
     return { kind: "call" as const, id: row!.id, attemptId };
   });
@@ -163,6 +166,7 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
       await tx`UPDATE receipts SET status = ${status}, error = ${message}, updated_at = now() WHERE id = ${receiptId}`;
       await tx`UPDATE receipt_attempts SET status = ${status}, error = ${message}, latency_ms = ${Date.now() - started}, finished_at = now() WHERE id = ${attemptId}`;
     });
+    if (status === "unknown") throw new ReceiptUnknownError(receiptId, error instanceof Error ? error.message : String(error), { cause: error });
     throw error;
   }
 
@@ -187,6 +191,24 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
       WHERE id = ${attemptId}`;
   });
   return { receiptId, response: outcome.response, reused: false };
+}
+
+async function registerConsumers(db: Db, receiptId: number, subjects: Array<string | null | undefined>): Promise<void> {
+  for (const subject of [...new Set(subjects.filter((s): s is string => s != null))].sort()) {
+    await db`INSERT INTO receipt_consumers(receipt_id,subject) VALUES(${receiptId},${subject}) ON CONFLICT DO NOTHING`;
+  }
+}
+
+/** Freeze claim-time registration before recovery locks articles, then the receipt itself. */
+export async function consumersForRelease(db: Db, id: number): Promise<{ purpose: string; subjects: string[] } | null> {
+  const [receipt] = await db<{ service: string; purpose: string }[]>`SELECT service,purpose FROM receipts WHERE id=${id}`;
+  if (!receipt) return null;
+  await db`SELECT pg_advisory_xact_lock(hashtext(${"budget:" + receipt.service}))`;
+  // The primary subject also covers receipts written by an older application after the migration.
+  const rows = await db<{ subject: string }[]>`
+    SELECT subject FROM receipt_consumers WHERE receipt_id=${id}
+    UNION SELECT subject FROM receipts WHERE id=${id} AND subject IS NOT NULL ORDER BY subject`;
+  return { purpose: receipt.purpose, subjects: rows.map((row) => row.subject) };
 }
 
 async function startAttempt(tx: Db, receiptId: number, attempt: number, req: ReceiptRequest): Promise<number> {

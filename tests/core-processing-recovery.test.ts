@@ -94,6 +94,7 @@ test("a failed audit rolls back the receipt release and the processing job", asy
   await sql`UPDATE articles SET processing_state='failed',processing_error='unknown receipt' WHERE id=${id}`;
   const [receipt] = await sql<{ id: number }[]>`INSERT INTO receipts (logical_key,service,purpose,subject,status)
     VALUES (${`atomic-${T}`},'deepseek','score_article',${`article:${id}@1`},'unknown') RETURNING id`;
+  await sql`UPDATE articles SET processing_error=${`receipt ${receipt!.id} outcome unknown`} WHERE id=${id}`;
   await sql.unsafe(`CREATE FUNCTION fail_release_audit() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN IF NEW.actor = 'test-release-atomic' THEN RAISE EXCEPTION 'injected audit failure'; END IF; RETURN NEW; END $$`);
   await sql.unsafe("CREATE TRIGGER fail_release_audit BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION fail_release_audit()");
@@ -130,6 +131,7 @@ test("a manual re-evaluation survives extraction, a lost job, and receipt releas
   await sql`UPDATE articles SET processing_state='failed' WHERE id=${id}`;
   const [r] = await sql<{ id: number }[]>`INSERT INTO receipts (logical_key,service,purpose,subject,status)
     VALUES (${`identity-${T}`},'deepseek','score_article',${`article:${id}@1`},'unknown') RETURNING id`;
+  await sql`UPDATE articles SET processing_error=${`receipt ${r!.id} outcome unknown`} WHERE id=${id}`;
   await releaseReceipt(r!.id, { billed: false, note: "verified" }, "test");
   const [afterRelease] = await boss.fetch(QUEUES.analyze);
   assert.deepEqual(afterRelease!.data, { articleId: id, attemptTag });
