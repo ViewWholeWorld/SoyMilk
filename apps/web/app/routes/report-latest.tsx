@@ -1,4 +1,5 @@
 import { SITE, subjectAfter, withSubject } from "@aihot/industry/site";
+import { REPORT_CACHE_CONTROL } from "@aihot/contracts/http-policy";
 import { useLoaderData } from "react-router";
 import type { Route } from "./+types/report-latest";
 import type { ReportDetail, ReportNavigationEntry } from "@aihot/contracts/site";
@@ -27,7 +28,7 @@ export function meta({ loaderData, location }: Route.MetaArgs) {
 }
 
 export function headers() {
-  return { "Cache-Control": "public, max-age=0, s-maxage=600, stale-while-revalidate=300" };
+  return { "Cache-Control": REPORT_CACHE_CONTROL };
 }
 
 export default function ReportLatestPage() {

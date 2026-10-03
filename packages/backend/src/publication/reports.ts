@@ -4,7 +4,8 @@ import type { ReportCitation, ReportDetail, ReportIndexEntry, ReportNavigationEn
 import { sql } from "../db.ts";
 import { listedCondition } from "./scope.ts";
 import type { Cached } from "../lib/cache.ts";
-import { publicationCached } from "./cache.ts";
+import { publicationCached, readPublicationCache } from "./cache.ts";
+import { projectReportProse, publicReportContent, reportProseInputs, unavailableReportInputs } from "./report-prose.ts";
 import { proxiedImage, proxiedImageSet } from "../media/imgproxy.ts";
 import { dailyUrl, itemUrl, siteUrl } from "./links.ts";
 import { SITE, withSubject } from "@aihot/industry/site";
@@ -67,6 +68,9 @@ export async function reportIndexRows(kind: ReportKind, limit: number) {
   return sql<{ key: string; issue_number: number; content: Record<string, any>; generated_at: Date }[]>`
     SELECT key, generated_at, (row_number() OVER (ORDER BY key ASC))::int AS issue_number, jsonb_build_object(
       'lead', content->'lead', 'headline', content->'headline', 'title', content->'title',
+      'proseInputs', content->'proseInputs', 'storyOrder', content->'storyOrder',
+      'flashes', (SELECT coalesce(jsonb_agg(jsonb_build_object('itemId', flash->'itemId')), '[]'::jsonb)
+        FROM jsonb_array_elements(jsonb_path_query_array(content, '$.flashes[*]')) AS flash WHERE jsonb_typeof(flash) = 'object'),
       CASE WHEN kind = 'daily' THEN 'sections' ELSE 'themes' END,
       jsonb_build_array(jsonb_build_object(CASE WHEN kind = 'daily' THEN 'items' ELSE 'storyRefs' END,
         (SELECT coalesce(jsonb_agg(jsonb_build_object('itemId', item->'itemId', 'title', item->'title') ORDER BY ord), '[]'::jsonb)
@@ -199,12 +203,16 @@ async function neighbors(kind: ReportKind, key: string): Promise<{ prev: string 
 }
 
 export async function loadReport(kind: ReportKind, key: string): Promise<ReportDetail | null> {
+  return readPublicationCache(() => readReport(kind, key));
+}
+
+async function readReport(kind: ReportKind, key: string): Promise<ReportDetail | null> {
   const [r] = await sql<(ReportRow & { issue_number: number })[]>`
     SELECT r.kind, r.key, r.window_start, r.window_end, r.content, r.generated_at, r.revision,
       (SELECT count(*)::int FROM reports earlier WHERE earlier.kind = r.kind AND earlier.key <= r.key) AS issue_number
     FROM reports r WHERE r.kind = ${kind} AND r.key = ${key}`;
   if (!r) return null;
-  const c = r.content;
+  const c = await publicReportContent(kind, key, r.content);
   const rawItems: Array<Record<string, any>> = [
     ...(c.sections ?? []).flatMap((s: any) => s.items ?? []),
     ...(c.flashes ?? []),
@@ -260,21 +268,27 @@ export async function loadReport(kind: ReportKind, key: string): Promise<ReportD
 
 /**
  * The newest 400 issues of a kind with their withdrawn headline candidates. Every archive, navigation
- * and feed of that kind reads this; it is rebuilt at most once a minute per process (a new issue or a
- * new issue shows within a minute; source permission restrictions invalidate it on the next read).
+ * and feed of that kind reads this. Raw metadata is rebuilt at most once a minute per process;
+ * permission restrictions invalidate it on the next read, and prose is projected on every request.
  */
 const INDEX_LIMIT = 400;
-const indexes = new Map<ReportKind, Cached<{ rows: Awaited<ReturnType<typeof reportIndexRows>>; gone: Set<string> }>>();
-export function reportIndex(kind: ReportKind) {
+const indexes = new Map<ReportKind, Cached<Awaited<ReturnType<typeof reportIndexRows>>>>();
+export async function reportIndex(kind: ReportKind) {
+  return readPublicationCache(() => readReportIndex(kind));
+}
+
+async function readReportIndex(kind: ReportKind) {
   let entry = indexes.get(kind);
   if (!entry) {
-    entry = publicationCached(async () => {
-      const rows = await reportIndexRows(kind, INDEX_LIMIT);
-      return { rows, gone: await unavailableHeadlineIds(rows, kind === "daily" ? "daily" : "periodic") };
-    }, { freshMs: 60_000, maxStaleMs: 10 * 60_000 });
+    entry = publicationCached(() => reportIndexRows(kind, INDEX_LIMIT), { freshMs: 60_000, maxStaleMs: 10 * 60_000 });
     indexes.set(kind, entry);
   }
-  return entry.get();
+  // Cache only raw metadata. Withdrawal checks also protect a warm or stale index on this request.
+  const raw = await entry.get();
+  const inputs = raw.flatMap(row => reportProseInputs(kind, row.content) ?? []);
+  const unavailable = await unavailableReportInputs(inputs);
+  const rows = raw.map(row => ({ ...row, content: projectReportProse(kind, row.key, row.content, unavailable) }));
+  return { rows, gone: await unavailableHeadlineIds(rows, kind === "daily" ? "daily" : "periodic") };
 }
 
 export async function listReports(kind: ReportKind, limit = INDEX_LIMIT): Promise<ReportIndexEntry[]> {
@@ -337,11 +351,15 @@ export async function v1Periods(kind: "weekly" | "monthly", limit: number) {
 }
 
 export async function v1Period(kind: "weekly" | "monthly", key: string | "latest") {
+  return readPublicationCache(() => readV1Period(kind, key));
+}
+
+async function readV1Period(kind: "weekly" | "monthly", key: string | "latest") {
   const [r] = key === "latest"
     ? await sql<ReportRow[]>`SELECT kind, key, window_start, window_end, content, generated_at, revision FROM reports WHERE kind = ${kind} ORDER BY key DESC LIMIT 1`
     : await sql<ReportRow[]>`SELECT kind, key, window_start, window_end, content, generated_at, revision FROM reports WHERE kind = ${kind} AND key = ${key}`;
   if (!r) return null;
-  const c = r.content;
+  const c = await publicReportContent(kind, r.key, r.content);
   const raw = (c.themes ?? []).flatMap((theme: any) => theme.storyRefs ?? []);
   const avail = await availability([...new Set(raw.map((item: any) => item.itemId).filter(Boolean))] as string[]);
   const ok = (item: any) => !item.itemId || (avail.get(item.itemId)?.available ?? true);
@@ -376,11 +394,15 @@ export async function v1Period(kind: "weekly" | "monthly", key: string | "latest
 }
 
 export async function v1Daily(date: string | "latest") {
+  return readPublicationCache(() => readV1Daily(date));
+}
+
+async function readV1Daily(date: string | "latest") {
   const [r] = date === "latest"
     ? await sql<ReportRow[]>`SELECT kind, key, window_start, window_end, content, generated_at, revision FROM reports WHERE kind = 'daily' ORDER BY key DESC LIMIT 1`
     : await sql<ReportRow[]>`SELECT kind, key, window_start, window_end, content, generated_at, revision FROM reports WHERE kind = 'daily' AND key = ${date}`;
   if (!r) return null;
-  const c = r.content;
+  const c = await publicReportContent("daily", r.key, r.content);
   const raw = [...(c.sections ?? []).flatMap((s: any) => s.items ?? []), ...(c.flashes ?? [])];
   const avail = await availability([...new Set(raw.map((i: any) => i.itemId).filter(Boolean))] as string[]);
   const ok = (i: any) => !i.itemId || (avail.get(i.itemId)?.available ?? true);

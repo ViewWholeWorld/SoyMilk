@@ -2,6 +2,7 @@
 // manual overrides and grouping, then record selected-set changes in the sync ledger.
 // Rebuilding only re-reads stored results; it never calls a model.
 import { invalidateStoryInputs } from "../events/derived-content.ts";
+import { advancePublicationPermissions } from "./cache.ts";
 import { SITE } from "@aihot/industry/site";
 import { toPublicApiCategory } from "@aihot/contracts/taxonomy";
 import { config } from "../config.ts";
@@ -92,6 +93,8 @@ export interface PublishOptions {
   now?: Date;
   /** Historical import: the item was already public, so it is released at its discovery time. */
   releasedAt?: Date | null;
+  /** A source edit advances the permission epoch once after its whole batch. */
+  deferPermissionEpoch?: boolean;
 }
 
 export interface PublishResult {
@@ -324,10 +327,11 @@ export async function publishArticleTx(tx: Tx, articleId: string, options: Publi
     ledger = "remove";
   }
 
-  const wasPublic = !!previous && previous.visibility !== "withdrawn" && previous.eligible;
+  // An unlisted article can still have a public detail page or a manually indexed sitemap entry.
+  const wasPublic = !!previous && previous.visibility !== "withdrawn";
   const reduced =
     wasPublic &&
-    (visibility === "withdrawn" || !eligible ||
+    (visibility === "withdrawn" || (previous!.eligible && !eligible) ||
       (previous!.visibility === "public" && visibility !== "public") ||
       (previous!.selected && !selected) ||
       (previous!.body_mode === "full" && bodyMode !== "full") ||
@@ -337,6 +341,7 @@ export async function publishArticleTx(tx: Tx, articleId: string, options: Publi
       (previous.visibility !== visibility || previous.eligible !== eligible || previous.title !== next.title || previous.summary !== summary)) {
     await invalidateStoryInputs(tx, [articleId], now);
   }
+  if (reduced && !options.deferPermissionEpoch) await advancePublicationPermissions(tx);
   return { articleId, changed, selected, visibility, ledger, reduced };
 }
 
@@ -355,7 +360,7 @@ export async function restrictSourcePublications(tx: Tx, sourceId: string): Prom
     await tx`SELECT pg_advisory_xact_lock_shared(hashtext('report_candidates'))`;
     await tx`SELECT pg_advisory_xact_lock(hashtext('selected_ledger'))`;
   }
-  for (const article of published) await publishArticleTx(tx, article.article_id);
+  for (const article of published) await publishArticleTx(tx, article.article_id, { deferPermissionEpoch: true });
 }
 
 /** The search-index decision and resulting projection share the editor's transaction. */

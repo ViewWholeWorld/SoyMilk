@@ -1,12 +1,12 @@
 // RSS routes. Unknown query parameters are accepted and never change content.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { RSS_CACHE_CONTROL } from "@aihot/contracts/http-policy";
+import { RSS_CACHE_CONTROL, REPORT_CACHE_CONTROL } from "@aihot/contracts/http-policy";
 import { dailyFeed, isFeedCategory, itemFeed, type ItemFeedKind } from "@aihot/backend/publication/feeds";
 import { applyPublicHeaders, sendTextWithEtag } from "../http/respond.ts";
 
-async function sendFeed(req: FastifyRequest, reply: FastifyReply, xml: string) {
+async function sendFeed(req: FastifyRequest, reply: FastifyReply, xml: string, cacheControl: string = RSS_CACHE_CONTROL) {
   applyPublicHeaders(reply, { cors: false });
-  return sendTextWithEtag(req, reply, xml, { etagPrefix: "rss", cacheControl: RSS_CACHE_CONTROL, contentType: "application/rss+xml; charset=utf-8" });
+  return sendTextWithEtag(req, reply, xml, { etagPrefix: "rss", cacheControl, contentType: "application/rss+xml; charset=utf-8" });
 }
 
 function feedError(reply: FastifyReply) {
@@ -31,7 +31,7 @@ export function registerFeeds(app: FastifyInstance) {
   app.get("/feed/all.xml", item("all"));
   app.get("/feed/daily.xml", async (req, reply) => {
     try {
-      return await sendFeed(req, reply, await dailyFeed());
+      return await sendFeed(req, reply, await dailyFeed(), REPORT_CACHE_CONTROL);
     } catch (error) {
       req.log.error({ err: error }, "feed error");
       return feedError(reply);

@@ -12,6 +12,7 @@ import { Conflict } from "../audit.ts";
 import { chatJson, ModelOutputError } from "../providers/llm.ts";
 import { completeReceipt, rejectReceivedResponse } from "../providers/receipts.ts";
 import { shutdownSignal } from "../jobs/queue.ts";
+import { publicReportContent } from "../publication/report-prose.ts";
 
 export const REPORT_VERSION = promptVersion("report-daily-lead", "report-period");
 
@@ -130,6 +131,9 @@ async function savedReport(kind: ReportKind, key: string) {
 
 async function saveReport(kind: ReportKind, key: string, start: Date, end: Date, content: Record<string, unknown>, reason: string, model: string, receiptId: number, expectedRevision: number) {
   await sql.begin(async (tx) => {
+    // Wait for permission edits, then check the brief in a fresh snapshot. The model call held no lock.
+    await tx`SELECT pg_advisory_xact_lock(hashtext('report_candidates'))`;
+    content = await publicReportContent(kind, key, content, tx);
     // The row may not exist yet. Serialize only the commit; model calls hold no transaction open.
     await tx`SELECT pg_advisory_xact_lock(hashtext(${`report:${kind}:${key}`}))`;
     const [existing] = await tx<{ id: number; revision: number; content: unknown; generated_at: Date }[]>`
@@ -182,6 +186,7 @@ export async function composeDaily(date: string, reason = "scheduled"): Promise<
   const content = {
     date,
     lead: lead.lead,
+    proseInputs: { version: 1, articleIds: ordered.slice(0, 30).map(e => e.itemId) },
     highlights: lead.highlights,
     sections,
     flashes,
@@ -257,6 +262,7 @@ async function composePeriod(kind: "weekly" | "monthly", key: string, startDate:
     overview: res.data.overview,
     themes,
     storyOrder: top.map((e) => e.itemId),
+    proseInputs: { version: 1, articleIds: top.map(e => e.itemId) },
     metrics: { totalStories: themes.reduce((n, t) => n + t.storyRefs.length, 0), selectedCount: all.length, reportsCovered: Number(dailyCount) },
     generator: { version: REPORT_VERSION, model },
   };

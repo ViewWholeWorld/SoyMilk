@@ -3,6 +3,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { CATEGORY_LABELS } from "@aihot/contracts/taxonomy";
 import { beijingDate } from "@aihot/contracts/time";
+import { REPORT_CACHE_CONTROL } from "@aihot/contracts/http-policy";
 import { loadItemShare } from "@aihot/backend/publication/og";
 import { loadReport, type ReportKind } from "@aihot/backend/publication/reports";
 import { loadTopic } from "@aihot/backend/publication/topics";
@@ -104,12 +105,13 @@ export function registerOg(app: FastifyInstance) {
     if (!["daily", "weekly", "monthly"].includes(kind) || !file.endsWith(".png")) return notFound(reply);
     const r = await loadReport(kind as ReportKind, file.slice(0, -4));
     if (!r) return notFound(reply);
+    reply.header("X-Accel-Expires", "0");
     return send(req, reply, {
       kicker: `${REPORT_NAMES[r.kind]} · ${r.key}`,
       title: r.lead?.title ?? r.title,
       subtitle: r.lead?.leadParagraph ?? r.overview,
       meta: `${r.stories.length} 条核心新闻 · 约 ${r.readingMinutes} 分钟读完`,
-    }, 86400);
+    }, 0, REPORT_CACHE_CONTROL);
   });
 
   app.get("/og/topics/:file", async (req, reply) => {
