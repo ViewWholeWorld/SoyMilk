@@ -19,4 +19,4 @@ const text = readFileSync(".env.example", "utf8")
 writeFileSync(".env", text, { mode: 0o600 });
 console.log("已生成 .env。");
 console.log(`管理员密码：${password}（也写在 .env 的 ADMIN_PASSWORD 里）`);
-if (!llmKey) console.log("还差一步：在 .env 里填上 LLM_API_KEY（以及 LLM_BASE_URL、LLM_MODEL，默认是 DeepSeek）。");
+if (!llmKey) console.log("首次配置请先关闭 COLLECT_ENABLED 和 MODEL_CALLS_ENABLED；启动后在 /admin/models 添加 API Key 或通过 Sign in with Codex 授权，选好模型再决定是否开启生产。");

@@ -1,0 +1,58 @@
+# SoyMilk 当前维护说明
+
+本文件说明当前维护方式。运行计数和首轮状态必须现场查询；[信源记录](soymilk-feeds.md)与[复用实测](codex-reuse-benchmark.md)中的数字是带日期的历史快照。
+
+## 站点与模型
+
+- 站名 SoyMilk，游戏、AI、科技、经济、娱乐五个兴趣领域；行业包有 42 个 RSS 和 44 个主题。各源使用七天新闻窗口，首次导入上限为 2 条，公开摘要与原文链接。
+- NAS 项目目录 `/share/homes/tromso/apps/soymilk`，已配置 SSH 别名 `beans-nas`。内网访问 `http://192.168.1.62:3000`，Tailscale 访问 `http://100.89.232.66:3000`。本站采用使用者选择的 HTTP 私网方式。
+- `/admin/models` 统一管理 API Key 连接、Codex 账号、默认模型及各能力的模型与 reasoning effort。现有默认连接为 gpt-6-luna，使用模型默认强度；目录返回的默认值可能变化，应从当前账号目录确认，不统一假定为 medium。
+- 采集、模型调用已获授权开启；飞书与 IndexNow 关闭。原文抓取失败时保留可取得的 RSS 标题摘要；`JINA_BODY_FALLBACK=false`，不假装取得全文或绕过付费墙。
+- worker 已开启 `CODEX_REUSE_ENABLED=true`、`CODEX_CONCURRENCY=2`、`ANALYZE_CONCURRENCY=2`。连接按两分钟一批复用，空闲两秒释放；账号管理让路、订阅耗尽等待和限流降到单路的保护同时生效。实际服务状态必须检查，不能依据旧标签判断。
+
+## 首轮预算和用量
+
+首轮固定捕获 745 篇，临时限额 30/分钟、600/小时、10000/24小时；文章与关联事件任务结束后，worker 每五分钟的检查自动恢复 10/分钟、120/小时、600/24小时，并重新开始站内预算计数。开放最长 48 小时；此轮到期时间为北京时间 2026-10-05 04:34:53。管理员手动改限额时自动恢复退出，保留手动设置。账号订阅额度不会被站内计数重置。
+
+北京时间 2026-10-03 11:22:58 的只读核验为 active，剩余 174 篇、失败 0、缺失 0、待完成事件任务 4 个，实际限额与临时状态一致。累计已报告输入 31,713,695 token、输出 431,807 token；明确报告缓存的输入 27,155,168 token，其中命中 19,558,400 token，加权缓存率 72.02%。历史缺少缓存明细的 4,558,527 输入 token 保持未知。这是核验时的快照，后续以如下查询为准：
+
+```sh
+ssh beans-nas
+cd /share/homes/tromso/apps/soymilk
+sh deploy/nas/compose.sh ps
+sh deploy/nas/compose.sh exec -T api node --input-type=module <<'JS'
+import { bootstrapBudgetStatus } from '@aihot/backend/operations/bootstrap-budget';
+import { modelsOverview } from '@aihot/backend/admin/models';
+import { sql, closeDb } from '@aihot/backend/db';
+console.log(JSON.stringify({bootstrap:await bootstrapBudgetStatus()}));
+console.log(JSON.stringify({tokenSummary:(await modelsOverview()).tokenSummary}));
+console.log(JSON.stringify({budgets:await sql`SELECT service,per_minute,per_hour,per_day,window_started_at FROM budgets WHERE service='llm'`}));
+await closeDb();
+JS
+```
+
+以上查询不调用模型，仅输出统计。不要读取或输出环境文件、密钥、授权文件或完整连接配置。缓存率按明确报告缓存状态的输入 token 加权；缺少缓存明细的历史请求保持未知。推理 token 已包含在输出内，回执复用不重复计入。
+
+达到站内次数上限后等待窗口，订阅额度耗尽后等待重置；正常等待不等于 worker 故障。保持既有回执与请求身份，不通过重评、更换账号或自动提高限额消除等待。恢复遗漏时先修复 worker，必要时调用现有 `reconcileBootstrapBudget()` 接续恢复，不手工覆盖其状态。
+
+## 更新时间与页面
+
+左侧为收录或事件进展时间，使用北京时间；模型排队不会改写时间轴。首次集中采集会令多篇文章显示相同分钟，详见[时间轴与时区](timeline-time.md)。
+
+更新 NAS 统一通过 `deploy/nas/compose.sh`，该入口加载私有 NAS 覆盖、`compose.codex-worker.yml` 和 `compose.web-time.yml`。这些 NAS 覆盖文件保存在部署目录，不应误以为仅运行根目录 Compose 就会保留正式配置。
+
+后续更新网页时同步更新 `compose.web-time.yml` 指向的镜像；更新 API/worker 时核对 `compose.codex-worker.yml`。不要只重建根目录镜像却仍由覆盖文件指向旧版本。
+
+北京时间 2026-10-03 11:20:39 已部署网页时间说明，web 镜像为 `soymilk-nas-web:timeline-time`，SHA256 为 `1bd5f533ea1a485029428603fec687f779c34da4b427ae43da4a7a54f443fbb4`。API 和 worker 的容器 ID、镜像及启动时间保持原样，继续使用 `soymilk-nas-app:codex-worker`。网页回退点为 `backups/web-time-20261003-112033`，保留原覆盖入口和旧网页镜像，不涉及数据库恢复；后续维护仍须现场核对实际镜像。
+
+先按 feature 提交经过验证的代码，再进入下一项。部署前保存当前镜像与覆盖入口；仅改网页时只替换 web。API 无 Docker 健康检查字段时使用 `/api/health` 的实际 HTTP 响应。已计费的请求必须保留，代码回退时不通过恢复旧数据库覆盖新回执。
+
+## 验证现况
+
+2026-10-03 时间说明修改：类型检查、网页构建、31 项网页测试、手机宽度的精选与全部动态显示，以及 NAS 候选镜像的两项 Linux SSR 检查通过。正式部署后从内网实际访问地址运行 34 项公开页面、API、RSS、MCP 冒烟检查全部通过；MCP 对内部容器别名 `web` 的 Host 拒绝属于现有策略，测试应使用实际站点主机。
+
+完整隔离回归 612 项中 560 通过、51 失败、1 取消；此前为 562 通过、49 失败、1 取消。
+
+比旧基线多出现的两项失败是 `core-source-promotion` 的恢复数量断言，以及 `selection-eval-runtime` 将缓存前后的 `wallSeconds` 纳入相等比较（本次 1 秒与 0 秒）。本次完整运行耗时约 880 秒，旧基线约 338 秒。
+
+随后在另一个独立空测试库仅复核这两项：恢复数量测试通过；评测测试仍因 `wallSeconds` 为 1 秒与 0 秒失败，决策、准确率、token 和平均延迟等其余字段一致。恢复数量断言涉及全库扫描，完整套件的跨用例影响仍需另项排查；耗时相等的断言也未修改。不能宣称全套通过或已修复这些失败。本次仅改时间说明及维护文档，没有修改后端业务代码。隔离测试网络无外网，测试容器已清理，未访问生产数据库或模型。

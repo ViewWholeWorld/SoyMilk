@@ -30,7 +30,7 @@ Codex 账号卡片、连接编辑表单，以及下方各项能力的「切换�
 
 API Key 连接可在编辑表单设置强度，经兼容接口的 `reasoning_effort` 发送；支持程度由服务商和模型决定，不支持时保留默认。显式开启推理时不发送 temperature，避免接口拒绝不兼容的采样参数。Codex 强度通过 `turn/start.effort` 发送；配置变化会隔离回执，不能复用旧强度的结果。
 
-保存、登录和读取状态不会启动采集或推理，`MODEL_CALLS_ENABLED=false` 和 `COLLECT_ENABLED=false` 保持关闭。模型只在 worker 调用，经原有回执和预算熔断。Codex 使用临时会话和只读沙箱，关闭命令、图片文件读取、网页搜索，拒绝所有服务端工具/批准请求。配置接口需要管理员会话，写请求验证 CSRF，授权结果仅发起登录的会话可查询。
+保存、登录和读取状态不会改变采集或推理开关。首次配置和开发测试使用 `MODEL_CALLS_ENABLED=false`、`COLLECT_ENABLED=false`；SoyMilk 正式 NAS 已经使用者授权开启，维护配置时不要意外关闭生产任务，现况见 [维护说明](soymilk-operations.md)。模型只在 worker 调用，经原有回执和预算熔断。Codex 使用临时会话和只读沙箱，关闭命令、图片文件读取、网页搜索，拒绝所有服务端工具/批准请求。配置接口需要管理员会话，写请求验证 CSRF，授权结果仅发起登录的会话可查询。
 
 Codex 和网页配置的接口使用 `EGRESS_PROXY_URL`；新接口禁止跳转并保留出站地址检查。本地推理服务需由部署者按现有网络策略配置。
 
@@ -50,9 +50,9 @@ Codex 和网页配置的接口使用 `EGRESS_PROXY_URL`；新接口禁止跳转�
 
 SoyMilk 的默认模型可以使用官方 **Sign in with ChatGPT** 的订阅授权。此功能用于 worker 的内容筛选、写作和日报；后台仍使用管理员密码登录。
 
-这是一条独立的 OAuth 授权：**不要导入 Codex 的 `auth.json`，也不要把访问令牌填进 `LLM_API_KEY`**。已有 Codex 登录不代表已经授予 SoyMilk 使用订阅的权限。当前官方接口处于预览阶段，可用模型和额度以授权账号为准。
+这是一条独立的 OAuth 授权：**不要导入 Codex 的 `auth.json`，也不要把访问令牌填进 `LLM_API_KEY`**。已有 Codex 登录不代表已经授予 SoyMilk 此独立路径使用订阅的权限，可用模型和额度以授权账号及服务端返回为准。
 
-## 配置
+### 高级命令行配置
 
 首次配置期间保持 `COLLECT_ENABLED=false` 和 `MODEL_CALLS_ENABLED=false`。在运行浏览器的电脑上，用 Node.js 24 执行：
 
@@ -79,9 +79,9 @@ CHATGPT_PROFILE=default
 
 配置不会打开模型或采集安全阀。正式采集和推理需要另行启用；开发和测试保持关闭。
 
-## NAS：通过 SSH 完成授权
+### 高级命令行模式：NAS 通过 SSH 完成授权
 
-推荐在 NAS 本身保存并续期令牌，通过 SSH 将回调端口转发到运行浏览器的电脑。先暂停 worker，避免维护进程和 worker 同时使用刷新令牌。
+仅当明确使用上述 `LLM_AUTH_MODE=chatgpt` 的独立命令行模式时，才需要这一节的 SSH 回调转发。当前 SoyMilk 使用网页 Codex 设备代码授权，按文首流程即可，不需要端口隧道或暂停 worker。命令行模式在 NAS 本身保存并续期令牌；切换到该模式前先暂停 worker，避免维护进程和 worker 同时使用刷新令牌。
 
 在电脑的一个终端运行（`nas` 换成已配置的 SSH 别名）：
 
@@ -104,7 +104,7 @@ docker run --rm --network host \
 
 如果选择在电脑完成登录后复制凭据，先在 NAS 执行 `init-host` 生成并保留它自己的 `host.json`，只通过 SSH 导入对应 profile 的 JSON，**不要用电脑的 host.json 覆盖 NAS 的主机标识**。随后由 NAS 独占续期该会话，避免电脑同时刷新同一套令牌。
 
-## 凭据与多账号
+### 高级命令行凭据与多账号
 
 凭据保存在 `.data/chatgpt/<CHATGPT_PROFILE>.json`，每个 profile 独立保存注册 ID、验证后的账号身份、授权范围和令牌；`host.json` 保存持久化的主机标识。用 `CHATGPT_PROFILE=another` 添加另一个账号，切换配置后重建 worker。已有 profile 的重新授权必须验证为同一个账号。
 
@@ -122,15 +122,15 @@ node --env-file-if-exists=.env scripts/chatgpt-auth.ts logout
 
 命令先向 OpenAI 撤销会话，成功后清除本地令牌，保留账号注册和主机标识。网络故障时保留令牌以便重试；也可以在 ChatGPT 设置中断开应用，再按状态提示重新授权。
 
-## 请求和恢复
+### 高级命令行请求和恢复
 
 所有模型请求仍经过现有 `paidRequest`、`llm` 预算及回执。回执身份包括传输方式和账号注册的哈希，不含令牌。响应中的用量转为已有后台使用的字段；订阅消耗不是 API 现金费用，不伪造金额。
 
-接口使用 `/v1/responses`、`store:false`、`stream:true`。不发送本预览接口不支持的 `temperature`、输出 token 上限和服务商附加参数；JSON 输出由提示词和原有 schema 校验约束。因不发送 token 上限，需同时设置请求预算和 ChatGPT 侧应用额度。
+此适配器使用 `/v1/responses`、`store:false`、`stream:true`，不发送 `temperature`、输出 token 上限和服务商附加参数；JSON 输出由提示词和原有 schema 校验约束。因不发送 token 上限，需同时设置请求预算和 ChatGPT 侧应用额度。
 
 只有 `response.completed` 才算收到完整结果。中断或不完整的流保留“结果不明”回执，继续走原有恢复流程；429、授权失效和额度错误不会切换到另一收费接口。配额和会话失效需在 ChatGPT 设置或重新授权中解决。
 
-## 验证与官方文档
+### 高级命令行验证与官方文档
 
 `tests/chatgpt-auth.test.ts` 使用内存 HTTPS 替身和虚构凭据，禁止外部连接；覆盖 OAuth 状态、ID-token 签名与身份、授权范围、令牌轮换、存储权限、Responses 参数、流中断、回执复用和预算。
 
