@@ -22,7 +22,7 @@ const provider = await stub((_hit, req) => {
   const system = body.messages[0]?.role === "system" ? body.messages[0].content : "";
   const input = JSON.stringify(body.messages);
   let answer: unknown;
-  if (system.includes("宽召回的AI相关性预筛")) answer = { label: input.includes("OFFTOPIC") ? "BLOCK" : "PASS", reason: "测试" };
+  if (system.includes("做宽召回的")) answer = { label: input.includes("OFFTOPIC") ? "BLOCK" : "PASS", reason: "测试" };
   else if (system.includes("事件注意力评分器")) answer = { attentionScore: 80 };
   else if (system.includes("内容理解编辑")) answer = { itemType: "model_release", authorRole: "principal", tags: ["模型发布"], editorialJudgment: "测试判断", titleZh: "某实验室发布新模型", summaryZh: "某实验室发布新模型，并公布评测结果和价格。" };
   else if (system.includes("资料结构化助手")) answer = { category: "ai-models", tags: ["模型发布"], subjects: [], fact: { title: "某实验室发布新模型" } };
@@ -286,9 +286,11 @@ test("large promotion resets every eligible item, queues the newest 500, and swe
     WHERE a.source_id = ${sourceId} AND j.name = ${QUEUES.analyze}`).map((r) => r.article_id).sort();
   assert.deepEqual(await queuedIds(), ids.slice(0, 500).sort());
   for (const id of ids.slice(500)) assert.equal((await processingJobs(id)).length, 0);
-  assert.equal((await sweepUnprocessed()).enqueued, 2);
+  // The sweep covers the whole database; assert this source's exact jobs, not other files' counts.
+  await sweepUnprocessed();
   assert.deepEqual(await queuedIds(), [...ids].sort());
-  assert.equal((await sweepUnprocessed()).enqueued, 0);
+  await sweepUnprocessed();
+  assert.deepEqual(await queuedIds(), [...ids].sort(), "another sweep does not duplicate this source's jobs");
   await edit(sourceId, { participation_mode: "editorial" });
   assert.equal((await queuedIds()).length, 502);
 });

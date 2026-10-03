@@ -2,10 +2,17 @@
 // deployment names in LLM_BASE_URL / LLM_API_KEY / LLM_MODEL, and every capability uses it unless an
 // environment variable or the admin's model page picks one of the named presets below.
 import type { z } from "zod";
+import type { ReasoningEffort } from "@aihot/contracts/admin";
 import { config, credential } from "../config.ts";
 import { sha256 } from "../lib/ids.ts";
 import { completeReceipt, paidRequest, ProviderRejectedError, rejectReceivedResponse } from "./receipts.ts";
 import { sql } from "../db.ts";
+import { chatGPTAccess } from "./chatgpt-auth.ts";
+import { chatGPTBody, requestChatGPT } from "./chatgpt.ts";
+import { codexIdentity, readModelConfig } from "./model-config.ts";
+import { requestCodex, type CodexServer } from "./codex.ts";
+import { withCodexServer } from "./codex-session.ts";
+import { guardedFetch, type GuardedResponse } from "../lib/http-fetch.ts";
 
 export interface ModelSpec {
   key: string;
@@ -17,6 +24,8 @@ export interface ModelSpec {
   extra?: Record<string, unknown>;
   jsonMode: boolean;
   vision?: boolean;
+  reasoningEffort?: ReasoningEffort | null;
+  connection?: { type: "api-key" | "codex"; baseUrl?: string; apiKey?: string; generation: string };
 }
 
 function extraFromEnv(value: string | undefined): Record<string, unknown> | undefined {
@@ -81,6 +90,21 @@ export const MODELS: Record<string, ModelSpec> = {
     extra: { enable_thinking: false }, jsonMode: false, vision: true,
   },
 };
+
+export async function registeredModels(): Promise<Record<string, ModelSpec>> {
+  const c = await readModelConfig();
+  const models = { ...MODELS };
+  for (const v of c.connections) {
+    const key = `connection:${v.id}`;
+    const spec: ModelSpec = { key, service: "llm", model: v.model, baseUrlEnv: "", apiKeyEnv: "", jsonMode: v.jsonMode, vision: v.vision,
+      reasoningEffort: v.reasoningEffort,
+      extra: v.type === "api-key" && v.reasoningEffort ? { reasoning_effort: v.reasoningEffort } : undefined,
+      connection: { type: v.type, baseUrl: v.baseUrl, apiKey: v.apiKey, generation: v.generation } };
+    models[key] = spec;
+    if (c.active === v.id) models.default = { ...spec, key: "default" };
+  }
+  return models;
+}
 
 export type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 
@@ -158,17 +182,35 @@ function isConnectFailure(error: unknown): boolean {
 }
 
 export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): Promise<ChatJsonResult<z.infer<S>>> {
-  const spec = MODELS[opts.model];
-  if (!spec) throw new Error(`Unknown model ${opts.model}`);
   if (!config.modelCallsEnabled) throw new Error("Model calls are disabled (MODEL_CALLS_ENABLED=false)");
-  const baseUrl = credential("models", spec.baseUrlEnv);
-  const apiKey = credential("models", spec.apiKeyEnv);
-  if (!baseUrl || !apiKey || !spec.model) throw new Error(`Model ${opts.model} is not configured (${spec.baseUrlEnv}, ${spec.apiKeyEnv}${spec.key === "default" ? ", LLM_MODEL" : ""})`);
+  const spec = (await registeredModels())[opts.model];
+  if (!spec) throw new Error(`Unknown model ${opts.model}`);
+  const authMode = spec.connection?.type ?? (spec.key === "default" ? process.env.LLM_AUTH_MODE || "api-key" : "api-key");
+  if (!["api-key", "chatgpt", "codex"].includes(authMode)) throw new Error("LLM_AUTH_MODE must be api-key, chatgpt or codex");
+  if (authMode === "codex") {
+    if (!spec.model) throw new Error("请配置 Codex 模型名");
+    return withCodexServer(async (server) => {
+      const a = await server.request("account/read", { refreshToken: false });
+      if (a.account?.type !== "chatgpt") throw new Error("请先在网页连接 Codex 账号");
+      const generation = await codexIdentity();
+      return await executeChatJson(opts, spec, null, null, null, { server, generation });
+    });
+  }
+  const chatgpt = authMode === "chatgpt";
+  const baseUrl = chatgpt ? null : spec.connection?.baseUrl ?? credential("models", spec.baseUrlEnv);
+  const apiKey = chatgpt ? null : spec.connection?.apiKey ?? credential("models", spec.apiKeyEnv);
+  if (!spec.model || (!chatgpt && (!baseUrl || !apiKey))) throw new Error(`Model ${opts.model} is not configured (${spec.baseUrlEnv}, ${spec.apiKeyEnv}${spec.key === "default" ? ", LLM_MODEL" : ""})`);
+  const access = chatgpt ? await chatGPTAccess() : null;
+  return executeChatJson(opts, spec, baseUrl, apiKey, access, null);
+}
+
+async function executeChatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>, spec: ModelSpec, baseUrl: string | null | undefined, apiKey: string | null | undefined,
+  access: Awaited<ReturnType<typeof chatGPTAccess>> | null, codex: { server: CodexServer; generation: string } | null): Promise<ChatJsonResult<z.infer<S>>> {
 
   const temperature = opts.temperature ?? 0.2;
   const maxTokens = Math.max(opts.maxTokens ?? 1500, 512) + (spec.key.endsWith("-think") ? 4000 : 0);
   const userText = typeof opts.user === "string" ? opts.user : JSON.stringify(opts.user);
-  const body: Record<string, unknown> = {
+  const body: Record<string, unknown> = access ? chatGPTBody(spec.model, opts.system, opts.user, opts.json !== false) : {
     model: spec.model,
     messages: [
       // A prompt given as one user message (the title/summary prompts) has no system message.
@@ -176,7 +218,7 @@ export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): P
       // Multimodal parts go through as parts; plain objects are sent as JSON text.
       { role: "user", content: typeof opts.user === "string" || Array.isArray(opts.user) ? opts.user : userText },
     ],
-    temperature,
+    ...(spec.reasoningEffort && spec.reasoningEffort !== "none" ? {} : { temperature }),
     max_tokens: maxTokens,
     ...(spec.jsonMode && opts.json !== false ? { response_format: { type: "json_object" } } : {}),
     ...(spec.extra ?? {}),
@@ -188,28 +230,43 @@ export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): P
       model: spec.model,
       purpose: opts.purpose,
       subject: opts.subject,
-      identity: { model: spec.model, promptVersion: opts.promptVersion, system: sha256(opts.system), user: sha256(userText), temperature, maxTokens, extra: spec.extra ?? null },
-      requestSummary: { promptVersion: opts.promptVersion, systemHash: sha256(opts.system), userHash: sha256(userText), userChars: userText.length, temperature, maxTokens },
+      identity: { model: spec.model, promptVersion: opts.promptVersion, system: sha256(opts.system), user: sha256(userText), temperature, maxTokens, extra: spec.extra ?? null, ...(spec.reasoningEffort ? { reasoningEffort: spec.reasoningEffort } : {}), ...(access ? { transport: "chatgpt-responses-v1", registrationHash: sha256(access.registration) } : {}), ...(spec.connection ? { connection: spec.connection.generation } : {}), ...(codex ? { transport: "codex-app-server", account: codex.generation } : {}) },
+      requestSummary: { promptVersion: opts.promptVersion, systemHash: sha256(opts.system), userHash: sha256(userText), userChars: userText.length, temperature, maxTokens, reasoningEffort: spec.reasoningEffort ?? null },
       attemptTag: opts.attemptTag,
     },
     async () => {
       const started = Date.now();
-      let res: Response;
+      if (codex) {
+        const json = await requestCodex(codex.server, spec.model, opts.system, opts.user, opts.json !== false, opts.timeoutMs ?? 120_000, spec.reasoningEffort);
+        return { response: { ...json, _latencyMs: Date.now() - started }, requestId: json.id, usage: json.usage, cost: null };
+      }
+      if (access) {
+        const json = await requestChatGPT(body, access.token, opts.timeoutMs ?? 120_000);
+        return { response: { ...json, _latencyMs: Date.now() - started }, requestId: json.id as string, usage: json.usage as Record<string, unknown> | null, cost: null };
+      }
+      let res: Response | GuardedResponse;
       try {
-        res = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
+        const url = `${baseUrl!.replace(/\/$/, "")}/chat/completions`;
+        const headers = { "content-type": "application/json", authorization: `Bearer ${apiKey}` };
+        res = spec.connection ? await guardedFetch(url, {
+          method: "POST", headers, body: JSON.stringify(body), timeoutMs: opts.timeoutMs ?? 120_000,
+          maxRedirects: 0, maxBytes: 4 * 1024 * 1024,
+        }) : await fetch(url, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
           body: JSON.stringify(body),
           signal: AbortSignal.timeout(opts.timeoutMs ?? 120_000),
         });
       } catch (error) {
+        if (spec.connection && isConnectFailure(error)) throw new ProviderRejectedError("模型接口连接失败", null, true);
         if (isConnectFailure(error)) throw new ProviderRejectedError(`connect failed: ${String(error)}`, null, true);
+        if (spec.connection) throw new Error("模型接口请求未完成，请检查地址与网络；执行结果未知");
         throw error;
       }
       const text = await res.text();
-      if (!res.ok) {
+      if (res.status < 200 || res.status >= 300) {
         const retryable = res.status === 429 || res.status >= 500;
-        throw new ProviderRejectedError(`HTTP ${res.status}: ${text.slice(0, 500)}`, res.status, retryable);
+        throw new ProviderRejectedError(spec.connection ? `模型接口返回 HTTP ${res.status}` : `HTTP ${res.status}: ${text.slice(0, 500)}`, res.status, retryable);
       }
       let json: Record<string, unknown>;
       try {

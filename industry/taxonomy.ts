@@ -8,6 +8,10 @@
  * 没归上类的资料在日报里放进第一个 key 为 industry 的类别所在的节（没有就放最后一节）。
  */
 export const CATEGORIES = [
+  { key: "games", label: "游戏", section: "游戏", guide: "游戏发布、重大更新、开发、独立游戏、游戏产业、平台与主机；非 AI 专题的游戏评测和分析也归这里" },
+  { key: "technology", label: "科技", section: "科技与开发", guide: "消费科技、硬件与芯片、软件、开发工具、自托管、NAS、网络、容器、DNS、网络安全与科学；核心是 AI 模型或 AI 产品时用对应 AI 类别" },
+  { key: "economy", label: "经济", section: "经济与产业", guide: "宏观经济、金融市场、贸易、政策、产业与供应链、企业经营；核心为 AI 企业或 AI 技术产业时用 industry" },
+  { key: "entertainment", label: "娱乐", section: "影视与娱乐", guide: "电影、电视剧、流媒体、动漫、音乐、作品发布与评价、娱乐产业；游戏使用 games" },
   { key: "ai-models", label: "模型", section: "模型发布/更新", guide: "新模型、模型版本、权重开放、模型能力与价格变化的发布与评测结果" },
   { key: "ai-products", label: "产品", section: "产品发布/更新", guide: "AI 产品、功能、应用、工具、API 与平台的发布和更新" },
   { key: "industry", label: "行业", section: "行业动态", guide: "公司经营、融资并购、人事、合作、诉讼、监管与政策、市场与基础设施" },
@@ -32,6 +36,7 @@ export const CATEGORY_TAGS = [
 
 /** 可选的主题标签。 */
 export const TOPIC_TAGS = [
+  "AI", "游戏", "科技", "经济", "娱乐", "自托管", "网络安全", "硬件/芯片", "宏观/市场", "影视", "流媒体", "动漫", "科学",
   "Agent", "编码", "推理", "多模态", "语音", "视频", "图像生成", "RAG", "端侧", "数据/训练", "搜索", "部署/工程", "开源生态", "具身智能", "MCP/工具调用",
 ] as const;
 

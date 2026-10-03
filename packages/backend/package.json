@@ -9,6 +9,7 @@
     "@aihot/contracts": "*",
     "@aihot/industry": "*",
     "@mozilla/readability": "0.6.0",
+    "@openai/codex": "0.160.0",
     "@paralleldrive/cuid2": "3.3.0",
     "cheerio": "1.2.0",
     "fast-xml-parser": "5.11.1",

@@ -83,8 +83,8 @@ interface ReceiptRow {
 }
 
 async function checkBudget(tx: Db, service: string): Promise<void> {
-  const [budget] = await tx<{ per_minute: number; per_hour: number; per_day: number }[]>`
-    SELECT per_minute, per_hour, per_day FROM budgets WHERE service = ${service}`;
+  const [budget] = await tx<{ per_minute: number; per_hour: number; per_day: number; window_started_at: Date | null }[]>`
+    SELECT per_minute, per_hour, per_day, window_started_at FROM budgets WHERE service = ${service}`;
   if (!budget) return; // default rows come with the migrations; a service an operator removed is unlimited
   // Every request sent counts, retries of the same logical request included.
   const [counts] = await tx<{ minute: number; hour: number; day: number }[]>`
@@ -93,7 +93,8 @@ async function checkBudget(tx: Db, service: string): Promise<void> {
       count(*) FILTER (WHERE started_at > now() - interval '1 hour') AS hour,
       count(*) AS day
     FROM receipt_attempts
-    WHERE service = ${service} AND origin = 'live' AND started_at > now() - interval '1 day'`;
+    WHERE service = ${service} AND origin = 'live' AND started_at > now() - interval '1 day'
+      AND (${budget.window_started_at}::timestamptz IS NULL OR started_at >= ${budget.window_started_at})`;
   const c = counts!;
   if (budget.per_minute <= 0 || budget.per_hour <= 0 || budget.per_day <= 0) {
     throw new BudgetExceededError(service, "stopped", 3600);

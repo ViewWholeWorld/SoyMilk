@@ -1,4 +1,4 @@
-import { gate, stub, tag } from "./setup.ts";
+import { gate, stub, tag, useModelStubs } from "./setup.ts";
 // A selected item released across the 08:00 boundary must appear in the next issue exactly once.
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
@@ -16,8 +16,7 @@ const provider = await stub((hit) => ({
   choices: [{ message: { content: JSON.stringify({ title: "测试导语", leadParagraph: "测试摘要", highlights: [1] }) } }],
   usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
 }));
-process.env.DEEPSEEK_BASE_URL = `${provider.url}/v1`;
-process.env.DEEPSEEK_API_KEY = "test-key";
+await useModelStubs({ DEEPSEEK: provider.url });
 
 before(async () => {
   await sql`INSERT INTO sources (id, name, kind, tier, participation_mode, next_fetch_at)

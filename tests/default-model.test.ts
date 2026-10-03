@@ -1,6 +1,6 @@
 // The open-source default: one OpenAI-compatible model (LLM_BASE_URL, LLM_API_KEY, LLM_MODEL) runs every
 // step of the analysis, with no per-step configuration.
-import { stub, tag } from "./setup.ts";
+import { stub, tag, useModelStubs } from "./setup.ts";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
@@ -29,7 +29,8 @@ const provider = await stub((_hit, req) => {
   if (content === null) throw new Error("unexpected request");
   return { id: `stub-${seen.length}`, choices: [{ message: { content: typeof content === "string" ? content : JSON.stringify(content) } }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
 });
-Object.assign(process.env, { LLM_BASE_URL: `${provider.url}/v1`, LLM_API_KEY: "test-key", LLM_MODEL: "one-model", MODEL_CALLS_ENABLED: "true" });
+await useModelStubs({ LLM: provider.url });
+process.env.LLM_MODEL = "one-model";
 
 before(async () => {
   await sql`INSERT INTO sources (id, name, kind, tier, participation_mode, next_fetch_at) VALUES (${SOURCE}, 'Test default model', 'rss', 'T1', 'editorial', '2100-01-01')`;

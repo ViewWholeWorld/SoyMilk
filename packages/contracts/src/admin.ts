@@ -367,6 +367,25 @@ export interface AdminSettings {
 
 // Models and evaluation (F20)
 
+export const REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+export type ReasoningEffort = typeof REASONING_EFFORTS[number];
+export interface AdminCodexModel {
+  model: string; name: string; vision: boolean;
+  defaultReasoningEffort: ReasoningEffort | null;
+  supportedReasoningEfforts: Array<{ reasoningEffort: ReasoningEffort; description: string }>;
+}
+export interface AdminModelConnection {
+  id: string; name: string; type: "api-key" | "codex"; model: string; baseUrl?: string;
+  keyConfigured: boolean; jsonMode: boolean; vision: boolean; reasoningEffort?: ReasoningEffort | null;
+}
+export interface AdminModelConfiguration {
+  active: string | null; connections: AdminModelConnection[]; modelCallsEnabled: boolean; collectEnabled: boolean;
+}
+export interface AdminCodexLogin {
+  id: string; state: "pending" | "success" | "failed" | "cancelled"; verificationUrl: string; userCode: string; expiresAt: number; error: string | null;
+}
+export interface AdminCodexAccount { connected: boolean; email: string | null; plan: string | null; loginInProgress?: boolean; pendingLogin?: AdminCodexLogin | null }
+
 export interface AdminModelUsage {
   purpose: string;
   model: string | null;
@@ -379,13 +398,36 @@ export interface AdminModelUsage {
   p95: number | null;
   tokensIn: number;
   tokensOut: number;
+  cachedTokensIn: number | null;
+  uncachedTokensIn: number | null;
+  cacheMeasuredInputTokens: number;
+  cacheReportedCalls: number;
+  cacheHitRate: number | null;
+  reasoningTokensOut: number | null;
   actualCost: number | null;
   currency: string | null;
   estimate: { amount: number; currency: string } | null;
 }
 
+export interface AdminBootstrapBudget {
+  status: "active" | "restored" | "expired" | "superseded";
+  startedAt: string; expiresAt: string; restoredAt?: string;
+  total: number; pending: number; failed: number; missing: number; pendingEvents: number;
+  perMinute: number; perHour: number; perDay: number;
+  original: { perMinute: number; perHour: number; perDay: number };
+}
+
+export interface AdminTokenSummary {
+  calls: number; tokensIn: number; tokensOut: number;
+  cachedTokensIn: number | null; uncachedTokensIn: number | null;
+  cacheMeasuredInputTokens: number; cacheUnknownInputTokens: number; cacheReportedCalls: number;
+  cacheHitRate: number | null; reasoningTokensOut: number | null;
+}
+
 export interface AdminModels {
   days: number;
+  tokenSummary: AdminTokenSummary;
+  bootstrap: AdminBootstrapBudget | null;
   capabilities: Array<{ key: string; label: string; env: string; defaultModel: string; vision: boolean; current: { model: string; source: "admin" | "env" | "default" }; usage: AdminModelUsage[] }>;
   choices: Array<{ key: string; service: string; vision: boolean }>;
   history: Array<{ at: Timestamp; actor: string; subject: string; reason: string | null; before: { model: string; source: string } | null; after: { model: string; source: string } | null }>;

@@ -2,7 +2,7 @@
 // skips the analysis queue; history (a backfill that was already old when found) waits behind live
 // work and founds no event; a post that found no story is grouped again when a report founds a fact
 // close to it, or when the post it quotes arrives and joins a fact.
-import { stub, tag } from "./setup.ts";
+import { stub, tag, useModelStubs } from "./setup.ts";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
@@ -31,8 +31,7 @@ const provider = await stub((_hit, req) => {
   const answer = { query: "收购", decisions: [{ id: "C1", relation: "SAME_OCCURRENCE", confidence: 0.95, note: "" }] };
   return { id: "stub", choices: [{ message: { content: JSON.stringify(answer) } }], usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } };
 });
-for (const name of ["DASHSCOPE_BASE_URL", "DEEPSEEK_BASE_URL"]) process.env[name] = `${provider.url}/v1`;
-for (const name of ["DASHSCOPE_API_KEY", "DEEPSEEK_API_KEY"]) process.env[name] = "test-key";
+await useModelStubs({ DASHSCOPE: provider.url, DEEPSEEK: provider.url });
 
 async function job(articleId: string) {
   const [j] = await sql<{ name: string; priority: number; data: { signalOnly?: boolean } }[]>`

@@ -8,7 +8,7 @@
 // same date makes an unconfirmed direct reset count as the most recent confirmed reset.
 // Delivery failure: a combined card records only its first event as subject, losing later corrections
 // to its other events; an amendment that was omitted for a group must not count as an announcement.
-import { gate, stub } from "./setup.ts";
+import { gate, stub, useModelStubs } from "./setup.ts";
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
 import { config } from "@aihot/backend/config";
@@ -28,8 +28,7 @@ const provider = await stub((_hit, req) => answer(req.url));
 const model = await stub(() => ({ choices: [{ message: { content: JSON.stringify(modelAnswer) }, finish_reason: "stop" }] }));
 process.env.SOCIALDATA_BASE_URL = provider.url;
 process.env.SOCIALDATA_API_KEY = "test-key";
-process.env.DEEPSEEK_BASE_URL = model.url;
-process.env.DEEPSEEK_API_KEY = "test-key";
+await useModelStubs({ DEEPSEEK: model.url });
 config.allowPrivateNetworkFetch = true;
 
 beforeEach(async () => {

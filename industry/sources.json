@@ -8,8 +8,10 @@
       "config": {
         "feedUrl": "https://openai.com/news/rss.xml",
         "_aihot": {
-          "initialBackfillLimit": 8
-        }
+          "initialBackfillLimit": 2
+        },
+        "maxItemAgeDays": 7,
+        "sortByPublishedAt": true
       },
       "tier": "T1",
       "first_party": true,
@@ -29,8 +31,10 @@
       "config": {
         "feedUrl": "https://deepmind.google/blog/rss.xml",
         "_aihot": {
-          "initialBackfillLimit": 8
-        }
+          "initialBackfillLimit": 2
+        },
+        "maxItemAgeDays": 7,
+        "sortByPublishedAt": true
       },
       "tier": "T1",
       "first_party": true,
@@ -50,8 +54,10 @@
       "config": {
         "feedUrl": "https://research.google/blog/rss/",
         "_aihot": {
-          "initialBackfillLimit": 8
-        }
+          "initialBackfillLimit": 2
+        },
+        "maxItemAgeDays": 7,
+        "sortByPublishedAt": true
       },
       "tier": "T1",
       "first_party": true,
@@ -72,8 +78,10 @@
       "config": {
         "feedUrl": "https://huggingface.co/blog/feed.xml",
         "_aihot": {
-          "initialBackfillLimit": 8
-        }
+          "initialBackfillLimit": 2
+        },
+        "maxItemAgeDays": 7,
+        "sortByPublishedAt": true
       },
       "tier": "T1",
       "first_party": true,
@@ -94,8 +102,10 @@
       "config": {
         "feedUrl": "https://www.microsoft.com/en-us/research/feed/",
         "_aihot": {
-          "initialBackfillLimit": 8
-        }
+          "initialBackfillLimit": 2
+        },
+        "maxItemAgeDays": 7,
+        "sortByPublishedAt": true
       },
       "tier": "T1",
       "first_party": true,
@@ -116,8 +126,10 @@
       "config": {
         "feedUrl": "https://blogs.nvidia.com/feed/",
         "_aihot": {
-          "initialBackfillLimit": 8
-        }
+          "initialBackfillLimit": 2
+        },
+        "maxItemAgeDays": 7,
+        "sortByPublishedAt": true
       },
       "tier": "T1",
       "first_party": true,
@@ -137,8 +149,10 @@
       "config": {
         "feedUrl": "https://aws.amazon.com/blogs/machine-learning/feed/",
         "_aihot": {
-          "initialBackfillLimit": 8
-        }
+          "initialBackfillLimit": 2
+        },
+        "maxItemAgeDays": 7,
+        "sortByPublishedAt": true
       },
       "tier": "T1",
       "first_party": true,
@@ -159,8 +173,10 @@
       "config": {
         "feedUrl": "https://github.blog/ai-and-ml/feed/",
         "_aihot": {
-          "initialBackfillLimit": 8
-        }
+          "initialBackfillLimit": 2
+        },
+        "maxItemAgeDays": 7,
+        "sortByPublishedAt": true
       },
       "tier": "T1",
       "first_party": true,
@@ -180,8 +196,10 @@
       "config": {
         "feedUrl": "https://mistral.ai/rss.xml",
         "_aihot": {
-          "initialBackfillLimit": 8
-        }
+          "initialBackfillLimit": 2
+        },
+        "maxItemAgeDays": 7,
+        "sortByPublishedAt": true
       },
       "tier": "T1",
       "first_party": true,
@@ -201,8 +219,10 @@
       "config": {
         "feedUrl": "https://bair.berkeley.edu/blog/feed.xml",
         "_aihot": {
-          "initialBackfillLimit": 8
-        }
+          "initialBackfillLimit": 2
+        },
+        "maxItemAgeDays": 7,
+        "sortByPublishedAt": true
       },
       "tier": "T1",
       "first_party": true,
@@ -222,8 +242,10 @@
       "config": {
         "feedUrl": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
         "_aihot": {
-          "initialBackfillLimit": 8
-        }
+          "initialBackfillLimit": 2
+        },
+        "maxItemAgeDays": 7,
+        "sortByPublishedAt": true
       },
       "tier": "T2",
       "first_party": false,
@@ -243,8 +265,10 @@
       "config": {
         "feedUrl": "https://techcrunch.com/category/artificial-intelligence/feed/",
         "_aihot": {
-          "initialBackfillLimit": 8
-        }
+          "initialBackfillLimit": 2
+        },
+        "maxItemAgeDays": 7,
+        "sortByPublishedAt": true
       },
       "tier": "T2",
       "first_party": false,
@@ -264,8 +288,10 @@
       "config": {
         "feedUrl": "https://arstechnica.com/ai/feed/",
         "_aihot": {
-          "initialBackfillLimit": 8
-        }
+          "initialBackfillLimit": 2
+        },
+        "maxItemAgeDays": 7,
+        "sortByPublishedAt": true
       },
       "tier": "T2",
       "first_party": false,
@@ -285,8 +311,10 @@
       "config": {
         "feedUrl": "https://www.technologyreview.com/topic/artificial-intelligence/feed",
         "_aihot": {
-          "initialBackfillLimit": 8
-        }
+          "initialBackfillLimit": 2
+        },
+        "maxItemAgeDays": 7,
+        "sortByPublishedAt": true
       },
       "tier": "T2",
       "first_party": false,
@@ -306,8 +334,10 @@
       "config": {
         "feedUrl": "https://the-decoder.com/feed/",
         "_aihot": {
-          "initialBackfillLimit": 8
-        }
+          "initialBackfillLimit": 2
+        },
+        "maxItemAgeDays": 7,
+        "sortByPublishedAt": true
       },
       "tier": "T2",
       "first_party": false,
@@ -327,8 +357,10 @@
       "config": {
         "feedUrl": "https://simonwillison.net/atom/everything/",
         "_aihot": {
-          "initialBackfillLimit": 8
-        }
+          "initialBackfillLimit": 2
+        },
+        "maxItemAgeDays": 7,
+        "sortByPublishedAt": true
       },
       "tier": "T2",
       "first_party": false,
@@ -348,8 +380,10 @@
       "config": {
         "feedUrl": "https://importai.substack.com/feed",
         "_aihot": {
-          "initialBackfillLimit": 8
-        }
+          "initialBackfillLimit": 2
+        },
+        "maxItemAgeDays": 7,
+        "sortByPublishedAt": true
       },
       "tier": "T2",
       "first_party": false,
@@ -370,8 +404,10 @@
       "config": {
         "feedUrl": "https://www.latent.space/feed",
         "_aihot": {
-          "initialBackfillLimit": 8
-        }
+          "initialBackfillLimit": 2
+        },
+        "maxItemAgeDays": 7,
+        "sortByPublishedAt": true
       },
       "tier": "T2",
       "first_party": false,
@@ -380,6 +416,582 @@
       "interval_minutes": 180,
       "tags": [
         "个人"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-pcgamer",
+      "name": "PC Gamer",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://www.pcgamer.com/rss/",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "游戏",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-eurogamer",
+      "name": "Eurogamer",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://www.eurogamer.net/feed",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "游戏",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-gamespot",
+      "name": "GameSpot",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://www.gamespot.com/feeds/mashup/",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "游戏",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-gematsu",
+      "name": "Gematsu",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://www.gematsu.com/feed",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "游戏",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-gcores",
+      "name": "机核",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://www.gcores.com/rss",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "游戏",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-chuapp",
+      "name": "触乐",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://www.chuapp.com/feed",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "游戏",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-ars-technica",
+      "name": "Ars Technica",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://feeds.arstechnica.com/arstechnica/index",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "科技",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-engadget",
+      "name": "Engadget",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://www.engadget.com/rss.xml",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "科技",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-ithome",
+      "name": "IT之家",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://www.ithome.com/rss/",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "科技",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-ifanr",
+      "name": "爱范儿",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://www.ifanr.com/feed",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "科技",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-cloudflare",
+      "name": "Cloudflare Blog",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://blog.cloudflare.com/rss/",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T1",
+      "first_party": true,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "科技",
+        "官方"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-github",
+      "name": "GitHub Blog",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://github.blog/feed/",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T1",
+      "first_party": true,
+      "owner_entity_id": "github",
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "科技",
+        "官方"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-bbc-business",
+      "name": "BBC Business",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://feeds.bbci.co.uk/news/business/rss.xml",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "经济",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-guardian-business",
+      "name": "The Guardian · Business",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://www.theguardian.com/business/rss",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "经济",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-ft",
+      "name": "Financial Times",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://www.ft.com/rss/home",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "经济",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-ft-chinese",
+      "name": "FT 中文网",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://www.ftchinese.com/rss/feed",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "经济",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-variety",
+      "name": "Variety",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://variety.com/feed/",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "娱乐",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-deadline",
+      "name": "Deadline",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://deadline.com/feed/",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "娱乐",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-bbc-arts",
+      "name": "BBC · Entertainment & Arts",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "娱乐",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-guardian-film",
+      "name": "The Guardian · Film",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://www.theguardian.com/film/rss",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "娱乐",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-anime-news-network",
+      "name": "Anime News Network",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://www.animenewsnetwork.com/news/rss.xml",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "娱乐",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-guardian-ai",
+      "name": "The Guardian · AI",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://www.theguardian.com/technology/artificialintelligenceai/rss",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "AI",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-guardian-science",
+      "name": "The Guardian · Science",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://www.theguardian.com/science/rss",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "科技",
+        "媒体"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-guardian-games",
+      "name": "The Guardian · Games",
+      "kind": "rss",
+      "config": {
+        "feedUrl": "https://www.theguardian.com/technology/games/rss",
+        "_aihot": {
+          "initialBackfillLimit": 2
+        },
+        "sortByPublishedAt": true,
+        "maxItemAgeDays": 7
+      },
+      "tier": "T2",
+      "first_party": false,
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "游戏",
+        "媒体"
       ],
       "site_fulltext": false,
       "syndicate_fulltext": false

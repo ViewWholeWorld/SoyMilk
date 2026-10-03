@@ -6,7 +6,7 @@ import type { FeedItemSummary } from "@aihot/contracts/site";
 import { IconChevronRight } from "../../components/icons";
 import { beijingDate } from "../../lib/format";
 import { markRead, useReadSet } from "../../lib/local-state";
-import { DayHeader, TimelineSlot } from "./Timeline";
+import { DayHeader, TimelineSlot, TimelineTimeNote } from "./Timeline";
 import { FeedItem } from "./FeedItem";
 
 export function DayList({ items, todayCount = null, showTags = true, animate = false }: { items: FeedItemSummary[]; todayCount?: number | null; showTags?: boolean; animate?: boolean }) {
@@ -25,6 +25,7 @@ export function DayList({ items, todayCount = null, showTags = true, animate = f
   let order = 0;
   return (
     <div>
+      {days.length > 0 && <TimelineTimeNote />}
       {days.map(({ day, items: list }) => (
         <section key={day} aria-label={day}>
           <DayHeader day={day} today={today} count={day === today ? todayCount : null} />

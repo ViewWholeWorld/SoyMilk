@@ -11,6 +11,7 @@ import { stopBoss } from "@aihot/backend/jobs/queue";
 import { extractArticleBody, readable } from "@aihot/backend/content/extract";
 import { collectSource } from "@aihot/backend/sources/collect";
 import { updateSource } from "@aihot/backend/admin/sources";
+import { assertSupportedConfig } from "@aihot/backend/sources/config-keys";
 
 const T = tag();
 const LONG = `${"A card label that swallowed the summary of the article it links to, ".repeat(2)}${T}`;
@@ -18,8 +19,19 @@ let jinaDetailReads = 0;
 let jinaListingReads = 0;
 const pageReads = new Map<string, number>();
 const ARTICLE_BODY = "A complete article with enough material to preserve the same extraction result without downloading it twice. ".repeat(6);
+const NEWS_NOW = Date.now();
+const NEWS_ENTRIES = [
+  { slug: "newest", age: 1 }, { slug: "recent", age: 3 }, { slug: "archive", age: 30 }, { slug: "undated", age: null },
+];
+const newsFeed = (prefix: string) =>
+  `<?xml version="1.0"?><rss version="2.0"><channel><title>News window</title>` +
+  NEWS_ENTRIES.map(({ slug, age }) => `<item><title>${slug} ${T}</title><link>https://example.org/${prefix}-${T}/${slug}</link>` +
+    (age === null ? "" : `<pubDate>${new Date(NEWS_NOW - age * 86_400_000).toUTCString()}</pubDate>`) + `</item>`).join("") +
+  `</channel></rss>`;
 const html = (head: string, body: string) => `<html><head>${head}</head><body>${body}</body></html>`;
 const pages: Record<string, (base: string) => string> = {
+  "/dated-feed.xml": () => newsFeed("window"),
+  "/archive-feed.xml": () => newsFeed("archive"),
   "/feed.xml": () =>
     `<?xml version="1.0"?><rss version="2.0"><channel><title>t</title>` +
     ["news/a", "business/b"].map((p) => `<item><title>Entry ${p} ${T}</title><link>https://example.org/rules-${T}/${p}</link><pubDate>${new Date().toUTCString()}</pubDate></item>`).join("") +
@@ -54,6 +66,8 @@ process.env.JINA_BASE_URL = base;
 process.env.JINA_API_KEY = "test-key";
 
 const SOURCES = {
+  recent: { kind: "rss", config: { feedUrl: `${base}/dated-feed.xml`, maxItemAgeDays: 7, sortByPublishedAt: true, _aihot: { initialBackfillLimit: 1 } } },
+  archive: { kind: "rss", config: { feedUrl: `${base}/archive-feed.xml` } },
   unsupported: { kind: "rss", config: { feedUrl: `${base}/feed.xml`, adapter: "feed_cards" } },
   denied: { kind: "rss", config: { feedUrl: `${base}/feed.xml`, denyUrlPrefixes: [`https://example.org/rules-${T}/business/`] } },
   detail: {
@@ -73,7 +87,7 @@ before(async () => {
   const cursor = sql.json({ initializedAt: new Date().toISOString() });
   for (const [name, s] of Object.entries(SOURCES)) {
     await sql`INSERT INTO sources (id, name, kind, config, tier, participation_mode, cursor, next_fetch_at)
-              VALUES (${id(name as keyof typeof SOURCES)}, ${name}, ${s.kind}, ${sql.json(s.config)}, 'T1', 'editorial', ${cursor}, '2100-01-01')`;
+              VALUES (${id(name as keyof typeof SOURCES)}, ${name}, ${s.kind}, ${sql.json(s.config)}, 'T1', 'editorial', ${name === "recent" ? sql.json({}) : cursor}, '2100-01-01')`;
   }
 });
 after(async () => {
@@ -86,6 +100,23 @@ after(async () => {
 const articles = (sourceId: string) =>
   sql<{ url: string; title: string; excerpt: string | null; published_at: Date | null; revision: number }[]>`
     SELECT url, title, excerpt, published_at, revision FROM articles WHERE source_id = ${sourceId} ORDER BY url`;
+
+test("an RSS news window excludes old entries on initial and later polls without discarding undated entries", async () => {
+  assert.equal((await collectSource(id("recent"), { force: true })).status, "ok");
+  assert.deepEqual((await articles(id("recent"))).map((a) => a.url), [`https://example.org/window-${T}/newest`]);
+  assert.equal((await collectSource(id("recent"), { force: true })).status, "ok");
+  assert.deepEqual((await articles(id("recent"))).map((a) => a.url),
+    ["newest", "recent", "undated"].map((slug) => `https://example.org/window-${T}/${slug}`));
+  assert.equal((await collectSource(id("archive"), { force: true })).status, "ok");
+  assert.equal((await articles(id("archive"))).length, 4, "without a window, existing archive collection remains unchanged");
+});
+
+test("RSS news windows must be positive finite numbers", () => {
+  for (const value of [0, -1, NaN, Infinity, "7", null, true])
+    assert.throws(() => assertSupportedConfig("rss", { maxItemAgeDays: value }), /maxItemAgeDays/);
+  assert.doesNotThrow(() => assertSupportedConfig("rss", { maxItemAgeDays: 7 }));
+  assert.throws(() => assertSupportedConfig("web_list", { maxItemAgeDays: 7 }), /maxItemAgeDays/);
+});
 
 test("a config entry the collector does not implement fails the fetch instead of being ignored", async () => {
   const run = await collectSource(id("unsupported"), { force: true });

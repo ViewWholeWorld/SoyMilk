@@ -3,7 +3,7 @@
 // report waiting for a regroup is not evidence for others until its own turn decides it again; a
 // story's root is its earliest fact that still holds reports; two stories a report ties together
 // merge only when both models see one story in their roots.
-import { gate, stub, tag } from "./setup.ts";
+import { gate, stub, tag, useModelStubs } from "./setup.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
@@ -50,8 +50,7 @@ const provider = await stub(async (_hit, req) => {
     : { query: "发布新模型", decisions: ids.map((id) => ({ id, relation, confidence: 0.95, note: "" })) };
   return { id: "stub", choices: [{ message: { content: JSON.stringify(answer) } }], usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } };
 });
-process.env.DEEPSEEK_BASE_URL = `${provider.url}/v1`;
-process.env.DEEPSEEK_API_KEY = "test-key";
+await useModelStubs({ DEEPSEEK: provider.url });
 process.env.GROUP_REVIEW_MODEL = "deepseek-flash";
 
 let storyId: number;
