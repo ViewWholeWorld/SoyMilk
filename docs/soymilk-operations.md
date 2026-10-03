@@ -43,6 +43,8 @@ JS
 
 后续更新网页时同步更新 `compose.web-time.yml` 指向的镜像；更新 API/worker 时核对 `compose.codex-worker.yml`。不要只重建根目录镜像却仍由覆盖文件指向旧版本。
 
+上游自动同步由 `Sync Upstream` 每小时检查，先构造候选并运行完整 `Check`，通过后才推进 `main`。冲突、受保护的定制/迁移/部署/模型保护文件变更会暂停并创建 Issue；详见[自动更新](auto-deploy.md)。
+
 北京时间 2026-10-03 11:20:39 已部署网页时间说明，web 镜像为 `soymilk-nas-web:timeline-time`，SHA256 为 `1bd5f533ea1a485029428603fec687f779c34da4b427ae43da4a7a54f443fbb4`。API 和 worker 的容器 ID、镜像及启动时间保持原样，继续使用 `soymilk-nas-app:codex-worker`。网页回退点为 `backups/web-time-20261003-112033`，保留原覆盖入口和旧网页镜像，不涉及数据库恢复；后续维护仍须现场核对实际镜像。
 
 先按 feature 提交经过验证的代码，再进入下一项。部署前保存当前镜像与覆盖入口；仅改网页时只替换 web。API 无 Docker 健康检查字段时使用 `/api/health` 的实际 HTTP 响应。已计费的请求必须保留，代码回退时不通过恢复旧数据库覆盖新回执。

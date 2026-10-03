@@ -1,0 +1,95 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: soymilk-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      changed: ${{ steps.candidate.outputs.changed }}
+      base: ${{ steps.candidate.outputs.base }}
+      sha: ${{ steps.candidate.outputs.sha }}
+      branch: ${{ steps.candidate.outputs.branch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - id: candidate
+        run: node scripts/automation/upstream-sync.ts
+
+  validate:
+    needs: prepare
+    if: needs.prepare.outputs.changed == 'true'
+    uses: ./.github/workflows/check.yml
+    with:
+      ref: ${{ needs.prepare.outputs.sha }}
+
+  promote:
+    needs: [prepare, validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: write
+    env:
+      BASE: ${{ needs.prepare.outputs.base }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
+      - name: Promote only if main has not moved
+        run: |
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$BASE"
+          git push origin HEAD:refs/heads/main
+          # GITHUB_TOKEN pushes do not trigger push workflows. Dispatch explicitly.
+          gh workflow run check.yml --ref main
+
+  finish:
+    needs: [prepare, validate, promote]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BRANCH: ${{ needs.prepare.outputs.branch }}
+      PREPARE: ${{ needs.prepare.result }}
+      VALIDATE: ${{ needs.validate.result }}
+      PROMOTE: ${{ needs.promote.result }}
+      CHANGED: ${{ needs.prepare.outputs.changed }}
+    steps:
+      - name: Clean candidate and report actionable failure
+        run: |
+          if [ -n "$BRANCH" ]; then gh api -X DELETE "repos/$GH_REPO/git/refs/heads/$BRANCH"; fi
+          issue=$(gh issue list --state open --search '"Automatic upstream sync needs attention" in:title' --json number --jq '.[0].number // empty')
+          if [ "$PREPARE" != success ] || { [ "$CHANGED" = true ] && { [ "$VALIDATE" != success ] || [ "$PROMOTE" != success ]; }; }; then
+            if [ -z "$issue" ]; then
+              gh issue create --title 'Automatic upstream sync needs attention' --body "Sync stopped without changing the deployment. Review the conflict, protected paths, or failed checks: https://github.com/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
+            fi
+          elif [ "$PROMOTE" = success ] && [ -n "$issue" ]; then
+            gh issue close "$issue" --comment 'A later candidate passed all checks and was merged.'
+          fi
