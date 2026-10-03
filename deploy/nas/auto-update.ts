@@ -84,6 +84,10 @@ function main() {
     "--mount", `type=bind,src=${path.join(root, "deploy/nas")},dst=/control,readonly`,
     "--entrypoint", "node", image, "/control/release-manifest.ts", "fingerprint", "/app"])) as ReturnType<typeof fingerprints>;
   const start = () => compose("up", "-d", "--no-build", "--pull", "never", "setup", "api", "worker", "web");
+  const stop = () => {
+    compose("stop", "-t", "230", "worker");
+    compose("stop", "-t", "30", "api", "web");
+  };
   const smoke = () => {
     run("curl", ["--fail", "--silent", "--show-error", "--retry", "30", "--retry-delay", "2", "--retry-connrefused", "--max-time", "5", "http://127.0.0.1:3000/api/health"]);
     compose("exec", "-T", "web", "node", "scripts/smoke.ts", "--base", "http://127.0.0.1:3000");
@@ -94,7 +98,7 @@ function main() {
   const recover = () => {
     const saved = JSON.parse(readFileSync(journal, "utf8")) as { backup: string; revision: string };
     if (!/^auto-\d{8}T\d{6}Z-[a-f0-9]{12}$/.test(saved.backup)) throw new Error("Invalid recovery path");
-    compose("stop", "-t", "230", "worker", "api", "web");
+    stop();
     copyFileSync(path.join(root, "backups", saved.backup, "rollback.yml"), `${overlay}.tmp`);
     renameSync(`${overlay}.tmp`, overlay);
     start(); smoke();
@@ -145,7 +149,7 @@ function main() {
           worker: currentImage("worker"), web: currentImage("web") }), { mode: 0o600 });
         atomic(journal, { backup: backupName, revision: release.revision });
       },
-      stop() { compose("stop", "-t", "230", "worker", "api", "web"); },
+      stop,
       backup() {
         run("sh", ["deploy/nas/compose.sh", "exec", "-T", "db", "pg_dump", "-U", "aihot", "-Fc", "aihot"], path.join(backup, "database.dump"));
         run(docker, ["run", "--rm", "--network", "none", "--volumes-from", compose("ps", "-a", "-q", "web"),
