@@ -9,7 +9,7 @@ import { FeedItem } from "./FeedItem";
 import { IconChevronDown } from "../../components/icons";
 import { RingMark } from "../../components/Logo";
 import { EmptyState } from "../../components/ui/Page";
-import { beijingDate, beijingTime, beijingWeekday } from "../../lib/format";
+import { beijingDate, beijingTime, beijingWeekday, fullDateTime } from "../../lib/format";
 import { markRead, useReadSet } from "../../lib/local-state";
 import { isHydrated, isReload, markHydrated, readSnapshot, restoreAnchor, saveSnapshot } from "./restore";
 
@@ -38,6 +38,10 @@ function fromResponse(r: TimelineResponse): ListState {
 }
 
 const WEEKDAY_SHORT = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+
+export function TimelineTimeNote() {
+  return <p className="mb-2 mt-3 text-[12px] leading-relaxed text-ink-4">北京时间 · 左侧为收录或事件进展时间；历史内容按原文时间归档。</p>;
+}
 
 /** Sticky day header: a quiet row on desktop, a grey full-width bar on phones. */
 export function DayHeader({ day, today, count, collapsed, onToggle }: { day: string; today: string; count: number | null; collapsed?: boolean; onToggle?: () => void }) {
@@ -96,7 +100,7 @@ export function TimelineSlot({ at, children, fresh = false, delay = 0, dataKey }
       className={`group/slot grid grid-cols-[48px_minmax(0,1fr)] border-b border-line-soft py-3.5 last:border-b-0 lg:grid-cols-[64px_22px_minmax(0,1fr)] lg:border-b-0 lg:py-0 lg:pb-3 lg:last:pb-0 ${fresh ? "animate-fade-up" : ""}`}
       style={fresh ? { animationDelay: `${delay}ms` } : undefined}
     >
-      <time dateTime={at} className="mono pt-[2px] text-[13px] leading-[18px] text-ink-4 lg:pt-[17px] lg:text-[12.5px] lg:font-semibold lg:leading-6 lg:text-ink-3">
+      <time dateTime={at} title={`时间轴时间：${fullDateTime(at)}（北京时间）`} className="mono pt-[2px] text-[13px] leading-[18px] text-ink-4 lg:pt-[17px] lg:text-[12.5px] lg:font-semibold lg:leading-6 lg:text-ink-3">
         {beijingTime(at)}
       </time>
       <span aria-hidden="true" className="relative hidden lg:block">
@@ -272,6 +276,7 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
   let order = 0;
   return (
     <div className="relative">
+      {days.length > 0 && <TimelineTimeNote />}
       {days.length === 0 && (
         <div className="lg:card">
           <EmptyState title="这个筛选下还没有精选内容">换个类别看看，或者去全部动态里找找。</EmptyState>
