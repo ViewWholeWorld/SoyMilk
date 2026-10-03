@@ -403,8 +403,17 @@ export interface AdminModelUsage {
   estimate: { amount: number; currency: string } | null;
 }
 
+export interface AdminBootstrapBudget {
+  status: "active" | "restored" | "expired" | "superseded";
+  startedAt: string; expiresAt: string; restoredAt?: string;
+  total: number; pending: number; failed: number; missing: number; pendingEvents: number;
+  perMinute: number; perHour: number; perDay: number;
+  original: { perMinute: number; perHour: number; perDay: number };
+}
+
 export interface AdminModels {
   days: number;
+  bootstrap: AdminBootstrapBudget | null;
   capabilities: Array<{ key: string; label: string; env: string; defaultModel: string; vision: boolean; current: { model: string; source: "admin" | "env" | "default" }; usage: AdminModelUsage[] }>;
   choices: Array<{ key: string; service: string; vision: boolean }>;
   history: Array<{ at: Timestamp; actor: string; subject: string; reason: string | null; before: { model: string; source: string } | null; after: { model: string; source: string } | null }>;

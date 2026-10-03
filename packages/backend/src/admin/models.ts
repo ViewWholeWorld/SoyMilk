@@ -7,6 +7,7 @@ import { sql } from "../db.ts";
 import { CAPABILITIES, invalidateModelCache, modelSources, type Capability, type CapabilityKey } from "../editorial/models.ts";
 import { registeredModels } from "../providers/llm.ts";
 import { audit } from "../audit.ts";
+import { bootstrapBudgetStatus } from "../operations/bootstrap-budget.ts";
 
 interface UsageRow {
   purpose: string;
@@ -27,7 +28,7 @@ interface UsageRow {
 export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>> {
   const MODELS = await registeredModels();
   const since = new Date(Date.now() - days * 86400_000);
-  const [sources, usage, prices, history, benches] = await Promise.all([
+  const [sources, usage, prices, history, benches, bootstrap] = await Promise.all([
     modelSources(),
     sql<UsageRow[]>`
       SELECT r.purpose, a.model, r.request->>'promptVersion' AS prompt_version, count(*)::int AS calls,
@@ -49,6 +50,7 @@ export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>>
       SELECT id, label, sample_size, prompt_version, models,
              (SELECT coalesce(jsonb_object_agg(key, value - 'sweep'), '{}'::jsonb) FROM jsonb_each(r.summary)) AS summary,
              created_at FROM selectbench_runs r ORDER BY created_at DESC LIMIT 8`,
+    bootstrapBudgetStatus(),
   ]);
   const serviceOf = (model: string) => Object.values(MODELS).find((m) => m.model === model || m.key === model)?.service ?? null;
   const priced = (u: UsageRow) => {
@@ -84,7 +86,7 @@ export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>>
       })),
   }));
   const choices = Object.values(MODELS).map((m) => ({ key: m.key, service: m.service, vision: !!m.vision }));
-  return { days, capabilities, choices, history, benches };
+  return { days, capabilities, choices, history, benches, bootstrap };
 }
 
 /** Switches a capability to another registered model (or back to the environment/default when null). */

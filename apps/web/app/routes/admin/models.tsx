@@ -46,6 +46,16 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
       actions={<FilterChips param="days" options={[{ value: "1", label: "24 小时" }, { value: "", label: "7 天" }, { value: "30", label: "30 天" }]} />}
     >
       <ModelConnections configuration={m.configuration} onCodexModels={setCatalog} />
+      {m.bootstrap && (
+        <Card title={m.bootstrap.status === "active" ? "首轮存量正在处理" : m.bootstrap.status === "restored" ? "首轮处理结束，已恢复增量预算" : "首轮临时预算已结束"}>
+          <p className="text-[13px] text-ink-2">共 {num(m.bootstrap.total)} 篇，待处理 {num(m.bootstrap.pending)} 篇，待完成事件任务 {num(m.bootstrap.pendingEvents)} 项。
+            {m.bootstrap.failed > 0 && <span className="text-hot"> {num(m.bootstrap.failed)} 篇失败，需要在运行页核对。</span>}</p>
+          <p className="mt-2 text-[12px] text-ink-3">{m.bootstrap.status === "active"
+            ? `临时限额：每小时 ${num(m.bootstrap.perHour)} 次、每 24 小时 ${num(m.bootstrap.perDay)} 次。完成后自动恢复每小时 ${num(m.bootstrap.original.perHour)} 次、每 24 小时 ${num(m.bootstrap.original.perDay)} 次；最迟 ${bj(m.bootstrap.expiresAt)} 恢复。`
+            : m.bootstrap.status === "superseded" ? "管理员已调整预算，自动恢复已停止，保留管理员设置。"
+            : "历史请求及 token 记录保留；恢复时重新开始站内预算计数。"}</p>
+        </Card>
+      )}
       <h2 className="mb-4 text-[16px] font-medium">各项能力与调用统计</h2>
       <div className="grid gap-5">
         {m.capabilities.map((c) => {

@@ -60,8 +60,8 @@ export async function setTargetEnabled(key: string, enabled: boolean, reason: st
 export async function listBudgets(): Promise<BeforeJson<AdminBudget>[]> {
   return sql<BeforeJson<AdminBudget>[]>`
     SELECT b.service, b.per_minute, b.per_hour, b.per_day, b.note, b.updated_at,
-           (SELECT count(*)::int FROM receipt_attempts a WHERE a.service = b.service AND a.origin = 'live' AND a.started_at > now() - interval '1 day') AS used_day,
-           (SELECT count(*)::int FROM receipt_attempts a WHERE a.service = b.service AND a.origin = 'live' AND a.started_at > now() - interval '1 hour') AS used_hour
+           (SELECT count(*)::int FROM receipt_attempts a WHERE a.service = b.service AND a.origin = 'live' AND a.started_at > now() - interval '1 day' AND (b.window_started_at IS NULL OR a.started_at >= b.window_started_at)) AS used_day,
+           (SELECT count(*)::int FROM receipt_attempts a WHERE a.service = b.service AND a.origin = 'live' AND a.started_at > now() - interval '1 hour' AND (b.window_started_at IS NULL OR a.started_at >= b.window_started_at)) AS used_hour
     FROM budgets b ORDER BY b.service`;
 }
 
