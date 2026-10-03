@@ -11,24 +11,36 @@ const RETRY_DAYS = 30;
 const MP_RETRY_DAYS = 3;
 const MP_PAUSE_MS = 3000;
 
+const collecting = () => process.env.COLLECT_ENABLED !== "false";
+
+// A request already in flight may finish. Recheck before starting the next page/image and before
+// publishing its result, so pausing a source or collection does not start more work.
+async function canRefresh(sourceId: string): Promise<boolean> {
+  if (!collecting()) return false;
+  const [source] = await sql<{ enabled: boolean }[]>`SELECT enabled FROM sources WHERE id = ${sourceId}`;
+  return collecting() && source?.enabled === true;
+}
+
 /** X accounts: the avatar on the account's own latest post, kept current as avatars change. */
 async function refreshXAvatars(): Promise<number> {
+  if (!collecting()) return 0;
   const rows = await sql`
     UPDATE sources s SET icon_url = x.avatar
     FROM (
       SELECT DISTINCT ON (a.source_id) a.source_id, a.x_post->>'avatarUrl' AS avatar
       FROM articles a JOIN sources xs ON xs.id = a.source_id AND xs.kind = 'x_search'
-      WHERE a.x_post ? 'avatarUrl'
+      WHERE xs.enabled AND a.x_post ? 'avatarUrl'
         AND lower(xs.name) LIKE '%(@' || lower(a.x_post->>'handle') || ')'
       ORDER BY a.source_id, a.discovered_at DESC
     ) x
-    WHERE s.id = x.source_id AND s.icon_url IS DISTINCT FROM x.avatar
+    WHERE s.id = x.source_id AND s.enabled AND s.icon_url IS DISTINCT FROM x.avatar
     RETURNING s.id`;
   return rows.length;
 }
 
 /** A page's HTML; 公众号 article pages run to several megabytes, home pages rarely past four. */
-async function page(url: string, maxBytes = 4_000_000): Promise<{ html: string; url: string } | null> {
+async function page(sourceId: string, url: string, maxBytes = 4_000_000): Promise<{ html: string; url: string } | null> {
+  if (!await canRefresh(sourceId)) return null;
   try {
     const res = await guardedFetch(url, { timeoutMs: 15_000, maxBytes, headers: { "user-agent": DEFAULT_UA, accept: "text/html,*/*;q=0.8" } });
     return res.status === 200 ? { html: res.text(), url: res.url } : null;
@@ -58,8 +70,9 @@ export function iconCandidates(html: string, base: string): string[] {
 }
 
 /** The first candidate the image proxy can turn into an avatar (which also warms its cache). */
-async function firstUsable(candidates: string[]): Promise<string | null> {
+async function firstUsable(sourceId: string, candidates: string[]): Promise<string | null> {
   for (const url of candidates.slice(0, 5)) {
+    if (!await canRefresh(sourceId)) return null;
     try {
       await produceImage(url, "avatar");
       return url;
@@ -91,43 +104,54 @@ function homeOf(articleUrls: string[], config: Record<string, unknown>): string 
   }
 }
 
-async function findIcon(kind: string, articleUrls: string[], config: Record<string, unknown>): Promise<string | null> {
+async function findIcon(sourceId: string, kind: string, articleUrls: string[], config: Record<string, unknown>): Promise<string | null> {
   if (kind === "mp_account") {
     // WeChat answers bursts with "未知错误": take the account's two latest articles, slowly.
     for (const url of articleUrls.slice(0, 2)) {
+      if (!await canRefresh(sourceId)) return null;
       await new Promise((r) => setTimeout(r, MP_PAUSE_MS));
-      const p = await page(url, 10_000_000);
+      if (!await canRefresh(sourceId)) return null;
+      const p = await page(sourceId, url, 10_000_000);
       const avatar = p && /round_head_img\s*[:=]\s*["']([^"']+)["']/.exec(p.html)?.[1];
-      if (avatar) return firstUsable([avatar.replace(/^http:/, "https:")]);
+      if (avatar) return firstUsable(sourceId, [avatar.replace(/^http:/, "https:")]);
     }
     return null;
   }
   const home = homeOf(articleUrls, config);
   if (!home) return null;
-  const p = await page(home);
-  return firstUsable(p ? iconCandidates(p.html, p.url) : [`${home}/favicon.ico`]);
+  const p = await page(sourceId, home);
+  return firstUsable(sourceId, p ? iconCandidates(p.html, p.url) : [`${home}/favicon.ico`]);
 }
 
 /** Sites and 公众号 without an icon: a batch per run, looking again after RETRY_DAYS (公众号: MP_RETRY_DAYS). */
 async function findMissingIcons(): Promise<{ checked: number; found: number }> {
+  if (!collecting()) return { checked: 0, found: 0 };
   const due = await sql<{ id: string; kind: string; config: Record<string, unknown>; urls: string[] | null }[]>`
     SELECT s.id, s.kind, s.config, a.urls
     FROM sources s
     LEFT JOIN LATERAL (SELECT array_agg(url) AS urls FROM (SELECT url FROM articles WHERE source_id = s.id ORDER BY discovered_at DESC LIMIT 10) r) a ON true
-    WHERE s.icon_url IS NULL AND s.kind <> 'x_search'
+    WHERE s.enabled AND s.icon_url IS NULL AND s.kind <> 'x_search'
       AND (s.icon_checked_at IS NULL OR s.icon_checked_at < now() - make_interval(days => CASE WHEN s.kind = 'mp_account' THEN ${MP_RETRY_DAYS}::int ELSE ${RETRY_DAYS}::int END))
     ORDER BY s.icon_checked_at NULLS FIRST, s.id
     LIMIT ${BATCH}`;
-  let found = 0;
+  let checked = 0, found = 0;
   for (const s of due) {
-    const icon = await findIcon(s.kind, s.urls ?? [], s.config ?? {}).catch(() => null);
-    if (icon) found++;
-    await sql`UPDATE sources SET icon_url = coalesce(${icon}, icon_url), icon_checked_at = now() WHERE id = ${s.id}`;
+    if (!collecting()) break;
+    if (!await canRefresh(s.id)) continue;
+    const icon = await findIcon(s.id, s.kind, s.urls ?? [], s.config ?? {}).catch(() => null);
+    if (!collecting()) break;
+    const written = await sql`UPDATE sources SET icon_url = coalesce(${icon}, icon_url), icon_checked_at = now()
+                              WHERE id = ${s.id} AND enabled RETURNING id`;
+    if (written.length) {
+      checked++;
+      if (icon) found++;
+    }
   }
-  return { checked: due.length, found };
+  return { checked, found };
 }
 
 export async function refreshSourceIcons() {
+  if (!collecting()) return { xAvatars: 0, checked: 0, found: 0 };
   const x = await refreshXAvatars();
   const sites = await findMissingIcons();
   return { xAvatars: x, ...sites };
