@@ -19,7 +19,7 @@ import { invalidateModelCache, modelFor } from "@aihot/backend/editorial/models"
 import { sha256 } from "@aihot/backend/lib/ids";
 import { deleteModelConnection, modelConfiguration, readModelConfig, saveModelConnection, selectModelConnection } from "@aihot/backend/providers/model-config";
 import { chatJson, registeredModels } from "@aihot/backend/providers/llm";
-import { BudgetExceededError, ProviderRejectedError } from "@aihot/backend/providers/receipts";
+import { BudgetExceededError, ProviderRejectedError, paidRequest } from "@aihot/backend/providers/receipts";
 import { registerAdmin } from "../apps/api/src/routes/admin.ts";
 import { registerAdminAuth } from "../apps/api/src/routes/admin-auth.ts";
 
@@ -84,6 +84,7 @@ test("closed model valve prevents API and Codex calls", async () => {
   await selectModelConnection(codex.id); await assert.rejects(ask(), /disabled/);
   await selectModelConnection(connection.id);
 });
+
 test("configured API calls retain receipts, redaction, reuse and budget limits", async () => {
   config.modelCallsEnabled = true;
   const purpose = `model_config_test_${Date.now()}`;
@@ -173,11 +174,44 @@ readline.createInterface({input:process.stdin}).on('line', l => { const m=JSON.p
  else if(m.method==='turn/start') { turn=m.params; if(m.params.sandboxPolicy.networkAccess!==false) process.exit(2);reply({turn:{id:'fixture-turn'}});
  send({method:'item/completed',params:{threadId:'fixture-thread',item:{type:'agentMessage',phase:'commentary',text:'IGNORE'}}});
  send({id:'approval-1',method:'item/commandExecution/requestApproval',params:{}});
- send({method:'thread/tokenUsage/updated',params:{threadId:'fixture-thread',tokenUsage:{last:{inputTokens:2,outputTokens:3,totalTokens:5}}}});
+ send({method:'thread/tokenUsage/updated',params:{threadId:'fixture-thread',tokenUsage:{last:{inputTokens:2,outputTokens:3,totalTokens:5,...(process.env.FIXTURE_USAGE_DETAILS==='true'?{cachedInputTokens:1,cacheWriteInputTokens:0,reasoningOutputTokens:2}:{})}}}});
  send({method:'item/completed',params:{threadId:'fixture-thread',item:{type:'agentMessage',phase:'final_answer',text:'{"ok":true}'}}});
  send({method:'turn/completed',params:{threadId:'fixture-thread',turn:{id:'fixture-turn',status:process.env.FIXTURE_STATUS||'completed'}}}); }
 });`;
-function fake(status = "completed", connected = false) { const server = new CodexServer(spawn(process.execPath, ["-e", FAKE], { env: { FIXTURE_STATUS: status, FIXTURE_CONNECTED: String(connected) }, stdio: "pipe", windowsHide: true })); servers.push(server); return server; }
+function fake(status = "completed", connected = false, usageDetails = false) { const server = new CodexServer(spawn(process.execPath, ["-e", FAKE], { env: { FIXTURE_STATUS: status, FIXTURE_CONNECTED: String(connected), FIXTURE_USAGE_DETAILS: String(usageDetails) }, stdio: "pipe", windowsHide: true })); servers.push(server); return server; }
+
+test("Codex retains cached, cache-write and reasoning token details without adding reasoning twice", async () => {
+  const server = fake("completed", false, true);
+  const response = await requestCodex(server,"fixture-model","","article",true,2000);
+  assert.deepEqual(response.usage,{prompt_tokens:2,completion_tokens:3,total_tokens:5,
+    prompt_tokens_details:{cached_tokens:1,cache_write_tokens:0},completion_tokens_details:{reasoning_tokens:2}});
+  await server.stop();
+});
+
+test("model usage weights cache hits by measured input and keeps historical omissions unknown", async () => {
+  const model = `usage-fixture-${Date.now()}`;
+  const before = (await modelsOverview()).tokenSummary;
+  const samples = [
+    {prompt_tokens:100,completion_tokens:20,prompt_tokens_details:{cached_tokens:80},completion_tokens_details:{reasoning_tokens:5}},
+    {prompt_tokens:900,completion_tokens:20,input_tokens_details:{cached_tokens:90},output_tokens_details:{reasoning_tokens:7}},
+    {prompt_tokens:500,completion_tokens:10},
+  ];
+  let sent = 0;
+  for (let i=0;i<samples.length;i++) {
+    const req = {service:"usage-fixture",model,purpose:"prefilter_article",identity:{model,i}};
+    const work = async()=>{sent++;return {response:{},usage:samples[i]!};};
+    await paidRequest(req,work); await paidRequest(req,work);
+  }
+  assert.equal(sent,3,"receipt reuse does not add requests or tokens");
+  const overview = await modelsOverview();
+  const usage = overview.capabilities.find((c)=>c.key==="prefilter")!.usage.find((u)=>u.model===model)!;
+  assert.equal(usage.calls,3); assert.equal(usage.tokensIn,1500); assert.equal(usage.tokensOut,50);
+  assert.equal(usage.cachedTokensIn,170); assert.equal(usage.uncachedTokensIn,830);
+  assert.equal(usage.cacheMeasuredInputTokens,1000); assert.equal(usage.cacheReportedCalls,2);
+  assert.equal(usage.cacheHitRate,0.17); assert.equal(usage.reasoningTokensOut,12);
+  assert.equal(overview.tokenSummary.cacheUnknownInputTokens-before.cacheUnknownInputTokens,500);
+  assert.equal(overview.tokenSummary.calls-before.calls,3);
+});
 test("pinned official binary accepts bridge settings and reads an empty isolated account offline", async () => {
   const server = await openCodexServer();
   try { assert.equal((await server.request("account/read", { refreshToken: false })).account, null); }

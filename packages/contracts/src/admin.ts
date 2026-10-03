@@ -398,6 +398,12 @@ export interface AdminModelUsage {
   p95: number | null;
   tokensIn: number;
   tokensOut: number;
+  cachedTokensIn: number | null;
+  uncachedTokensIn: number | null;
+  cacheMeasuredInputTokens: number;
+  cacheReportedCalls: number;
+  cacheHitRate: number | null;
+  reasoningTokensOut: number | null;
   actualCost: number | null;
   currency: string | null;
   estimate: { amount: number; currency: string } | null;
@@ -411,8 +417,16 @@ export interface AdminBootstrapBudget {
   original: { perMinute: number; perHour: number; perDay: number };
 }
 
+export interface AdminTokenSummary {
+  calls: number; tokensIn: number; tokensOut: number;
+  cachedTokensIn: number | null; uncachedTokensIn: number | null;
+  cacheMeasuredInputTokens: number; cacheUnknownInputTokens: number; cacheReportedCalls: number;
+  cacheHitRate: number | null; reasoningTokensOut: number | null;
+}
+
 export interface AdminModels {
   days: number;
+  tokenSummary: AdminTokenSummary;
   bootstrap: AdminBootstrapBudget | null;
   capabilities: Array<{ key: string; label: string; env: string; defaultModel: string; vision: boolean; current: { model: string; source: "admin" | "env" | "default" }; usage: AdminModelUsage[] }>;
   choices: Array<{ key: string; service: string; vision: boolean }>;

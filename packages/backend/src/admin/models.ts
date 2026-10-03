@@ -2,7 +2,7 @@
 // the prompt versions in use, quality / latency / cost of the last days per model, the switch history
 // and the SelectBench runs that compare models on the same batch. A switch is audited and applies to
 // new work only.
-import type { AdminModels, BeforeJson } from "@aihot/contracts/admin";
+import type { AdminModels, AdminTokenSummary, BeforeJson } from "@aihot/contracts/admin";
 import { sql } from "../db.ts";
 import { CAPABILITIES, invalidateModelCache, modelSources, type Capability, type CapabilityKey } from "../editorial/models.ts";
 import { registeredModels } from "../providers/llm.ts";
@@ -21,6 +21,10 @@ interface UsageRow {
   p95: number | null;
   tokens_in: string | null;
   tokens_out: string | null;
+  tokens_cached: string | null;
+  tokens_cache_measured: string | null;
+  cache_reported_calls: number;
+  tokens_reasoning: string | null;
   actual_cost: string | null;
   currency: string | null;
 }
@@ -38,8 +42,14 @@ export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>>
              percentile_disc(0.5) WITHIN GROUP (ORDER BY a.latency_ms) AS p50,
              percentile_disc(0.95) WITHIN GROUP (ORDER BY a.latency_ms) AS p95,
              sum((a.usage->>'prompt_tokens')::bigint) AS tokens_in, sum((a.usage->>'completion_tokens')::bigint) AS tokens_out,
+             sum(c.cached) AS tokens_cached,
+             sum((a.usage->>'prompt_tokens')::bigint) FILTER(WHERE c.cached IS NOT NULL) AS tokens_cache_measured,
+             count(*) FILTER(WHERE c.cached IS NOT NULL)::int AS cache_reported_calls,
+             sum(coalesce(a.usage->'completion_tokens_details'->>'reasoning_tokens', a.usage->'output_tokens_details'->>'reasoning_tokens', a.usage->>'reasoning_output_tokens')::bigint) AS tokens_reasoning,
              sum(a.cost) FILTER (WHERE a.cost_basis = 'actual') AS actual_cost, max(a.currency) AS currency
       FROM receipt_attempts a JOIN receipts r ON r.id = a.receipt_id
+      CROSS JOIN LATERAL (SELECT coalesce(a.usage->'prompt_tokens_details'->>'cached_tokens', a.usage->'input_tokens_details'->>'cached_tokens',
+        a.usage->>'cached_input_tokens', a.usage->>'prompt_cache_hit_tokens')::bigint AS cached) c
       WHERE a.started_at >= ${since} AND a.origin = 'live' AND a.model IS NOT NULL
       GROUP BY 1, 2, 3 ORDER BY 1, 4 DESC`,
     sql<{ service: string; model: string; currency: string; input_per_mtok: string | null; output_per_mtok: string | null }[]>`
@@ -80,13 +90,27 @@ export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>>
         p95: u.p95,
         tokensIn: Number(u.tokens_in ?? 0),
         tokensOut: Number(u.tokens_out ?? 0),
+        cachedTokensIn: u.tokens_cached === null ? null : Number(u.tokens_cached),
+        uncachedTokensIn: u.tokens_cached === null ? null : Math.max(0,Number(u.tokens_cache_measured ?? 0)-Number(u.tokens_cached)),
+        cacheMeasuredInputTokens: Number(u.tokens_cache_measured ?? 0),
+        cacheReportedCalls: u.cache_reported_calls,
+        cacheHitRate: Number(u.tokens_cache_measured ?? 0) > 0 ? Number(u.tokens_cached)/Number(u.tokens_cache_measured) : null,
+        reasoningTokensOut: u.tokens_reasoning === null ? null : Number(u.tokens_reasoning),
         actualCost: u.actual_cost === null ? null : Number(u.actual_cost),
         currency: u.currency,
         estimate: priced(u),
       })),
   }));
   const choices = Object.values(MODELS).map((m) => ({ key: m.key, service: m.service, vision: !!m.vision }));
-  return { days, capabilities, choices, history, benches, bootstrap };
+  const sum = (key: keyof UsageRow) => usage.reduce((total,u)=>total+Number(u[key]??0),0);
+  const measured = sum("tokens_cache_measured");
+  const cached = usage.some((u)=>u.tokens_cached!==null) ? sum("tokens_cached") : null;
+  const tokenSummary: AdminTokenSummary = { calls:sum("calls"),tokensIn:sum("tokens_in"),tokensOut:sum("tokens_out"),
+    cachedTokensIn:cached,uncachedTokensIn:cached===null?null:Math.max(0,measured-cached),cacheMeasuredInputTokens:measured,
+    cacheUnknownInputTokens:Math.max(0,sum("tokens_in")-measured),cacheReportedCalls:sum("cache_reported_calls"),
+    cacheHitRate:measured>0&&cached!==null?cached/measured:null,
+    reasoningTokensOut:usage.some((u)=>u.tokens_reasoning!==null)?sum("tokens_reasoning"):null };
+  return { days, capabilities, choices, history, benches, tokenSummary, bootstrap };
 }
 
 /** Switches a capability to another registered model (or back to the environment/default when null). */

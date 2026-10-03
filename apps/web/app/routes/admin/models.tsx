@@ -56,6 +56,21 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
             : "历史请求及 token 记录保留；恢复时重新开始站内预算计数。"}</p>
         </Card>
       )}
+      <div className="my-5">
+        <Card title={`最近 ${m.days} 天的 token 用量`}>
+          <dl className="grid grid-cols-2 gap-4 md:grid-cols-3">
+            {([
+              ["输入 token", num(m.tokenSummary.tokensIn)], ["输出 token", num(m.tokenSummary.tokensOut)],
+              ["已报告缓存输入", m.tokenSummary.cachedTokensIn === null ? "尚未报告" : num(m.tokenSummary.cachedTokensIn)],
+              ["已报告非缓存输入", m.tokenSummary.uncachedTokensIn === null ? "尚未报告" : num(m.tokenSummary.uncachedTokensIn)],
+              ["缓存命中率", m.tokenSummary.cacheHitRate === null ? "尚未报告" : `${(m.tokenSummary.cacheHitRate * 100).toFixed(1)}%`],
+              ["推理 token（包含在输出中）", m.tokenSummary.reasoningTokensOut === null ? "尚未报告" : num(m.tokenSummary.reasoningTokensOut)],
+            ] as const).map(([label,value]) => <div key={label}><dt className="text-[12px] text-ink-3">{label}</dt><dd className="mt-1 text-[18px] num">{value}</dd></div>)}
+          </dl>
+          <p className="mt-4 text-[12px] text-ink-3">缓存明细覆盖 {num(m.tokenSummary.cacheReportedCalls)} / {num(m.tokenSummary.calls)} 次实际请求。
+            缓存率按已报告明细的输入 token 加权计算；另有 {num(m.tokenSummary.cacheUnknownInputTokens)} 个输入 token 未报告缓存状态，旧记录不计作未命中。重试按实际请求累计，复用已有回执不重复计入。</p>
+        </Card>
+      </div>
       <h2 className="mb-4 text-[16px] font-medium">各项能力与调用统计</h2>
       <div className="grid gap-5">
         {m.capabilities.map((c) => {
@@ -63,6 +78,7 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
           return (
             <Card
               key={c.key}
+              className="min-w-0"
               title={
                 <span className="inline-flex flex-wrap items-center gap-2">
                   {c.label}
@@ -105,6 +121,8 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
                     },
                     { key: "l", label: "耗时 p50 / p95", align: "right", render: (u) => <span className="whitespace-nowrap">{`${secs(u.p50)} / ${secs(u.p95)}`}</span> },
                     { key: "t", label: "输入 / 输出 token", align: "right", render: (u) => <span className="whitespace-nowrap">{`${num(u.tokensIn)} / ${num(u.tokensOut)}`}</span> },
+                    { key: "cache", label: "缓存 / 非缓存输入", align: "right", render: (u) => <span className="whitespace-nowrap">{u.cachedTokensIn === null ? "未报告" : `${num(u.cachedTokensIn)} / ${num(u.uncachedTokensIn)}`}</span> },
+                    { key: "rate", label: "缓存率", align: "right", render: (u) => <span title={`明细覆盖 ${u.cacheReportedCalls} / ${u.calls} 次请求`}>{u.cacheHitRate === null ? "—" : `${(u.cacheHitRate*100).toFixed(1)}%`}</span> },
                     {
                       key: "$",
                       label: "费用",
