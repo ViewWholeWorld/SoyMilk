@@ -80,6 +80,12 @@ jobs:
           node scripts/mcp-check.ts http://127.0.0.1:3000/api/mcp
       # After the smoke check, which reads an empty database: these write their own rows.
       - name: Backend tests
+        env:
+          COLLECT_ENABLED: "false"
+          MODEL_CALLS_ENABLED: "false"
+          FEISHU_CONTENT_PUSH_ENABLED: "false"
+          FEISHU_INTERNAL_ENABLED: "false"
+          INDEXNOW_SUBMIT_ENABLED: "false"
         run: npm test
       - name: Server logs
         if: failure()
@@ -101,6 +107,7 @@ jobs:
           sed -i 's/^COLLECT_ENABLED=.*/COLLECT_ENABLED=false/; s/^MODEL_CALLS_ENABLED=.*/MODEL_CALLS_ENABLED=false/' .env
           # The smoke check reaches the site by its compose service name.
           echo "MCP_ALLOWED_HOSTS=web" >> .env
+          printf '%s\n' 'FEISHU_CONTENT_PUSH_ENABLED=false' 'FEISHU_INTERNAL_ENABLED=false' 'INDEXNOW_SUBMIT_ENABLED=false' >> .env
       - name: Build and start with docker compose
         run: docker compose up -d --build
       - name: Smoke check

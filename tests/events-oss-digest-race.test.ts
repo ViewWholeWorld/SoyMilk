@@ -1,5 +1,5 @@
 // 用本地模型与显式门闩复现旧上下文和异步回写；不连接真实模型或依赖sleep排序。
-import { gate, stub } from "./setup.ts";
+import { gate, stub, useModelStubs } from "./setup.ts";
 import { pair, story, source, article, sourceVersion, cleanup, fixtureTag, trackStory } from "./events-oss-withdrawal-fixture.ts";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
@@ -22,8 +22,7 @@ const provider = await stub(async (_hit, req) => {
   const result = await answer(user);
   return { id: "synthetic", choices: [{ message: { content: JSON.stringify(result) } }], usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } };
 });
-process.env.DEEPSEEK_BASE_URL = `${provider.url}/v1`;
-process.env.DEEPSEEK_API_KEY = "test-key";
+await useModelStubs({ DEEPSEEK: provider.url });
 process.env.GROUP_REVIEW_MODEL = "deepseek-flash";
 let budgets: Array<{ service: string; per_minute: number; per_hour: number; per_day: number }> = [];
 before(async () => {

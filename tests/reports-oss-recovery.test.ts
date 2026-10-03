@@ -1,7 +1,7 @@
 // Failure cases: automatic retries rewrite published issues; two writers race on a missing issue;
 // a slow correction overwrites a newer one; report/receipt commits split; empty gaps starve later
 // daily/weekly/monthly issues or make a failed catch-up look successful. All use a local model stub.
-import { gate, stub, tag } from "./setup.ts";
+import { gate, stub, tag, useModelStubs } from "./setup.ts";
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -15,8 +15,7 @@ let answer = async (user: string) => ({ title: user.slice(0, 100), leadParagraph
 const provider = await stub(async (_hit, request) => ({
   choices: [{ message: { content: JSON.stringify(await answer(JSON.parse(request.body).messages.at(-1).content)) } }],
 }));
-process.env.DEEPSEEK_BASE_URL = `${provider.url}/v1`;
-process.env.DEEPSEEK_API_KEY = "test-key";
+await useModelStubs({ DEEPSEEK: provider.url });
 before(async () => {
   await sql`INSERT INTO sources (id, name, kind, tier) VALUES (${SOURCE}, 'Report recovery', 'rss', 'T1')`;
 });

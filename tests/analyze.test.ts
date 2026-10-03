@@ -3,7 +3,7 @@
 // understanding and the rest by the title/summary prompts, a structure step gives the category, subjects
 // and fact. Material with only a feed summary has its page fetched first. The steps run on the models
 // AIHOT assigns them (set through the environment here); every prompt in the pack renders.
-import { Reply, stub, tag } from "./setup.ts";
+import { Reply, stub, tag, useModelStubs } from "./setup.ts";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { after, before, test } from "node:test";
@@ -50,8 +50,7 @@ const provider = await stub((_hit, req) => {
   if (step === "structure") return answer({ category: "ai-models", tags: ["模型发布", "推理"], subjects: ["anthropic", "unknown-co"], fact: { title: `事实 ${marker}`, subject: "某公司", action: "发布", object: "模型", occurredAt: null } });
   return answer(`title_zh: 翻译标题 ${marker}\nsummary_zh: 翻译摘要 ${marker}。第二句补充影响。`);
 });
-for (const env of ["DASHSCOPE_BASE_URL", "ZHIPU_BASE_URL", "DEEPSEEK_BASE_URL"]) process.env[env] = `${provider.url}/v1`;
-for (const env of ["DASHSCOPE_API_KEY", "ZHIPU_API_KEY", "DEEPSEEK_API_KEY"]) process.env[env] = "test-key";
+await useModelStubs({ DASHSCOPE: provider.url, ZHIPU: provider.url, DEEPSEEK: provider.url });
 // AIHOT's own assignment of models to steps (the open-source default is one model for all of them).
 Object.assign(process.env, { PREFILTER_MODEL: "qwen3.7-flash", SCORE_MODEL: "glm-5.3-flash-selection", UNDERSTAND_MODEL: "glm-5.3-flash", SUMMARIZE_MODEL: "deepseek-flash", STRUCTURE_MODEL: "qwen3.8-flash" });
 

@@ -286,9 +286,11 @@ test("large promotion resets every eligible item, queues the newest 500, and swe
     WHERE a.source_id = ${sourceId} AND j.name = ${QUEUES.analyze}`).map((r) => r.article_id).sort();
   assert.deepEqual(await queuedIds(), ids.slice(0, 500).sort());
   for (const id of ids.slice(500)) assert.equal((await processingJobs(id)).length, 0);
-  assert.equal((await sweepUnprocessed()).enqueued, 2);
+  // The sweep covers the whole database; assert this source's exact jobs, not other files' counts.
+  await sweepUnprocessed();
   assert.deepEqual(await queuedIds(), [...ids].sort());
-  assert.equal((await sweepUnprocessed()).enqueued, 0);
+  await sweepUnprocessed();
+  assert.deepEqual(await queuedIds(), [...ids].sort(), "another sweep does not duplicate this source's jobs");
   await edit(sourceId, { participation_mode: "editorial" });
   assert.equal((await queuedIds()).length, 502);
 });

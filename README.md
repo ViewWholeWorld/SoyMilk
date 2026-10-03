@@ -34,11 +34,12 @@ docker compose up -d --build
 
 ## 开发与文档
 
-先读 [AGENTS.md](AGENTS.md)。不同 feature 分别完成验证和提交，再开始下一项；开发与测试使用关闭安全阀的独立环境，不访问生产数据库、真实模型或外部付费服务。完整后端套件存在尚未解决的失败，不能将部分检查通过写成全部通过。
+先读 [AGENTS.md](AGENTS.md)。不同 feature 分别完成验证和提交，再开始下一项；开发与测试使用关闭安全阀的独立环境，不访问生产数据库、真实模型或外部付费服务。每次改动记录完整套件的实际结果，不能将部分检查通过写成全部通过，测试方法见[隔离回归测试](docs/testing.md)。
 
 | 文档 | 内容 |
 | --- | --- |
 | [当前维护说明](docs/soymilk-operations.md) | NAS 入口、正式配置、预算、只读核验和验证现况 |
+| [隔离回归测试](docs/testing.md) | 本地模型替身、安全阀、临时数据及共享数据库断言 |
 | [网页模型与授权](docs/chatgpt-auth.md) | API Key、Codex 设备代码、模型强度和 worker 保护 |
 | [时间轴与时区](docs/timeline-time.md) | 北京时间、收录与原文时间、截图核验 |
 | [兴趣信源与部署历史](docs/soymilk-feeds.md) | 五个领域的信源选择及各阶段记录 |
