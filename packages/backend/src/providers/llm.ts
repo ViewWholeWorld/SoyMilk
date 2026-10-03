@@ -25,7 +25,7 @@ export interface ModelSpec {
   jsonMode: boolean;
   vision?: boolean;
   reasoningEffort?: ReasoningEffort | null;
-  connection?: { type: "api-key" | "codex"; baseUrl?: string; apiKey?: string; generation: string };
+  connection?: { type: "api-key" | "codex"; baseUrl?: string; apiKey?: string; generation?: string };
 }
 
 function extraFromEnv(value: string | undefined): Record<string, unknown> | undefined {

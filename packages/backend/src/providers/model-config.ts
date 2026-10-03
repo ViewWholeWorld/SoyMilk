@@ -21,7 +21,7 @@ export const ConnectionInput = z.object({
     if (!["http:", "https:"].includes(u.protocol) || u.username || u.password || u.search || u.hash) throw new Error();
   } catch { ctx.addIssue({ code: "custom", path: ["baseUrl"], message: "接口地址需要是 HTTP(S) 地址，不能包含密钥、查询参数或片段" }); }
 });
-export type ModelConnection = z.infer<typeof ConnectionInput> & { id: string; generation: string };
+export type ModelConnection = z.infer<typeof ConnectionInput> & { id: string; generation?: string };
 interface StoredConfig { active: string | null; connections: ModelConnection[] }
 const file = () => path.join(config.dataDir, "model-config", "connections.json");
 
@@ -72,14 +72,27 @@ export async function modelConfiguration() {
   const c = await readModelConfig();
   return { active: c.active, connections: c.connections.map(publicConnection), modelCallsEnabled: config.modelCallsEnabled, collectEnabled: process.env.COLLECT_ENABLED !== "false" };
 }
+
+function sameRequestConfiguration(a: ModelConnection, b: ModelConnection): boolean {
+  // Analysis attaches images unless vision is explicitly false; omitted effort uses the model default.
+  if (a.type !== b.type || a.model !== b.model || (a.vision === false) !== (b.vision === false)
+    || (a.reasoningEffort ?? null) !== (b.reasoningEffort ?? null)) return false;
+  if (a.type !== "api-key") return true;
+  // Match llm.ts's endpoint and the fetcher's URL parsing, including meaningful repeated slashes.
+  const endpoint = (baseUrl: string) => new URL(`${baseUrl.replace(/\/$/, "")}/chat/completions`).href;
+  return endpoint(a.baseUrl!) === endpoint(b.baseUrl!) && a.apiKey === b.apiKey && !!a.jsonMode === !!b.jsonMode;
+}
+
 export async function saveModelConnection(input: unknown) {
   const v = ConnectionInput.parse(input);
   return privateLease("connections", async () => {
     const c = await readModelConfig();
     const old = c.connections.find((x) => x.id === v.id);
     if (v.id && !old) throw Object.assign(new Error("连接不存在"), { statusCode: 404 });
-    const next: ModelConnection = { ...v, id: old?.id ?? randomUUID(), apiKey: v.type === "api-key" ? v.apiKey || old?.apiKey : undefined, generation: randomUUID() };
+    const next: ModelConnection = { ...v, id: old?.id ?? randomUUID(), apiKey: v.type === "api-key" ? v.apiKey || old?.apiKey : undefined, generation: old?.generation };
     if (next.type === "api-key" && !next.apiKey) throw Object.assign(new Error("请填写 API Key"), { statusCode: 400 });
+    // Keep legacy absence too: adding an identity on a name-only edit would bypass its old receipts.
+    if (!old || !sameRequestConfiguration(old, next)) next.generation = randomUUID();
     c.connections = [...c.connections.filter((x) => x.id !== next.id), next];
     await atomicPrivateJson(file(), c);
     return publicConnection(next);
