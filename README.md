@@ -39,6 +39,7 @@ docker compose up -d --build
 | 文档 | 内容 |
 | --- | --- |
 | [当前维护说明](docs/soymilk-operations.md) | NAS 入口、正式配置、预算、只读核验和验证现况 |
+| [Hermes Agent 接入](docs/hermes.md) | NAS 内部 MCP 连接、资讯技能、只读范围与接入核验 |
 | [隔离回归测试](docs/testing.md) | 本地模型替身、安全阀、临时数据及共享数据库断言 |
 | [网页模型与授权](docs/chatgpt-auth.md) | API Key、Codex 设备代码、模型强度和 worker 保护 |
 | [时间轴与时区](docs/timeline-time.md) | 北京时间、收录与原文时间、截图核验 |

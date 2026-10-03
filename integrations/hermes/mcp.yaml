@@ -1,0 +1,18 @@
+mcp_servers:
+  soymilk:
+    url: http://172.29.20.7:3000/api/mcp
+    headers:
+      Host: 192.168.1.62:3000
+    enabled: true
+    trust: full
+    connect_timeout: 20
+    timeout: 30
+    tools:
+      include:
+        - soymilk_get_latest
+        - soymilk_search
+        - soymilk_get_hot_topics
+        - soymilk_get_story
+        - soymilk_get_daily
+      resources: false
+      prompts: false

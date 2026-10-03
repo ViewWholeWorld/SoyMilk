@@ -24,6 +24,7 @@
 - Node.js 24 直接运行 TypeScript，后端没有构建步骤。npm workspaces：`apps/*`、`packages/*`、`industry`。
 - 本机运行和 Docker 见 `docs/deploy.md`。
 - NAS 的额外 Compose 覆盖由 `deploy/nas/compose.sh` 统一加载。更新时保留 worker 复用与预算恢复覆盖，先核对运行服务，不能只运行根目录的 Compose 而丢失 NAS 设置。
+- Hermes 接入见 `docs/hermes.md`：保留私有 `compose.web-time.yml` 中 web 的固定内部网络连接及 Hermes 的现有 MCP；SoyMilk 仅白名单五个匿名只读工具，技能源在 `integrations/hermes/skills/soymilk-news/`，不授予后台、数据库或模型调用能力。
 - 自动更新见 `docs/auto-deploy.md`：上游候选通过完整 CI 后才合并；NAS 的独立部署容器每 15 分钟拉取固定摘要镜像。`compose.release.yml` 是最后镜像覆盖，手动更新也须核对。迁移、基础 Compose 和受保护定制变更需要人工确认；失败只回退应用，不恢复旧数据库或删除付费回执。
 - 改完至少跑：
   ```bash

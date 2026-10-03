@@ -37,6 +37,8 @@ JS
 
 ## 更新时间与页面
 
+NAS 的 Hermes 容器已增加 SoyMilk MCP 和 `soymilk-news` 技能，原有 MCP 与模型设置保持不变。连接使用网页在 `agent-net` 上的固定内部地址，网络覆盖保存在私有 `compose.web-time.yml`，后续更新必须保留；见 [Hermes 接入](hermes.md)。这只是公开内容读取，不触发新闻模型任务，也不增加管理员能力。
+
 左侧为收录或事件进展时间，使用北京时间；模型排队不会改写时间轴。首次集中采集会令多篇文章显示相同分钟，详见[时间轴与时区](timeline-time.md)。
 
 更新 NAS 统一通过 `deploy/nas/compose.sh`，该入口加载私有 NAS 覆盖、`compose.codex-worker.yml` 和 `compose.web-time.yml`。这些 NAS 覆盖文件保存在部署目录，不应误以为仅运行根目录 Compose 就会保留正式配置。

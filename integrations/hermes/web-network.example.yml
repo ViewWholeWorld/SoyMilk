@@ -1,0 +1,11 @@
+services:
+  web:
+    networks:
+      default: {}
+      hermes:
+        ipv4_address: 172.29.20.7
+        aliases: [soymilk]
+networks:
+  hermes:
+    external: true
+    name: agent-net
