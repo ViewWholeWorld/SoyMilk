@@ -51,7 +51,7 @@ NAS 的 Hermes 容器已增加 SoyMilk MCP 和 `soymilk-news` 技能，原有 MC
 
 更新 NAS 统一通过 `deploy/nas/compose.sh`，该入口加载私有 NAS 覆盖、`compose.codex-worker.yml` 和 `compose.web-time.yml`。这些 NAS 覆盖文件保存在部署目录，不应误以为仅运行根目录 Compose 就会保留正式配置。
 
-自动部署启用后，入口在三个既有私有覆盖之后加载 `compose.release.yml`，统一固定 setup/API/worker/web 的镜像摘要。后续手动部署也须核对这个最后覆盖，不能只重建根目录镜像或修改较早的 worker/web 覆盖却仍运行旧版本。环境、网络、卷及并发设置仍来自原私有覆盖。
+自动部署启用后，入口在三个既有私有覆盖之后加载 `compose.release.yml`，统一固定 setup/API/worker/web 的镜像摘要。审查修复分支的 setup 在迁移成功后运行 `seed.ts --topics-only`，按 slug 同步行业包主题，不导入示范信源或模型目录，也不删除其他主题；任一步失败都会中止本轮启动，应用回退不撤销已写入的迁移或主题数据。后续手动部署也须核对这个最后覆盖，不能只重建根目录镜像或修改较早的 worker/web 覆盖却仍运行旧版本。环境、网络、卷及并发设置仍来自原私有覆盖。
 
 上游自动同步由 `Sync Upstream` 每小时检查，先构造候选并运行完整 `Check`，通过后才推进 `main`。冲突、受保护的定制/迁移/部署/模型保护文件变更会暂停并创建 Issue；详见[自动更新](auto-deploy.md)。
 

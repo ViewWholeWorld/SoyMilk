@@ -17,8 +17,9 @@ test("release channel accepts only this repository's immutable images and exact 
   assert.throws(() => releaseOverlay({ setup: "latest", api: release.image, worker: release.image, web: release.image }), /immutable/);
   const overlay = releaseOverlay({ setup: release.image, api: release.image, worker: release.image, web: release.image });
   assert.equal((overlay.match(/pull_policy: never/g) ?? []).length, 4);
-  assert.match(overlay, /command: \["node", "scripts\/migrate.ts"\]/);
-  assert.doesNotMatch(overlay, /environment|volumes|seed/);
+  const command = JSON.parse(overlay.match(/command: (\[.*\])/)![1]);
+  assert.deepEqual(command, ["sh", "-c", "node scripts/migrate.ts && node scripts/seed.ts --topics-only"]);
+  assert.doesNotMatch(overlay, /environment|volumes/);
 });
 
 test("migration fingerprints are portable, and any migration or Compose change blocks deployment", () => {

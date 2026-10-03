@@ -42,7 +42,7 @@ export function releaseOverlay(images: Record<"setup" | "api" | "worker" | "web"
   }
   return "services:\n" + Object.entries(images).map(([role, image]) =>
     `  ${role}:\n    image: ${JSON.stringify(image)}\n    pull_policy: never\n`
-    + (role === "setup" ? '    command: ["node", "scripts/migrate.ts"]\n' : "")).join("");
+    + (role === "setup" ? '    command: ["sh", "-c", "node scripts/migrate.ts && node scripts/seed.ts --topics-only"]\n' : "")).join("");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
