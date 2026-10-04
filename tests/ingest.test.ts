@@ -6,6 +6,8 @@ import { after, test } from "node:test";
 import Fastify from "fastify";
 import { closeDb, sql } from "@aihot/backend/db";
 import { stopBoss } from "@aihot/backend/jobs/queue";
+import { identityKeyForUrl, normalizeUrl } from "@aihot/backend/lib/url";
+import { publishArticle } from "@aihot/backend/publication/publish";
 import { registerIngest } from "../apps/api/src/routes/ingest.ts";
 
 const T = tag();
@@ -102,6 +104,40 @@ test("valid batches retain skips, deduplication, backfill and isolated-source de
   assert.deepEqual(articles.map((row) => ({ ...row })), [{ title: "First title", author: "Test author", backfill: true }]);
   const repeated = await push({ sourceId, items: [{ title: "First title", url, author: "Test author", publishedAt: "2020-01-01T00:00:00Z", raw: { _aihot: { backfill: true } } }] });
   assert.deepEqual(repeated.json(), { ok: true, created: 0 });
+});
+
+test("canonical deduplication preserves the owner's original address and repairs legacy URLs without processing", async () => {
+  const sourceId = `ingest-raw-url-${T}`;
+  const rawUrl = `http://WWW.Example.org:8080/ingest-raw-${T}?sig=b%2Fa&z=2&a=1&utm_source=crawler&ref=keep#read-here`;
+  const canonicalUrl = normalizeUrl(rawUrl)!;
+  const response = await push({ sourceId, items: [
+    { title: "Original address", url: `  ${rawUrl}  ` },
+    { title: "Canonical duplicate", url: canonicalUrl },
+    { title: "Invalid scheme", url: `ftp://example.org/invalid-${T}` },
+  ] });
+  assert.deepEqual(response.json(), { ok: true, created: 1 });
+  const [article] = await sql`SELECT id, url, identity_key FROM articles WHERE source_id = ${sourceId}`;
+  assert.equal(article!.url, rawUrl, "keep HTTP, www, port, signed parameter order, tracking and fragment");
+  assert.equal(article!.identity_key, identityKeyForUrl(rawUrl), "only the identity is canonical");
+  await publishArticle(article!.id);
+  await sql`UPDATE articles SET url = ${canonicalUrl}, processing_state = 'analyzed', processing_attempts = 2,
+    processing_attempt_tag = 'original-attempt', processing_error = 'previous failure', processing_retry_at = '2100-01-01'
+    WHERE id = ${article!.id}`;
+  await sql`UPDATE publications SET url = ${canonicalUrl} WHERE article_id = ${article!.id}`;
+  const unchangedState = async () => (await sql`SELECT revision, content_hash, processing_state, processing_attempts,
+    processing_attempt_tag, processing_error, processing_retry_at, processing_queued_at, updated_at FROM articles WHERE id = ${article!.id}`)[0]!;
+  const before = await unchangedState();
+  const jobs = async () => (await sql`SELECT count(*)::int AS n FROM pgboss.job WHERE data->>'articleId' = ${article!.id}`)[0]!.n;
+  const queuedBefore = await jobs();
+  const repeated = await push({ sourceId, items: [{ title: "Original address", url: rawUrl }] });
+  assert.deepEqual(repeated.json(), { ok: true, created: 0 });
+  assert.deepEqual({ ...await unchangedState() }, { ...before });
+  assert.equal(await jobs(), queuedBefore, "repair does not enqueue processing or a model request");
+  assert.equal((await sql`SELECT url FROM articles WHERE id = ${article!.id}`)[0]!.url, rawUrl);
+  assert.equal((await sql`SELECT url FROM publications WHERE article_id = ${article!.id}`)[0]!.url, rawUrl);
+  const mirror = await push({ sourceId: `ingest-raw-mirror-${T}`, items: [{ title: "Mirror", url: canonicalUrl }] });
+  assert.deepEqual(mirror.json(), { ok: true, created: 0 });
+  assert.equal((await sql`SELECT url FROM articles WHERE id = ${article!.id}`)[0]!.url, rawUrl, "another source cannot overwrite the owner's address");
 });
 
 test("empty and oversized batches are rejected before creating a source", async () => {

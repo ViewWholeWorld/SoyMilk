@@ -54,19 +54,19 @@ export async function ingestItems(body: unknown): Promise<{ ok: true; created: n
     const title = typeof it.title === "string" ? it.title.trim() : "";
     const rawUrl = typeof it.url === "string" ? it.url.trim() : "";
     if (!title || !rawUrl) continue;
-    let url: string | null = null;
+    let canonicalUrl: string | null = null;
     try {
-      url = normalizeUrl(rawUrl);
+      canonicalUrl = normalizeUrl(rawUrl);
     } catch {
-      url = null;
+      canonicalUrl = null;
     }
-    if (!url || seen.has(url)) continue;
-    seen.add(url);
+    if (!canonicalUrl || seen.has(canonicalUrl)) continue;
+    seen.add(canonicalUrl);
     const published = typeof it.publishedAt === "string" ? new Date(it.publishedAt) : null;
     const flags = it.raw?._aihot ?? {};
     const res = await upsertMaterial({
       sourceId: source!.id,
-      url,
+      url: rawUrl,
       title,
       author: typeof it.author === "string" ? it.author.slice(0, 200) : null,
       publishedAt: published && Number.isFinite(published.getTime()) ? published : null,

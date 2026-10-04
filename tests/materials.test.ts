@@ -52,6 +52,32 @@ test("an unchanged report does not add a revision", async () => {
   assert.equal(article!.revision, 1);
 });
 
+test("owner URL repair runs before each unchanged-content return", async (t) => {
+  for (const branch of ["same", "baseline", "seen", "loss"] as const) {
+    await t.test(branch, async () => {
+      const path = `url-${branch}-${tag()}`;
+      const oldUrl = `https://example.com/${path}?a=1&z=2`;
+      const rawUrl = `http://www.example.com/${path}?z=2&a=1&utm_source=feed#read`;
+      const material = { sourceId: SOURCE, url: oldUrl, title: "Legacy title", bodyText: "legacy body", via: "fetch" as const };
+      const id = branch === "baseline" ? await imported(oldUrl) : (await upsertMaterial(material)).articleId;
+      if (branch === "seen") await upsertMaterial({ ...material, title: "Current version" });
+      await sql`UPDATE articles SET processing_state = 'analyzed', processing_attempts = 2,
+        processing_attempt_tag = 'original-attempt', processing_error = 'prior failure', processing_retry_at = '2100-01-01'
+        WHERE id = ${id}`;
+      const inputState = async () => (await sql`SELECT revision, title, processing_state, processing_attempts, processing_attempt_tag,
+        processing_error, processing_retry_at, processing_queued_at, updated_at FROM articles WHERE id = ${id}`)[0]!;
+      const before = await inputState();
+      const historyBefore = (await sql`SELECT count(*)::int AS n FROM article_revisions WHERE article_id = ${id}`)[0]!.n;
+      const result = await upsertMaterial({ ...material, url: rawUrl, title: branch === "loss" ? "Legacy titl\uFFFD" : material.title });
+      assert.deepEqual([result.articleId, result.created, result.revised], [id, false, false]);
+      assert.equal((await sql`SELECT url FROM articles WHERE id = ${id}`)[0]!.url, rawUrl);
+      assert.deepEqual({ ...await inputState() }, { ...before }, "URL metadata preserves processing and content state");
+      assert.equal((await sql`SELECT count(*)::int AS n FROM article_revisions WHERE article_id = ${id}`)[0]!.n,
+        historyBefore + (branch === "baseline" ? 1 : 0), "only the existing baseline branch adds history");
+    });
+  }
+});
+
 test("an imported article's first report records a baseline, not a revision", async () => {
   const url = `https://example.com/imported-${tag()}`;
   const id = `imp${tag()}`;

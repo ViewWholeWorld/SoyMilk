@@ -6,7 +6,7 @@ import { advancePublicationPermissions } from "./cache.ts";
 import { SITE } from "@aihot/industry/site";
 import { toPublicApiCategory } from "@aihot/contracts/taxonomy";
 import { config } from "../config.ts";
-import { one, sql, type Tx } from "../db.ts";
+import { one, sql, type Db, type Tx } from "../db.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
 import { collapseWhitespace } from "../lib/text.ts";
 import { itemUrl } from "./links.ts";
@@ -138,12 +138,35 @@ export function v1Payload(p: {
 }
 
 /** Allocates the next ledger sequence under a transaction lock so sequence order equals commit order. */
-async function appendLedger(tx: Tx, articleId: string, op: "upsert" | "remove", payload: V1ItemPayload | null, visibleAt: Date, now: Date): Promise<number> {
+async function appendLedger(tx: Db, articleId: string, op: "upsert" | "remove", payload: V1ItemPayload | null, visibleAt: Date, now: Date): Promise<number> {
   await tx`SELECT pg_advisory_xact_lock(hashtext('selected_ledger'))`;
   const { next } = one(await tx<{ next: number }[]>`SELECT coalesce(max(seq), 0) + 1 AS next FROM selected_ledger`);
   await tx`INSERT INTO selected_ledger (seq, article_id, op, changed_at, visible_at, payload)
            VALUES (${next}, ${articleId}, ${op}, ${now}, ${visibleAt}, ${payload ? tx.json(payload as never) : null})`;
   return next;
+}
+
+/** The material owner's transaction already holds the article lock. Change only the published
+ * address, preserving the judgement, release gate and content freshness while recording sync. */
+export async function syncMaterialUrl(db: Db, articleId: string, url: string): Promise<void> {
+  await db`SELECT pg_advisory_xact_lock_shared(hashtext('report_candidates'))`;
+  const [publication] = await db<{ selected: boolean; visibility: string; visible_after: Date | null }[]>`
+    UPDATE publications SET url = ${url} WHERE article_id = ${articleId} AND url IS DISTINCT FROM ${url}
+    RETURNING selected, visibility, visible_after`;
+  if (!publication?.selected || publication.visibility !== "public") return;
+  const [state] = await db<{ in_set: boolean; op: string | null; payload: V1ItemPayload | null }[]>`
+    SELECT st.in_set, l.op, l.payload FROM selected_state st
+    LEFT JOIN selected_ledger l ON l.seq = st.last_seq AND l.article_id = st.article_id
+    WHERE st.article_id = ${articleId}`;
+  if (!state?.in_set) return;
+  if (state.op !== "upsert" || !state.payload) throw new Error(`Missing selected payload for ${articleId}`);
+  const payload: V1ItemPayload = { ...state.payload, links: { ...state.payload.links, original: url } };
+  const payloadHash = sha256(stableJson(payload));
+  if (state.payload.links.original === url) return;
+  const now = new Date();
+  const visibleAt = publication.visible_after && publication.visible_after > now ? publication.visible_after : now;
+  const seq = await appendLedger(db, articleId, "upsert", payload, visibleAt, now);
+  await db`UPDATE selected_state SET payload_hash = ${payloadHash}, last_seq = ${seq} WHERE article_id = ${articleId}`;
 }
 
 export async function publishArticle(articleId: string, options: PublishOptions = {}): Promise<PublishResult | null> {

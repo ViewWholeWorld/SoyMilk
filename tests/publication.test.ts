@@ -414,6 +414,46 @@ test("unchanged republishing preserves freshness, while URL-only changes still r
   assert.equal(changed.revision, before.revision);
 });
 
+test("owner recollection synchronizes public URLs without republishing or changing content state", async () => {
+  const id = await article();
+  await publishArticle(id, released());
+  const [input] = await sql`SELECT * FROM articles WHERE id = ${id}`;
+  const state = async () => (await sql`SELECT revision, updated_at, visible_after, timeline_at, selected, eligible, visibility
+    FROM publications WHERE article_id = ${id}`)[0]!;
+  const before = await state();
+  const [ledger] = await sql`SELECT seq, payload FROM selected_ledger WHERE article_id = ${id} ORDER BY seq DESC LIMIT 1`;
+  const paths = [`/api/site/items/${id}`, "/api/v1/items?mode=selected&limit=100", "/feed.xml"];
+  const oldResponses = await Promise.all(paths.map(path => get(path)));
+  const priorSnapshot = JSON.parse((await get("/api/v1/selected/snapshot?limit=1000")).body);
+  const url = input!.url.replace("https://example.com/", "http://www.example.com/") + "?utm_source=feed#read";
+  const result = await upsertMaterial({ sourceId: SOURCE, url, title: input!.title, via: "fetch" });
+  assert.deepEqual([result.articleId, result.created, result.revised], [id, false, false]);
+  assert.deepEqual({ ...await state() }, { ...before }, "address repair preserves publication freshness and release gates");
+  const [afterInput] = await sql`SELECT * FROM articles WHERE id = ${id}`;
+  assert.deepEqual({ ...afterInput, url: input!.url }, { ...input }, "no analysis revision or processing state changes");
+  const [changed] = await sql`SELECT seq, payload FROM selected_ledger WHERE article_id = ${id} ORDER BY seq DESC LIMIT 1`;
+  assert.ok(changed!.seq > ledger!.seq);
+  assert.deepEqual(changed!.payload, { ...ledger!.payload, links: { ...ledger!.payload.links, original: url } });
+  for (const [index, path] of paths.entries()) {
+    const response = await get(path, { "if-none-match": oldResponses[index]!.etag! });
+    assert.equal(response.status, 200, path);
+    assert.ok(response.body.includes(url), path);
+  }
+  const snapshot = JSON.parse((await get("/api/v1/selected/snapshot?limit=1000")).body);
+  assert.equal(snapshot.items.find((item: any) => item.id === id).links.original, url);
+  const changes = JSON.parse((await get(`/api/v1/selected/changes?cursor=${encodeURIComponent(priorSnapshot.cursor)}&limit=100`)).body);
+  assert.equal(changes.changes.find((change: any) => change.op === "upsert" && change.item.id === id).item.links.original, url);
+  await upsertMaterial({ sourceId: SOURCE, url, title: input!.title, via: "fetch" });
+  assert.equal((await sql`SELECT max(seq) AS seq FROM selected_ledger WHERE article_id = ${id}`)[0]!.seq, changed!.seq,
+    "recollecting the same address does not append another change");
+
+  const newerUrl = url.replace("utm_source=feed", "utm_source=updated");
+  const revised = await upsertMaterial({ sourceId: SOURCE, url: newerUrl, title: input!.title + " revised", via: "fetch" });
+  assert.equal(revised.revised, true);
+  assert.deepEqual({ ...await state() }, { ...before }, "new input still waits for analysis before republishing");
+  assert.equal((await sql`SELECT url FROM publications WHERE article_id = ${id}`)[0]!.url, newerUrl);
+});
+
 test("share images keep detail metadata and access rules while conditional reads avoid body hydration", async () => {
   const id = await article();
   await publishArticle(id, released());
