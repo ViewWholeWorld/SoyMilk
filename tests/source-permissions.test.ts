@@ -76,10 +76,15 @@ test("site fulltext revocation removes bodies, translations, media and body sear
   assert.equal(detail.statusCode, 200, "the old fulltext ETag does not produce 304");
   assert.equal(detail.json().body, null);
   assert.ok(detail.body.includes(p.summary));
-  for (const url of [`/api/site/items/${p.id}`, `/api/site/items/${p.id}/original`, `/items/${p.id}/markdown`, "/feed/full.xml",
-    `/api/v1/items?q=${p.marker}&window=7d`, `/api/site/pool?q=${p.marker}&tab=relevance`]) {
+  for (const url of [`/api/site/items/${p.id}`, `/api/site/items/${p.id}/original`, `/items/${p.id}/markdown`, "/feed/full.xml"]) {
     const response = await get(url);
     assert.ok(!response.body.includes(p.marker), `${url} leaks revoked fulltext or media`);
+  }
+  // Search may echo the reader's query in filters; only returned items establish a body match.
+  for (const url of [`/api/v1/items?q=${p.marker}&window=7d`, `/api/site/pool?q=${p.marker}&tab=relevance`]) {
+    const response = await get(url);
+    assert.equal(response.statusCode, 200, url);
+    assert.ok(!response.json().items.some((item: { id: string }) => item.id === p.id), `${url} still matches revoked body text`);
   }
   assert.ok(!JSON.stringify(await search(p.marker)).includes(p.id));
   const [projection] = await sql`SELECT body_mode, syndicate, selected FROM publications WHERE article_id = ${p.id}`;
