@@ -177,11 +177,32 @@ test("a long device login sends waiting jobs back to retry before their queue le
 });
 
 for (const kind of ["rate","quota"] as const) test("upstream "+kind+" stops new requests while its paid peer settles", async () => {
-  const pool = worker();
+  const opened = gate<CodexServer>();
+  let server: CodexServer | undefined;
+  const pool = worker({ open: async () => {
+    server = await open();
+    await server.request("fixture/hold", { tag: kind });
+    await server.request("fixture/hold", { tag: "slow" });
+    opened.open(server);
+    return server;
+  } });
   try {
     const limited = pool.call((server) => paidRequest({ service: "session-limit-"+T, purpose: "guard", identity: { T,kind } },
       async () => ({ response: await requestCodex(server,"fixture-model","",kind,true,2000) })));
-    const outcomes = await Promise.allSettled([limited,turn(pool,"slow"),turn(pool,"queued")]);
+    const pending = Promise.allSettled([limited,turn(pool,"slow"),turn(pool,"queued")]);
+    const control = await opened.promise;
+    // Receipt SQL may delay the limited turn. Keep both real turns in flight until the queue is known.
+    await Promise.all([kind,"slow"].map((tag) => control.request("fixture/waitForTurn", { tag })));
+    assert.equal(pool.status.active,2); assert.equal(pool.status.queued,1);
+    assert.deepEqual(await control.request("fixture/stats", {}), { threads: 2, turns: 2, active: 2, peak: 2 });
+    await control.request("fixture/release", { tag: kind });
+    // The worker observes the limit only after paidRequest records its unknown receipt.
+    await Promise.allSettled([limited]);
+    assert.ok(pool.status.blockedUntil! > Date.now());
+    assert.equal(pool.status.concurrency,kind==="rate" ? 1 : 2);
+    assert.deepEqual(await control.request("fixture/stats", {}), { threads: 2, turns: 2, active: 1, peak: 2 });
+    await control.request("fixture/release", { tag: "slow" });
+    const outcomes = await pending;
     assert.equal(outcomes[0]!.status, "rejected");
     if (outcomes[0]!.status === "rejected") {
       assert.ok(outcomes[0].reason instanceof ReceiptUnknownError);
@@ -194,7 +215,10 @@ for (const kind of ["rate","quota"] as const) test("upstream "+kind+" stops new 
     if (outcomes[2]!.status === "rejected") assert.ok(outcomes[2].reason instanceof BudgetExceededError);
     assert.ok(pool.status.blockedUntil! > Date.now());
     assert.equal(pool.status.concurrency,kind==="rate" ? 1 : 2);
-  } finally { await pool.close(); }
+  } finally {
+    if (server) await Promise.allSettled([kind,"slow"].map((tag) => server!.request("fixture/release", { tag })));
+    await pool.close();
+  }
   assert.equal(settled.turns,2); assert.equal(settled.active,0);
 });
 
