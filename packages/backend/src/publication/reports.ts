@@ -62,12 +62,13 @@ export async function unavailableIds(ids: string[]): Promise<Set<string>> {
   return new Set(rows.map((r) => r.id));
 }
 
-/** Directory/feed metadata only: citation summaries and full report prose stay in the detail read. */
+/** Directory/feed metadata plus the public period overview; citation summaries stay in detail. */
 export async function reportIndexRows(kind: ReportKind, limit: number) {
   // 先按完整的同类现存刊物编号，再裁剪导航；历史补刊和删除会改变后续期号。
   return sql<{ key: string; issue_number: number; content: Record<string, any>; generated_at: Date }[]>`
     SELECT key, generated_at, (row_number() OVER (ORDER BY key ASC))::int AS issue_number, jsonb_build_object(
       'lead', content->'lead', 'headline', content->'headline', 'title', content->'title',
+      'overview', CASE WHEN kind IN ('weekly', 'monthly') THEN content->'overview' ELSE NULL END,
       'proseInputs', content->'proseInputs', 'storyOrder', content->'storyOrder',
       'flashes', (SELECT coalesce(jsonb_agg(jsonb_build_object('itemId', flash->'itemId')), '[]'::jsonb)
         FROM jsonb_array_elements(jsonb_path_query_array(content, '$.flashes[*]')) AS flash WHERE jsonb_typeof(flash) = 'object'),

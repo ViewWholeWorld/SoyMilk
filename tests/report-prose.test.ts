@@ -118,6 +118,14 @@ for (const kind of ["weekly", "monthly"] as const) {
     const path = `/api/v1/${kind === "weekly" ? "weeklies" : "monthlies"}/${key}`;
     const before = await get(path);
     assert.ok(before.body.includes(marker));
+    const listPath = `/api/v1/${kind === "weekly" ? "weeklies" : "monthlies"}`;
+    const listBefore = await get(listPath);
+    const listed = (response: typeof listBefore) => response.json().items.find((item: any) => item[kind === "weekly" ? "week" : "month"] === key);
+    assert.equal(listed(listBefore).overview, before.json().report.overview, "list and detail retain the same permitted overview");
+    assert.equal(listed(listBefore).overview, marker);
+    const raw = (await reportIndexRows(kind, 400)).find(row => row.key === key)!;
+    assert.equal(raw.content.overview, marker);
+    assert.ok(!JSON.stringify(raw).includes(`公开摘要${p.ids[0]}`), "period index still excludes citation summaries");
     await get(`/api/site/reports/${kind}`);
     await withdraw(p.ids[1]!);
     for (const url of [path, `/api/site/reports/${kind}/${key}`, `/api/site/reports/${kind}`, `/api/v1/${kind === "weekly" ? "weeklies" : "monthlies"}`]) {
@@ -128,6 +136,9 @@ for (const kind of ["weekly", "monthly"] as const) {
     }
     const detail = (await v1Period(kind, key))!.report;
     assert.equal(detail.overview, null);
+    const listAfter = await get(listPath, String(listBefore.headers.etag));
+    assert.equal(listAfter.statusCode, 200, "warm overview changes its ETag after uncited input withdrawal");
+    assert.equal(listed(listAfter).overview, null);
     assert.equal(detail.themes[0]!.heading, "主题 1");
     assert.equal(detail.themes[0]!.summary, "");
     assert.equal((await get(path, String(before.headers.etag))).statusCode, 200);
