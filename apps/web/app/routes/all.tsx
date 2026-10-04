@@ -8,6 +8,7 @@ import { listPath, pageMeta } from "../lib/seo";
 import { CategoryTabs, SearchField } from "../features/feed/Filters";
 import { PillTabs } from "../components/ui/Tabs";
 import { DayList, Pagination } from "../features/feed/DayList";
+import { RankedList } from "../features/feed/RankedList";
 import { EmptyState } from "../components/ui/Page";
 import { RingMark } from "../components/Logo";
 
@@ -131,6 +132,8 @@ export default function AllPage() {
               {f.q ? "换个说法，或者去掉筛选再试。" : "这个筛选下暂时没有内容。"}
             </EmptyState>
           </div>
+        ) : f.q && f.tab === "relevance" ? (
+          <RankedList items={data.items} showTags />
         ) : (
           <DayList items={data.items} todayCount={f.q ? null : data.todayCount} showTags />
         )}
