@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "revision": "31b13a5085f0cfe91148d15a6855dd84fc6095b5",
-  "image": "ghcr.io/viewwholeworld/soymilk@sha256:5342a5c4e2fbee639f8943513080ea6bcc0c5893fe1061d982a8dd773af969d2",
+  "revision": "dcd0cd3805d247c9434a421c5261fff6379cb9f2",
+  "image": "ghcr.io/viewwholeworld/soymilk@sha256:9ce469b5b8e49cbb1e3da42ccc78eb51d1d99ebb00f61164413acc50ffd65ef1",
   "migrationsHash": "5357d62d204180408efb32068aff9afa7dc76f70adfff77801fd6b47b56ec698",
   "composeHash": "49952ac74b5aeabaed5d3c21d029eb66fedeb4563d2c822341ec0c7fea6ef818"
 }
