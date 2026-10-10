@@ -54,9 +54,7 @@ docker compose up -d --build
 | [事件归组](docs/grouping.md) | 事件关系与评测 |
 | [模型榜](docs/leaderboard.md) | 公开评测与 Codex 重置监控 |
 
-Fork 仍可通过 upstream 获取和合并源仓库更新；合并时保留本站定制和部署配置。技术栈为 Node.js 24、TypeScript、React Router、Fastify、PostgreSQL、pg-boss、Tailwind CSS 和 Docker Compose。
-
-`Sync Upstream` 每小时检查上游，候选合并通过完整 CI 后才进入 `main`；冲突或定制、迁移、部署及模型保护代码变化会暂停并创建待处理 Issue。见[自动更新](docs/auto-deploy.md)。
+源仓库的更新不再自动合并，需要时在独立分支手动移植，保留本站定制和部署配置。技术栈为 Node.js 24、TypeScript、React Router、Fastify、PostgreSQL、pg-boss、Tailwind CSS 和 Docker Compose。
 
 `main` 的完整 CI 通过后发布 NAS 兼容的固定摘要镜像。独立 NAS 部署容器每 15 分钟检查并拉取，备份后更新和冒烟检查；失败回退应用，不恢复旧数据库。电脑无需保持开机；涉及迁移和基础 Compose 变化时需要人工确认。
 

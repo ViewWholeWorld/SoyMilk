@@ -57,7 +57,7 @@ NAS 的 Hermes 容器已增加 SoyMilk MCP 和 `soymilk-news` 技能，原有 MC
 
 自动部署启用后，入口在三个既有私有覆盖之后加载 `compose.release.yml`，统一固定 setup/API/worker/web 的镜像摘要。审查修复分支的 setup 在迁移成功后运行 `seed.ts --topics-only`，按 slug 同步行业包主题，不导入示范信源或模型目录，也不删除其他主题；任一步失败都会中止本轮启动，应用回退不撤销已写入的迁移或主题数据。后续手动部署也须核对这个最后覆盖，不能只重建根目录镜像或修改较早的 worker/web 覆盖却仍运行旧版本。环境、网络、卷及并发设置仍来自原私有覆盖。
 
-上游自动同步由 `Sync Upstream` 每小时检查，先构造候选并运行完整 `Check`，通过后才推进 `main`。冲突、受保护的定制/迁移/部署/模型保护文件变更会暂停并创建 Issue；详见[自动更新](auto-deploy.md)。
+2026-10-10 起已删除 `Sync Upstream` 自动同步，不再每小时检查上游。需要上游改动时在独立分支手动移植，完整 `Check` 通过后才推进 `main`；详见[自动更新](auto-deploy.md)。
 
 `Check` 的两个验证作业通过后发布 Bookworm NAS 镜像及 `deployment-channel` 固定摘要清单。独立 `soymilk-auto-deploy` 容器每 15 分钟自行拉取，Docker 重启策略覆盖 NAS 重启，不依赖电脑或系统 cron。部署前正常结束 worker 任务并备份数据库与附件，验证后记录 `.data/auto-deploy/status.json`；失败只回退应用镜像，保留数据库与付费回执。任何数据库迁移或基础 Compose 变化暂停等待人工确认，NAS 推送通知尚未配置。
 
@@ -77,7 +77,7 @@ NAS 的 Hermes 容器已增加 SoyMilk MCP 和 `soymilk-news` 技能，原有 MC
 
 正式内网入口的 34 项冒烟和公开 MCP 合约均通过。Hermes 原固定地址发现恰好五个只读工具，最新资讯返回非空；三个私有覆盖校验值前后一致。模型仍为原 Codex 连接的 gpt-6-luna、默认推理强度，采集与模型开关保持开启，worker 复用和并发 2 保持不变；自动部署轮询已恢复并报告 `up-to-date`。这些是本次部署快照，后续仍用状态接口核验。
 
-上游当前是 4.0 整代重构，自动同步因迁移、行业和付费保护路径变化而停在人工审核门槛，未进入冲突合并或 CI。已完成[兼容性审核](upstream-review-20261004.md)，本次保留现有主题、模型榜、监控及付费回执保护，没有引入上游删表迁移；Issue #2 保留为尚需适配的记录。
+2026-10-04 时上游为 4.0 整代重构，当时的自动同步因迁移、行业和付费保护路径变化而停在人工审核门槛，未进入冲突合并或 CI。已完成[兼容性审核](upstream-review-20261004.md)，本次保留现有主题、模型榜、监控及付费回执保护，没有引入上游删表迁移；Issue #2 保留为尚需适配的记录。
 
 ### 历史：测试隔离修复与 CI
 
@@ -85,7 +85,7 @@ NAS 的 Hermes 容器已增加 SoyMilk MCP 和 `soymilk-news` 技能，原有 MC
 
 北京时间 2026-10-03 13:19，[GitHub Check #1](https://github.com/ViewWholeWorld/SoyMilk/actions/runs/37099294769) 在提交 `fd58b0c` 上完成：`check` 和 `docker` 两个作业全部通过，完整后端回归 615 项全部通过，失败、取消、跳过均为 0，耗时约 131 秒，与上述隔离空库基线一致。类型检查、网页构建、31 项网页测试、空站点冒烟及 MCP 合约检查、Docker 构建与启动检查也通过；空站点尚无模型榜数据，三个模型榜页面按既有冒烟规则未检查。本机重新运行类型检查、网页构建和 31 项网页测试，以及正式站点的 34 项只读冒烟检查，均通过。
 
-该 fork 的 GitHub Actions 已启用，后续 `main` 推送和 PR 更新会运行 `.github/workflows/check.yml`，也可手动选择分支运行。首次核验通过后，[PR #1](https://github.com/ViewWholeWorld/SoyMilk/pull/1) 于北京时间 2026-10-03 13:22 合并到 SoyMilk 的 `main`，合并提交为 `860e95f`，保留各功能的独立提交。本地 `main` 跟踪 `origin/main`；上游更新继续从 `upstream/main` 获取并合并，不能用上游分支覆盖本站定制。
+该 fork 的 GitHub Actions 已启用，后续 `main` 推送和 PR 更新会运行 `.github/workflows/check.yml`，也可手动选择分支运行。首次核验通过后，[PR #1](https://github.com/ViewWholeWorld/SoyMilk/pull/1) 于北京时间 2026-10-03 13:22 合并到 SoyMilk 的 `main`，合并提交为 `860e95f`，保留各功能的独立提交。本地 `main` 跟踪 `origin/main`；如需上游改动，从 `upstream/main` 手动移植，不能用上游分支覆盖本站定制。
 
 修复仅涉及测试、CI 与文档：需要模型的用例显式绑定本进程创建的本地替身，每个文件独立临时数据目录，不继承真实模型配置；全库队列扫描断言检查本信源的准确任务集合；评分缓存断言将墙钟耗时与决策、用量指标分开。新增三项检查验证外部地址、未注册或已关闭替身不能打开模型入口。测试默认环境开关关闭，模型流程仅在内存中放行本地替身，详见[隔离回归测试](testing.md)。
 

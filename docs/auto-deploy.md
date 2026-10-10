@@ -1,14 +1,8 @@
 # Automatic Updates
 
-## Upstream Sync
+## Upstream Sync (removed)
 
-`Sync Upstream` checks `KKKKhazix/AIHOT:main` hourly at minute 17 (GitHub scheduling can be delayed), or can be run manually in Actions. It creates a merge candidate without changing SoyMilk `main`, reuses the complete `Check` workflow, then promotes the exact validated commit only if `main` has not moved. It explicitly dispatches `Check` afterwards: a push made with `GITHUB_TOKEN` does not trigger another push workflow.
-
-Conflicts, failed tests, concurrent edits to `main`, and upstream changes to `industry/`, migration files, deployment/workflow definitions, provider protection, or bootstrap budget code stop automatic promotion. An issue named `Automatic upstream sync needs attention` links to the failed run; GitHub notification preferences control its delivery. Candidate branches are removed after the run. No force push is made to `main`.
-
-Protected-path checks include both sides of renames: moving a protected file outside its original directory still requires review. The regression test verifies this against real, isolated Git repositories.
-
-Database migrations always require manual review, even when they appear additive. This conservative gate avoids making an unverified compatibility decision. Existing SoyMilk industry, model/account settings, budgets and NAS overrides must be preserved when resolving a stopped update.
+The hourly `Sync Upstream` workflow was removed on 2026-10-10 at the user's request; SoyMilk no longer merges `KKKKhazix/AIHOT:main` automatically. Any upstream change is ported manually on a separate branch, keeping the SoyMilk industry pack, migrations, model/account settings, budgets and NAS overrides, and reaches `main` only after the full `Check` passes.
 
 ## Validated Images
 
@@ -52,11 +46,11 @@ docker stop soymilk-auto-deploy
 
 Use the NAS Docker client's absolute path where `docker` is not on PATH. Do not execute `auto-update.ts` concurrently without its `flock` wrapper. Resolving a blocked migration requires reviewing compatibility, backing up and applying it manually, then re-establishing the approved Compose contract; do not bypass the fingerprint check by altering the channel.
 
-The controller is installed separately from app releases and is not self-updated from downloaded code. Changes to deployment policy need a deliberate, verified controller update. GitHub sync/CI failures create an Issue and use GitHub notifications. NAS failure state is recorded in `status.json` and the container log; push notifications from the NAS are not configured by this feature.
+The controller is installed separately from app releases and is not self-updated from downloaded code. Changes to deployment policy need a deliberate, verified controller update. CI failures use GitHub notifications. NAS failure state is recorded in `status.json` and the container log; push notifications from the NAS are not configured by this feature.
 
 ## Verification
 
-2026-10-03: upstream-sync feature commit `3541ec5` passed [Check #5](https://github.com/ViewWholeWorld/SoyMilk/actions/runs/37106698163): 617 backend tests, zero failures/cancellations/skips (the previous baseline was 615; two automation tests were added), 31 web tests, typecheck, web build, empty-site smoke/MCP and Docker checks. The first manual sync found Issues disabled; after enabling Issues, the rerun passed without creating a candidate because upstream was already included.
+2026-10-03 (historical; the workflow was removed on 2026-10-10): upstream-sync feature commit `3541ec5` passed [Check #5](https://github.com/ViewWholeWorld/SoyMilk/actions/runs/37106698163): 617 backend tests, zero failures/cancellations/skips (the previous baseline was 615; two automation tests were added), 31 web tests, typecheck, web build, empty-site smoke/MCP and Docker checks. The first manual sync found Issues disabled; after enabling Issues, the rerun passed without creating a candidate because upstream was already included.
 
 The `check` and `docker` jobs of [Check #6](https://github.com/ViewWholeWorld/SoyMilk/actions/runs/37107702823), on deployment feature commit `bfafb45`, passed with 621 backend tests, zero failures/cancellations/skips, about 144 seconds, and 31 web tests. Four deployment tests account for the increase from 617; the baseline failures remain resolved. Image publication and live deployment are separate checks, not inferred from these test totals.
 

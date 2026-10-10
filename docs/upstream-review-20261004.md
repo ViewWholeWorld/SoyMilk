@@ -4,6 +4,8 @@
 
 **审核决定：保持现有 SoyMilk 功能和数据，本次不直接合并该版本。** 本轮 11 项修复已按独立版本发布；上游的兼容改动需要独立移植与验证。保留现有自动同步保护，不把上游整树标记为已经兼容合并。
 
+> 2026-10-10 补充：`Sync Upstream` 工作流及其脚本、测试已按使用者要求删除，下文对自动同步的描述仅为当时记录；移植上游仍按本文要求在独立分支完成。
+
 ## 自动合并为什么停止
 
 [Issue #2](https://github.com/ViewWholeWorld/SoyMilk/issues/2) 首次指向的运行在准备阶段报 `Manual review required for`。最近核验的 [Sync Upstream](https://github.com/ViewWholeWorld/SoyMilk/actions/runs/37165594559) 也停在 `scripts/automation/upstream-sync.ts:34`，列出行业包、迁移、Compose、工作流及付费 provider 等受保护路径；验证与推进主分支均未执行。这是人工审核门槛生效，尚未到 Git 冲突解决阶段，也未改动生产服务。
