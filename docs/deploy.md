@@ -79,7 +79,7 @@ docker compose run --rm setup && docker compose up -d
 
 处理历史撤回内容的迁移会先把旧文字存入后台审计，再按仍可公开的报道回退显示，不在迁移中调用模型。涉及迁移时旧 API 和 worker 必须先停止，避免旧任务写回失效文字；正常关闭 worker 会等待正在处理的任务退出。非 Docker 部署也按“备份、构建、停止 API/worker/web、迁移、启动”的顺序更新。
 
-仅改网页、不涉及迁移时可以只替换 web。现有 NAS 将上述 Compose 命令改由 `sh deploy/nas/compose.sh` 执行，以保留私有覆盖和 worker 复用配置。代码回退保留已记录的付费回执，不用旧数据库覆盖更新后产生的请求记录。
+仅改网页、不涉及迁移时可以只替换 web。现有 NAS 按 [手动部署](manual-deploy.md) 更新：使用 Bookworm Dockerfile、`sh deploy/nas/compose.sh` 与最后的镜像覆盖，保留私有配置及 worker 复用。不能直接套用上面的根目录构建命令，也不能假定部署目录是 Git checkout。本站已取消 CI 和自动部署；代码回退保留已记录的付费回执，不用旧数据库覆盖更新后产生的请求记录。
 
 ### 管理员会话与配置变更
 

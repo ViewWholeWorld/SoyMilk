@@ -9,7 +9,7 @@ SoyMilk 的 `/api/mcp` 是匿名、只读、无状态的 Streamable HTTP 服务�
 - 资讯技能在 `/opt/data/skills/research/soymilk-news/SKILL.md`，仓库维护源见 [soymilk-news](../integrations/hermes/skills/soymilk-news/SKILL.md)。它覆盖简报、关键词搜索、热点、事件时间线与日报，不包含部署或管理员能力。
 - 本次只给 `web` 增加现有 `agent-net` 网络连接，保留它原来的默认网络；API、worker、数据库的原网络未改，不增加端口映射。
 - 网页固定内部地址为 `172.29.20.7:3000`，别名 `soymilk`。Hermes 使用自定义 DNS，不解析这个新增 Docker 别名，因此 MCP 用内部固定 IP，不修改全局 DNS 或代理策略。
-- 持久化设置已合并进 NAS 私有 `deploy/nas/compose.web-time.yml`，结构见 [网络示例](../integrations/hermes/web-network.example.yml)。后续 `compose.sh` 手动及自动更新都会保留它；最后的 `compose.release.yml` 仍决定镜像，不回退旧网页镜像。
+- 持久化设置已合并进 NAS 私有 `deploy/nas/compose.web-time.yml`，结构见 [网络示例](../integrations/hermes/web-network.example.yml)。后续通过 `compose.sh` 手动更新保留它；最后的 `compose.release.yml` 由维护者指定镜像，不回退旧网页镜像。本站已取消自动部署。
 - MCP 请求附带 `Host: 192.168.1.62:3000`，继续通过原有 Host 校验；内部固定地址不是读者访问或引用链接的地址。
 
 不要直接用示例覆盖整个 Hermes 配置或 NAS 私有 Compose 文件，应只合并相关字段。换机器时核对 `agent-net` 是否存在、子网与地址是否空闲，并同步调整网络覆盖和 MCP URL；在普通内网客户端上可直接使用 `http://192.168.1.62:3000/api/mcp`，不需要 Docker 网络覆盖。
@@ -63,4 +63,4 @@ platforms:
 
 Hermes 原配置备份在容器持久目录 `/opt/data/backups/soymilk-mcp-20261003T091141Z/config.yaml`；文件权限为 `600`，不要打印或提交，因为可能包含其他连接的认证配置。NAS 原网页覆盖备份在 `/share/homes/tromso/apps/soymilk/backups/hermes-network-20261003/compose.web-time.yml`。
 
-解除接入时优先仅删除 `mcp_servers.soymilk` 与对应技能，不用旧备份覆盖后续已有设置。去除网页额外网络时先暂停自动部署、只恢复相关网络字段，再用既有 `compose.sh` 只更新 web，完成后恢复部署控制器；不要恢复数据库、重置回执或修改生产开关。
+解除接入时优先仅删除 `mcp_servers.soymilk` 与对应技能，不用旧备份覆盖后续已有设置。去除网页额外网络时只恢复相关网络字段，再用既有 `compose.sh` 只更新 web；不要恢复数据库、重置回执或修改生产开关。

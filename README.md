@@ -56,7 +56,7 @@ docker compose up -d --build
 
 源仓库的更新不再自动合并，需要时在独立分支手动移植，保留本站定制和部署配置。技术栈为 Node.js 24、TypeScript、React Router、Fastify、PostgreSQL、pg-boss、Tailwind CSS 和 Docker Compose。
 
-`main` 的完整 CI 通过后发布 NAS 兼容的固定摘要镜像。独立 NAS 部署容器每 15 分钟检查并拉取，备份后更新和冒烟检查；失败回退应用，不恢复旧数据库。电脑无需保持开机；涉及迁移和基础 Compose 变化时需要人工确认。
+本站已取消 GitHub CI、自动发布镜像和 NAS 自动部署。更新由维护者手动完成：验证代码、构建 NAS 兼容镜像、备份、更新镜像覆盖、迁移并检查站点；失败只回退应用，不恢复旧数据库。具体见 [NAS 手动部署](docs/manual-deploy.md)。
 
 ## 来源与许可
 
