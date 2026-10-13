@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "{{siteName}} Public API",
-    "version": "3.0.0",
+    "version": "3.4.2",
     "description": "Anonymous, read-only API for clients and Agents. No API key is required.\n\nPicking an endpoint: show recent or today's items -> /api/v1/items. Show what is trending right now -> /api/v1/hot-topics. Show the daily digest -> /api/v1/dailies/latest. Keep a complete local copy of the selected set -> /api/v1/selected/snapshot once, then /api/v1/selected/changes forever.\n\nHow often to poll: use each response's Cache-Control s-maxage as the minimum interval, and always send If-None-Match: an unchanged resource answers 304 with an empty body. On 429 or 503, honour Retry-After. There is no push channel (no SSE, webhooks or streaming): poll on an interval.\n\nTitles and summaries are generated from third-party sources; the original is always linked in links.original.",
     "termsOfService": "{{siteUrl}}/terms"
   },

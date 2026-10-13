@@ -5,7 +5,7 @@ import { buildApp } from "../apps/api/src/app.ts";
 import { SCHEDULES } from "../apps/worker/src/schedules.ts";
 import { closeDb } from "@aihot/backend/db";
 import { agentGuide } from "@aihot/backend/publication/agent";
-import { llmsTxt } from "@aihot/backend/publication/llms";
+import { llmsTxt, PUBLIC_VERSIONS } from "@aihot/backend/publication/llms";
 
 let app: Awaited<ReturnType<typeof buildApp>>;
 before(async () => { app = await buildApp(); });
@@ -27,6 +27,7 @@ test("公开发现文档只声明资讯功能，新闻接口与日志继续可�
   const response = await app.inject({ method: "GET", url: "/openapi-v1.json" });
   assert.equal(response.statusCode, 200);
   const spec = response.json();
+  assert.equal(spec.info.version, PUBLIC_VERSIONS.v1OpenApi, "实际 OpenAPI 响应版本与发布版本一致");
   assert.ok(spec.paths["/api/v1/items"]);
   assert.ok(spec.paths["/api/v1/agent/latest"]);
   assert.doesNotMatch(JSON.stringify(spec), /codex-resets|CodexReset|leaderboard/);
