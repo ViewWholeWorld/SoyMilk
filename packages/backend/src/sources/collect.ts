@@ -5,7 +5,7 @@ import { identityKeyFor, upsertMaterial } from "../content/materials.ts";
 import { identityKeyForUrl } from "../lib/url.ts";
 import { enqueue, QUEUES, shutdownSignal } from "../jobs/queue.ts";
 import { queueProcessing } from "../jobs/content.ts";
-import { BudgetExceededError, completeReceipt } from "../providers/receipts.ts";
+import { BudgetExceededError, completeReceipt, requestWait } from "../providers/receipts.ts";
 import { fetchRss } from "./rss.ts";
 import { allowed, fetchDetail, fetchWebList, type DetailNeed } from "./web-list.ts";
 import { unsupportedConfig } from "./config-keys.ts";
@@ -150,6 +150,8 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
     const known = d ? await storedTitles(candidates.map((c) => c.identityKey!)) : new Map<string, string>();
     const detailBudget = Number(d?.maxFetches ?? 0);
     let detailUsed = 0;
+    let detailFailures = 0;
+    const detailErrors: Array<{ url: string; error: string }> = [];
     for (const c of candidates) {
       // Listing dates the source marks unreliable are dropped; the detail page's rule decides.
       if (d?.publishedAtAuthoritative === true) c.publishedAt = null;
@@ -182,10 +184,15 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
         }
         // A date-only listing value gives way to the detail page's time on the same day.
         if (got.publishedAt && (!c.publishedAt || Math.abs(got.publishedAt.getTime() - c.publishedAt.getTime()) < DAY_MS)) c.publishedAt = got.publishedAt;
-      } catch {
-        // detail is best effort
+      } catch (error) {
+        // 详情失败不阻塞整批，但记录真实失败供健康诊断；预算和停机只等待。
+        if (!requestWait(error) && !shutdownSignal.signal.aborted && !(error instanceof DOMException && error.name === "AbortError")) {
+          detailFailures++;
+          if (detailErrors.length < 20) detailErrors.push({ url: c.url, error: error instanceof Error ? error.name : "FetchError" });
+        }
       }
     }
+    if (detailUsed) detail = { ...detail, detailAttempts: detailUsed, detailFailures, detailErrors };
 
     ({ created, revised } = await store(sourceId, candidates, firstImport ? "first-import" : null));
 
