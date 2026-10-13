@@ -1,11 +1,10 @@
 // Discovery and static files: sitemap, llms.txt, robots, security.txt, the web manifest, the OpenAPI
-// document, icons, the IndexNow key, leaderboard logos and the about page's contact codes.
+// document, icons, the IndexNow key and the about page's contact codes.
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { SITE } from "@aihot/industry/site";
-import { FEATURES } from "@aihot/industry/features";
 import { CATEGORY_KEYS } from "@aihot/contracts/taxonomy";
 import { REPO_ROOT, config } from "@aihot/backend/config";
 import { applyPublicHeaders, sendTextWithEtag } from "../http/respond.ts";
@@ -14,7 +13,6 @@ import { cacheUntil } from "./site.ts";
 import { llmsTxt, loadLlmsAvailability } from "@aihot/backend/publication/llms";
 
 const REF = path.join(REPO_ROOT, "reference");
-const ASSETS = path.join(REPO_ROOT, "assets");
 const BRAND = path.join(REPO_ROOT, "industry/brand");
 
 const TYPES: Record<string, string> = {
@@ -104,7 +102,6 @@ async function openApiJson(): Promise<string> {
     for (const v of Object.values(o)) walk(v);
   };
   walk(doc);
-  if (!FEATURES.codexResetMonitor) for (const p of Object.keys(doc.paths)) if (p.startsWith("/api/v1/codex-resets") || p === "/api/v1/agent/codex-resets") delete doc.paths[p];
   openApi = JSON.stringify(doc, null, 2);
   return openApi;
 }
@@ -152,16 +149,6 @@ export function registerStatic(app: FastifyInstance) {
   // Icons from the industry pack (industry/brand/).
   for (const icon of ["favicon.ico", "icon.png", "icon-192.png", "apple-icon.png", "logo.svg"]) {
     app.get(`/${icon}`, (req, reply) => sendFile(req, reply, path.join(BRAND, icon), { cacheControl: "public, max-age=86400, stale-while-revalidate=604800" }));
-  }
-
-  if (FEATURES.leaderboard) {
-    for (const dir of ["model-providers", "leaderboard-sources"]) {
-      app.get(`/${dir}/:file`, (req, reply) => {
-        const file = (req.params as { file: string }).file;
-        if (!/^[a-z0-9-]+\.(svg|png)$/.test(file)) return reply.code(404).send();
-        return sendFile(req, reply, path.join(ASSETS, dir, file), { cacheControl: "public, max-age=604800" });
-      });
-    }
   }
 
   // Contact codes on the about page: uploaded in the admin (content-hashed names), or shipped in the pack.

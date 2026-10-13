@@ -5,6 +5,7 @@
 ## 当前已授权的配置
 
 - 站名已确定为 SoyMilk，上述兴趣、信源和分类已由使用者授权。继续维护时保留这些决定；只有提出新的行业或内容策略变更时才需要澄清。
+- 站点聚焦新闻信息流。Tibo 重置监控与模型排行榜已按使用者要求移除，后续移植不重新引入；新闻处理需要的后台模型配置、账号授权、预算和回执保护继续保留。
 - NAS 上通过 HTTP 内网或 Tailscale IP 加端口访问；使用者明确不要求本站 HTTPS。管理员使用 `/admin/models` 配置模型，Codex 网页授权无需 SSH 回调隧道。
 - 生产采集和模型调用已由使用者授权开启，飞书及 IndexNow 仍关闭。开发、测试使用独立环境关闭安全阀，不要为了跑测试修改生产开关。
 - 正式 worker 已启用 Codex 连接复用，模型与文章分析并发上限为 2。保持账号、模型和推理强度设置，不通过新增请求身份、重评或提高预算来加速。
@@ -13,7 +14,7 @@
 
 ## 最常见的任务：改成另一个行业
 
-按 `docs/customize.md` 的顺序做。行业相关的一切都在 `industry/`：站名文案（`site.ts`）、分类标签（`taxonomy.ts`）、主题（`topics.json`）、示范信源（`sources.json`）、提示词（`prompts/`）、门槛（`selection.ts`）、模块开关（`features.ts`）、品牌（`brand/`）、条款页（`pages/`）。通常不需要改 `apps/` 和 `packages/`。
+按 `docs/customize.md` 的顺序做。行业相关的一切都在 `industry/`：站名文案（`site.ts`）、分类标签（`taxonomy.ts`）、主题（`topics.json`）、示范信源（`sources.json`）、提示词（`prompts/`）、门槛（`selection.ts`）、品牌（`brand/`）、条款页（`pages/`）。通常不需要改 `apps/` 和 `packages/`。
 
 更换行业时，这些尚未确定的配置要问使用者本人，不要替他决定，也不要重复询问已有决定：站名；要盯哪些信源；什么消息重要、什么是噪声；分类怎么分；条款和隐私说明的内容（`industry/pages/` 是模板，公开上线前需要他本人确认）。
 
@@ -25,7 +26,7 @@
 - 本机运行和 Docker 见 `docs/deploy.md`。
 - NAS 的额外 Compose 覆盖由 `deploy/nas/compose.sh` 统一加载。更新时保留 worker 复用与预算恢复覆盖，先核对运行服务，不能只运行根目录的 Compose 而丢失 NAS 设置。
 - Hermes 接入见 `docs/hermes.md`：保留私有 `compose.web-time.yml` 中 web 的固定内部网络连接及 Hermes 的现有 MCP；SoyMilk 仅白名单五个匿名只读工具，技能源在 `integrations/hermes/skills/soymilk-news/`，不授予后台、数据库或模型调用能力。
-- 自动更新见 `docs/auto-deploy.md`：上游不再自动同步，需要时在独立分支手动移植并通过完整 CI；NAS 的独立部署容器每 15 分钟拉取固定摘要镜像。`compose.release.yml` 是最后镜像覆盖，手动更新也须核对。迁移、基础 Compose 和受保护定制变更需要人工确认；失败只回退应用，不恢复旧数据库或删除付费回执。
+- NAS 更新见 `docs/manual-deploy.md`：已取消 GitHub CI、自动发布镜像和自动部署，上游改动在独立分支手动移植并完成隔离验证。保留现有 `compose.release.yml` 作为最后的手动镜像覆盖，每次更新核对 setup/API/worker/web 的实际镜像与 setup 的 `--topics-only` 命令。迁移、基础 Compose 和受保护定制变更需要人工确认；失败只回退应用，不恢复旧数据库或删除付费回执。
 - 改完至少跑：
   ```bash
   npm run typecheck
@@ -56,6 +57,7 @@
 
 - 不同 feature 分开实现和提交；每项完成对应验证后先提交 Git，再开始下一项。该功能的文档同步更新，保留使用者已有改动。
 - README 和 `docs/soymilk-operations.md` 说明当前使用方式；实测和部署历史明确标注日期与阶段。配置变化时同步更新相关文档和本文件，删除已经失效的操作建议。
+- 用户可见的功能、内容规则或功能下线同步记录到 `industry/changelog.json`，最新条目放在最前面并同步 `latestVersion`。该文件是网页更新日志的数据源，不能只更新开发文档；仅维护配置或测试调整记录在 `docs/changelog.md` 即可。
 - 运行中的计数、首轮剩余和订阅窗口属于实时数据，文档只记录带时间的核验快照，并提供只读查询方法，不能把某次读数写成永久现况。
 
 ## 写代码

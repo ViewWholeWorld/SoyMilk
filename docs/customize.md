@@ -81,12 +81,9 @@
 
 这一步决定了你的站“选得准不准”。
 
-## 6. 只对 AI 有意义的两个模块：`industry/features.ts`
+## 6. 功能范围
 
-- `leaderboard`：模型榜（`/leaderboard`）。
-- `codexResetMonitor`：Codex 重置监控（`/codex-reset`）。
-
-别的行业把两项都设为 `false`：导航入口、定时任务、接口和站点地图都会跟着关掉。想彻底删掉代码，删这些目录并处理掉编译错误即可：`packages/backend/src/leaderboard/`、`packages/backend/src/monitor/`、`apps/web/app/features/leaderboard/`、`apps/web/app/features/monitor/`、`apps/web/app/routes/leaderboard*.tsx`、`apps/web/app/routes/codex-reset.tsx`、`apps/api/src/routes/leaderboard.ts`。
+SoyMilk 聚焦新闻信息流，已移除模型排行榜与 Tibo 重置监控及其专用代码、接口、后台管理和定时任务；不再提供这两个模块的开关。更换行业时仍围绕采集、筛选写作、事件归组、报告与公开新闻出口定制，不从上游重新引入已下线模块。
 
 ## 7. 品牌：`industry/brand/`
 
@@ -104,7 +101,7 @@
 ## 8. 页面文案：`industry/pages/`、`industry/changelog.json`
 
 - `pages/terms.md`、`pages/privacy.md`：使用规则和隐私说明。**现在是模板**，上线前按你的实际情况改写，必要时请专业人士看一下。
-- `changelog.json`：更新日志。新条目写在最前面，把 `latestVersion` 改成它的日期和时间。
+- `changelog.json`：网页更新日志的数据源，不自动读取 Git 提交或开发文档。用户可见的功能、内容规则或功能下线在对应改动中同步新增条目，按北京时间从新到旧排列，把 `latestVersion` 改成第一条的日期和时间。更新随应用版本发布；仅修改 NAS 源码文件不会改变旧镜像内的日志。
 
 ## 9. 模型和部署
 

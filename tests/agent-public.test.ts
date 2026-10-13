@@ -4,7 +4,6 @@ import './setup.ts';
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { SITE } from '@aihot/industry/site';
-import { FEATURES } from '@aihot/industry/features';
 import { PUBLIC_API_CATEGORY_KEYS } from '@aihot/contracts/taxonomy';
 import { closeDb } from '@aihot/backend/db';
 import { agentGuide, dailyAnswer, latestAnswer } from '@aihot/backend/publication/agent';
@@ -16,7 +15,7 @@ test('Agent discovery uses configured identity and current optional modules', as
   assert.ok(guide.includes(SITE.name));
   assert.ok(!guide.includes('https://aihot.news'));
   for (const key of PUBLIC_API_CATEGORY_KEYS) assert.ok(guide.includes(key));
-  assert.equal(guide.includes('/agent/codex-resets'), FEATURES.codexResetMonitor);
+  assert.equal(guide.includes('/agent/codex-resets'), false);
   const r = await app.inject('/api/v1/agent');
   assert.equal(r.statusCode, 200);
   assert.equal(r.body, guide);

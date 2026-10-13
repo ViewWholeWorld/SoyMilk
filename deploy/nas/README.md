@@ -1,9 +1,9 @@
-# NAS Maintenance
+# NAS 维护
 
-Read [the current SoyMilk operations guide](../../docs/soymilk-operations.md) and [automatic deployment](../../docs/auto-deploy.md) before updating an existing site. Historical first-install notes do not describe the current production switches or news counts.
+维护现有站点前先读 [当前维护说明](../../docs/soymilk-operations.md) 和 [手动部署](../../docs/manual-deploy.md)。首次安装的历史操作不代表当前生产开关或新闻数量。
 
-`compose.sh` loads the existing private overrides plus an optional final `compose.release.yml`. Private overrides are not tracked or included in Docker build contexts. Preserve them, production `.env`, data volumes, worker reuse, concurrency limits and budgets.
+`compose.sh` 加载三个既有私有覆盖，以及可选的最后镜像覆盖 `compose.release.yml`。该文件保留原名，供维护者手动固定 setup/API/worker/web 的镜像及仅同步主题的 setup 命令。私有覆盖不进入 Git 或镜像构建上下文；更新时保留生产环境文件、数据卷、worker 复用、并发和预算。
 
-The compatible production image uses this directory's Bookworm `Dockerfile`. `compose.auto-deploy.yml` runs a separate polling controller with explicit deployment path and pinned control image supplied by the installer. It never opens public access or changes the site's existing HTTP/private-network configuration.
+NAS 兼容镜像使用本目录的 Bookworm `Dockerfile`；不能换成根目录的 Trixie 镜像。自动部署容器、轮询脚本、发布清单与 GitHub CI 已取消，更新由维护者手动执行。
 
-The controller uses the existing NAS Docker client and Compose plugin. Its Docker socket access is an administrative capability: use only trusted, reviewed controller code. It is installed and upgraded deliberately, separately from automatically pulled application images.
+`compose.sh` 不读取发布频道或执行自动更新。旧的部署状态及备份仅作为历史记录保留，不作为当前版本的依据；实际版本从正在运行的容器及镜像标签核对。
