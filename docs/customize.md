@@ -104,7 +104,7 @@
 ## 8. 页面文案：`industry/pages/`、`industry/changelog.json`
 
 - `pages/terms.md`、`pages/privacy.md`：使用规则和隐私说明。**现在是模板**，上线前按你的实际情况改写，必要时请专业人士看一下。
-- `changelog.json`：更新日志。新条目写在最前面，把 `latestVersion` 改成它的日期和时间。
+- `changelog.json`：网页更新日志的数据源，不自动读取 Git 提交或开发文档。用户可见的功能、内容规则或功能下线在对应改动中同步新增条目，按北京时间从新到旧排列，把 `latestVersion` 改成第一条的日期和时间。更新随应用版本发布；仅修改 NAS 源码文件不会改变旧镜像内的日志。
 
 ## 9. 模型和部署
 
