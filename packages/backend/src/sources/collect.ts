@@ -5,13 +5,14 @@ import { identityKeyFor, upsertMaterial } from "../content/materials.ts";
 import { identityKeyForUrl } from "../lib/url.ts";
 import { enqueue, QUEUES, shutdownSignal } from "../jobs/queue.ts";
 import { queueProcessing } from "../jobs/content.ts";
-import { BudgetExceededError, completeReceipt, requestWait } from "../providers/receipts.ts";
+import { completeReceipt } from "../providers/receipts.ts";
 import { fetchRss } from "./rss.ts";
 import { allowed, fetchDetail, fetchWebList, type DetailNeed } from "./web-list.ts";
 import { unsupportedConfig } from "./config-keys.ts";
 import { fetchJsonList } from "./json-list.ts";
 import { fetchXSearch, planXShards, readXSearch, shardHandle, shardQuery, SHARDABLE_SQL, tweetToCandidate, type XBacklog } from "./x.ts";
 import { FetchError, type Candidate, type SourceRow } from "./types.ts";
+import { collectionWait, WAITING_FETCH_RUN } from "./wait.ts";
 
 export interface CollectResult {
   sourceId: string;
@@ -72,6 +73,24 @@ async function store(sourceId: string, candidates: Candidate[], backfill: string
     if (res.created || res.revised) await queueProcessing(res.articleId);
   }
   return { created, revised };
+}
+
+async function recordWait(sourceId: string, runId: number, wait: NonNullable<ReturnType<typeof collectionWait>>, message: string,
+  counts: { found: number; created: number }, detail: Record<string, unknown> = {}) {
+  await sql.begin(async tx => {
+    const [source] = await tx<{ fail_count: number }[]>`SELECT fail_count FROM sources WHERE id=${sourceId} FOR UPDATE`;
+    await tx`UPDATE fetch_runs SET status='skipped',finished_at=now(),found_count=${counts.found},new_count=${counts.created},
+      error=${message},detail=${tx.json({ ...detail, waiting: wait } as never)} WHERE id=${runId}`;
+    // 只扣除上次成功或等待纠正之后的历史误计，保留已清理运行日志的真实失败前缀。
+    const [row] = await tx<{ waited: number }[]>`SELECT count(*)::int AS waited FROM fetch_runs
+      WHERE source_id=${sourceId} AND status='failed' AND ${WAITING_FETCH_RUN}
+      AND id > coalesce((SELECT max(id) FROM fetch_runs WHERE source_id=${sourceId} AND id <> ${runId}
+        AND (status='ok' OR (status='skipped' AND detail->'waiting' IS NOT NULL))),0)`;
+    const failures = Math.max(0, (source?.fail_count ?? 0) - row!.waited);
+    await tx`UPDATE sources SET last_fetch_at=now(),fail_count=${failures},last_error=${message},
+      health=${failures >= 5 ? "failing" : failures > 0 ? "degraded" : "ok"},
+      next_fetch_at=now()+make_interval(secs => ${wait.retryAfterSeconds}),updated_at=now() WHERE id=${sourceId}`;
+  });
 }
 
 export async function collectSource(sourceId: string, opts: { force?: boolean } = {}): Promise<CollectResult> {
@@ -186,7 +205,7 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
         if (got.publishedAt && (!c.publishedAt || Math.abs(got.publishedAt.getTime() - c.publishedAt.getTime()) < DAY_MS)) c.publishedAt = got.publishedAt;
       } catch (error) {
         // 详情失败不阻塞整批，但记录真实失败供健康诊断；预算和停机只等待。
-        if (!requestWait(error) && !shutdownSignal.signal.aborted && !(error instanceof DOMException && error.name === "AbortError")) {
+        if (!collectionWait(error) && !shutdownSignal.signal.aborted && !(error instanceof DOMException && error.name === "AbortError")) {
           detailFailures++;
           if (detailErrors.length < 20) detailErrors.push({ url: c.url, error: error instanceof FetchError && error.status !== null ? `HTTP ${error.status}` : error instanceof Error ? error.name : "FetchError" });
         }
@@ -214,13 +233,17 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
   } catch (error) {
     if (shutdownSignal.signal.aborted) throw error;
     const message = String(error instanceof Error ? error.message : error).slice(0, 1000);
-    const budget = error instanceof BudgetExceededError;
+    const wait = collectionWait(error);
+    if (wait) {
+      await recordWait(sourceId, run!.id, wait, message, { found, created });
+      return { sourceId, status: "skipped", found, created, revised, error: message };
+    }
     await sql`
       UPDATE sources SET last_fetch_at = now(),
-        fail_count = CASE WHEN ${budget} THEN fail_count ELSE fail_count + 1 END,
+        fail_count = fail_count + 1,
         last_error = ${message},
-        health = CASE WHEN ${budget} THEN health WHEN fail_count + 1 >= 5 THEN 'failing' ELSE 'degraded' END,
-        next_fetch_at = now() + make_interval(mins => CASE WHEN ${budget} THEN 15 ELSE LEAST(interval_minutes * (fail_count + 2), 360) END),
+        health = CASE WHEN fail_count + 1 >= 5 THEN 'failing' ELSE 'degraded' END,
+        next_fetch_at = now() + make_interval(mins => LEAST(interval_minutes * (fail_count + 2), 360)),
         updated_at = now()
       WHERE id = ${sourceId}`;
     await sql`UPDATE fetch_runs SET status = 'failed', finished_at = now(), found_count = ${found}, new_count = ${created}, error = ${message} WHERE id = ${run!.id}`;
@@ -313,14 +336,18 @@ export async function collectXShard(key: string, sourceIds: string[]): Promise<{
   } catch (error) {
     if (shutdownSignal.signal.aborted) throw error;
     const message = String(error instanceof Error ? error.message : error).slice(0, 1000);
-    const budget = error instanceof BudgetExceededError;
+    const wait = collectionWait(error);
+    if (wait) {
+      for (const m of members) await recordWait(m.id, runs.get(m.id)!, wait, message, { found: 0, created: 0 }, { shard: key, accounts: members.length });
+      return { key, status: "skipped", accounts: members.length, found, created, error: message };
+    }
     for (const m of members) {
       await sql`
         UPDATE sources SET last_fetch_at = now(),
-          fail_count = CASE WHEN ${budget} THEN fail_count ELSE fail_count + 1 END,
+          fail_count = fail_count + 1,
           last_error = ${message},
-          health = CASE WHEN ${budget} THEN health WHEN fail_count + 1 >= 5 THEN 'failing' ELSE 'degraded' END,
-          next_fetch_at = now() + make_interval(mins => CASE WHEN ${budget} THEN 15 ELSE LEAST(${minutes} * (fail_count + 2), 360) END),
+          health = CASE WHEN fail_count + 1 >= 5 THEN 'failing' ELSE 'degraded' END,
+          next_fetch_at = now() + make_interval(mins => LEAST(${minutes} * (fail_count + 2), 360)),
           updated_at = now()
         WHERE id = ${m.id}`;
       await sql`UPDATE fetch_runs SET status = 'failed', finished_at = now(), error = ${message}, detail = ${sql.json({ shard: key, accounts: members.length })} WHERE id = ${runs.get(m.id)!}`;

@@ -1,12 +1,12 @@
 // 以近七天实际发现和抓取结果诊断信源；成功请求不等于有产出。
 import { sql } from "../db.ts";
 import type { Finding } from "../notify/feishu.ts";
+import { sourceWaitMessage, WAITING_FETCH_RUN } from "./wait.ts";
 
 interface HealthRow {
   id: string; name: string; participation_mode: string; created_at: Date; health: string;
   fail_count: number; runs: number; failed: number; discoveries: number; undated: number; repeated: number; detail_failures: number;
 }
-const waiting = (error: string) => /^Budget for .+ exhausted \(.+\)$/.test(error) || error === "This operation was aborted" || error === "shutdown";
 export function sourceHealthList(rows: HealthRow[], describe: (row: HealthRow) => string, limit = 10) {
   const lines = rows.slice(0, limit).map(s => `${s.name}（${s.id}）：${describe(s)}`).join("；");
   return lines + (rows.length > limit ? `；另有 ${rows.length - limit} 个，见后台信源列表` : "");
@@ -17,9 +17,16 @@ export async function sourceHealth(now = Date.now()) {
   const rows = await sql<HealthRow[]>`
     WITH runs AS (
       SELECT source_id,
-        count(*) FILTER (WHERE status IN ('ok','failed') AND coalesce(error,'') NOT LIKE 'Budget for % exhausted (%)' AND coalesce(error,'') NOT IN ('This operation was aborted','shutdown'))::int AS runs,
-        count(*) FILTER (WHERE status='failed' AND coalesce(error,'') NOT LIKE 'Budget for % exhausted (%)' AND coalesce(error,'') NOT IN ('This operation was aborted','shutdown'))::int AS failed
+        count(*) FILTER (WHERE status IN ('ok','failed') AND NOT ${WAITING_FETCH_RUN})::int AS runs,
+        count(*) FILTER (WHERE status='failed' AND NOT ${WAITING_FETCH_RUN})::int AS failed
       FROM fetch_runs WHERE started_at >= ${since} AND started_at <= ${until} GROUP BY source_id
+    ), history AS (
+      SELECT source_id,max(id) FILTER (WHERE status='ok' OR (status='skipped' AND detail->'waiting' IS NOT NULL)) AS last_checked FROM fetch_runs
+      WHERE started_at <= ${until} GROUP BY source_id
+    ), corrections AS (
+      SELECT h.source_id,count(*) FILTER (WHERE status='failed' AND ${WAITING_FETCH_RUN})::int AS waited
+      FROM history h LEFT JOIN fetch_runs f ON f.source_id=h.source_id AND f.id > coalesce(h.last_checked,0) AND f.started_at <= ${until}
+      GROUP BY h.source_id
     ), seen AS (
       SELECT article_id,source_id FROM article_discoveries WHERE discovered_at >= ${since} AND discovered_at <= ${until}
       UNION SELECT id,source_id FROM articles WHERE discovered_at >= ${since} AND discovered_at <= ${until}
@@ -27,10 +34,13 @@ export async function sourceHealth(now = Date.now()) {
     items AS (SELECT source_id,count(*) FILTER (WHERE published_at IS NULL)::int AS undated FROM articles WHERE discovered_at >= ${since} AND discovered_at <= ${until} GROUP BY source_id),
     revisions AS (SELECT article_id FROM article_revisions WHERE created_at >= ${since} AND created_at <= ${until} AND revision > 1 GROUP BY article_id HAVING count(*) >= 5),
     repeated AS (SELECT a.source_id,count(*)::int AS n FROM revisions r JOIN articles a ON a.id=r.article_id GROUP BY a.source_id)
-    SELECT s.id,s.name,s.participation_mode,s.created_at,s.health,s.fail_count,
+    SELECT s.id,s.name,s.participation_mode,s.created_at,
+      CASE WHEN coalesce(c.waited,0)=0 THEN s.health WHEN s.fail_count-c.waited >= 5 THEN 'failing' WHEN s.fail_count-c.waited > 0 THEN 'degraded' ELSE 'ok' END AS health,
+      greatest(0,s.fail_count-coalesce(c.waited,0))::int AS fail_count,
       coalesce(r.runs,0) AS runs,coalesce(r.failed,0) AS failed,coalesce(d.n,0) AS discoveries,
       coalesce(a.undated,0) AS undated,coalesce(e.n,0) AS repeated,0::int AS detail_failures
     FROM sources s LEFT JOIN runs r ON r.source_id=s.id LEFT JOIN discoveries d ON d.source_id=s.id
+    LEFT JOIN corrections c ON c.source_id=s.id
     LEFT JOIN items a ON a.source_id=s.id LEFT JOIN repeated e ON e.source_id=s.id
     WHERE s.enabled AND s.kind NOT IN ('external','mp_account') AND s.participation_mode IN ('editorial','hot_signal') ORDER BY s.name,s.id`;
   // 旧记录未保存逐条错误时保留汇总；有详情时只计真实失败，避免把预算等待当故障。
@@ -42,7 +52,7 @@ export async function sourceHealth(now = Date.now()) {
     const total = Number(run.detail?.detailFailures ?? 0);
     if (!row || !Number.isFinite(total) || total < 0) continue;
     const errors = Array.isArray(run.detail?.detailErrors) ? run.detail.detailErrors : [];
-    row.detail_failures += Math.max(0,total - errors.filter(e => waiting(String(e?.error ?? ""))).length);
+    row.detail_failures += Math.max(0,total - errors.filter(e => sourceWaitMessage(String(e?.error ?? ""))).length);
   }
   return ([['editorial','编辑内容'],['hot_signal','热度信号']] as const).map(([mode,name]) => {
     const sources = rows.filter(s => s.participation_mode === mode);
