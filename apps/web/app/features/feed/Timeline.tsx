@@ -217,10 +217,11 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
     try {
       const res = await fetch(`/api/site/timeline?${filterQuery(filters, { cursor: s.nextCursor })}`, { signal: controller.signal });
       if (res.status === 400) {
-        // Cursor no longer fits: start over from the head.
+        // Cursor no longer fits: restart, but keep this session's automatic loading budget.
         const head = await fetch(`/api/site/timeline?${key}`, { signal: controller.signal });
         if (!head.ok) throw new Error(String(head.status));
-        if (current()) setState(fromResponse((await head.json()) as TimelineResponse, stateRef.current.unreadOnly));
+        const page = (await head.json()) as TimelineResponse;
+        if (current()) setState(prev => ({ ...fromResponse(page, prev.unreadOnly), batches: prev.batches + 1 }));
         return;
       }
       if (!res.ok) throw new Error(String(res.status));
