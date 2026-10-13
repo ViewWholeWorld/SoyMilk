@@ -8,6 +8,8 @@
 
 > 2026-10-13 补充：GitHub CI 与 NAS 自动部署机制也已取消。下文部署指纹为历史机制；后续上游移植使用手动兼容性审查及隔离验证。
 
+> 同日使用者要求项目仅保留新闻信息流，模型榜与 Tibo 重置监控已在仓库移除。下文保留这些功能的决定属于当时的审核记录，后续移植不重新引入；历史数据库表和回执仍保留。
+
 ## 自动合并为什么停止
 
 [Issue #2](https://github.com/ViewWholeWorld/SoyMilk/issues/2) 首次指向的运行在准备阶段报 `Manual review required for`。最近核验的 [Sync Upstream](https://github.com/ViewWholeWorld/SoyMilk/actions/runs/37165594559) 也停在 `scripts/automation/upstream-sync.ts:34`，列出行业包、迁移、Compose、工作流及付费 provider 等受保护路径；验证与推进主分支均未执行。这是人工审核门槛生效，尚未到 Git 冲突解决阶段，也未改动生产服务。

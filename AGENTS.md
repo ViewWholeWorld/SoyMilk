@@ -5,6 +5,7 @@
 ## 当前已授权的配置
 
 - 站名已确定为 SoyMilk，上述兴趣、信源和分类已由使用者授权。继续维护时保留这些决定；只有提出新的行业或内容策略变更时才需要澄清。
+- 站点聚焦新闻信息流。Tibo 重置监控与模型排行榜已按使用者要求移除，后续移植不重新引入；新闻处理需要的后台模型配置、账号授权、预算和回执保护继续保留。
 - NAS 上通过 HTTP 内网或 Tailscale IP 加端口访问；使用者明确不要求本站 HTTPS。管理员使用 `/admin/models` 配置模型，Codex 网页授权无需 SSH 回调隧道。
 - 生产采集和模型调用已由使用者授权开启，飞书及 IndexNow 仍关闭。开发、测试使用独立环境关闭安全阀，不要为了跑测试修改生产开关。
 - 正式 worker 已启用 Codex 连接复用，模型与文章分析并发上限为 2。保持账号、模型和推理强度设置，不通过新增请求身份、重评或提高预算来加速。
@@ -13,7 +14,7 @@
 
 ## 最常见的任务：改成另一个行业
 
-按 `docs/customize.md` 的顺序做。行业相关的一切都在 `industry/`：站名文案（`site.ts`）、分类标签（`taxonomy.ts`）、主题（`topics.json`）、示范信源（`sources.json`）、提示词（`prompts/`）、门槛（`selection.ts`）、模块开关（`features.ts`）、品牌（`brand/`）、条款页（`pages/`）。通常不需要改 `apps/` 和 `packages/`。
+按 `docs/customize.md` 的顺序做。行业相关的一切都在 `industry/`：站名文案（`site.ts`）、分类标签（`taxonomy.ts`）、主题（`topics.json`）、示范信源（`sources.json`）、提示词（`prompts/`）、门槛（`selection.ts`）、品牌（`brand/`）、条款页（`pages/`）。通常不需要改 `apps/` 和 `packages/`。
 
 更换行业时，这些尚未确定的配置要问使用者本人，不要替他决定，也不要重复询问已有决定：站名；要盯哪些信源；什么消息重要、什么是噪声；分类怎么分；条款和隐私说明的内容（`industry/pages/` 是模板，公开上线前需要他本人确认）。
 

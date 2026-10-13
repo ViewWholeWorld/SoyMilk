@@ -12,6 +12,7 @@ SoyMilk 是从 [AIHOT](https://github.com/KKKKhazix/AIHOT) Fork 后定制的私�
 - RSS 使用七天新闻窗口，首次导入上限为每源 2 条；公开摘要与原文链接，全文许可按来源控制。
 - 后台收紧信源全文许可或公开参与方式时，同一事务更新公开投影并使 API 缓存失效，不依赖 worker 才生效；已下载的 HTTP 缓存仍按原有时间过期。
 - 时间轴使用北京时间。左侧显示收录或事件进展时间，历史内容按可信原文时间归档，模型完成时间不改变排序。详见 [时间轴与时区](docs/timeline-time.md)。
+- 项目聚焦新闻信息流，已移除 Tibo 重置监控与模型排行榜的页面、接口和后台采集。网站更新日志记录实际功能调整；新闻模型配置与预算保护继续保留。
 
 ## 首次部署到另一台机器
 
@@ -52,7 +53,6 @@ docker compose up -d --build
 | [信源](docs/sources.md) | 采集类型、分级与全文许可 |
 | [精选与校准](docs/selection.md) | 评分流程、样本与入选门槛 |
 | [事件归组](docs/grouping.md) | 事件关系与评测 |
-| [模型榜](docs/leaderboard.md) | 公开评测与 Codex 重置监控 |
 
 源仓库的更新不再自动合并，需要时在独立分支手动移植，保留本站定制和部署配置。技术栈为 Node.js 24、TypeScript、React Router、Fastify、PostgreSQL、pg-boss、Tailwind CSS 和 Docker Compose。
 

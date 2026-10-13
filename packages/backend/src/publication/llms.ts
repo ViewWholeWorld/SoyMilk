@@ -1,6 +1,5 @@
 // /llms.txt — generated from the site's own configuration; only real, available resources are listed.
 import { SITE, withSubject } from "@aihot/industry/site";
-import { FEATURES } from "@aihot/industry/features";
 import { CATEGORY_KEYS } from "@aihot/contracts/taxonomy";
 import { siteUrl } from "./links.ts";
 import { sql } from "../db.ts";
@@ -8,20 +7,19 @@ import { MCP_TOOLS } from "@aihot/contracts/mcp";
 
 /** Discovery only needs to know whether an entry exists, not count its entire history. */
 export async function loadLlmsAvailability() {
-  const [row] = await sql<{ hasDailies: boolean; hasWeekly: boolean; hasMonthly: boolean; hasLeaderboard: boolean }[]>`
+  const [row] = await sql<{ hasDailies: boolean; hasWeekly: boolean; hasMonthly: boolean }[]>`
     SELECT EXISTS (SELECT 1 FROM reports WHERE kind = 'daily') AS "hasDailies",
            EXISTS (SELECT 1 FROM reports WHERE kind = 'weekly') AS "hasWeekly",
-           EXISTS (SELECT 1 FROM reports WHERE kind = 'monthly') AS "hasMonthly",
-           EXISTS (SELECT 1 FROM lb_runs WHERE status = 'published') AS "hasLeaderboard"`;
+           EXISTS (SELECT 1 FROM reports WHERE kind = 'monthly') AS "hasMonthly"`;
   return row!;
 }
 
 export const PUBLIC_VERSIONS = {
   mcp: "2.0.0",
-  v1OpenApi: "2.1.0",
+  v1OpenApi: "3.0.0",
 };
 
-export function llmsTxt(opts: { hasDailies: boolean; hasWeekly: boolean; hasMonthly: boolean; hasLeaderboard: boolean }): string {
+export function llmsTxt(opts: { hasDailies: boolean; hasWeekly: boolean; hasMonthly: boolean }): string {
   const u = siteUrl;
   const daily = withSubject("日报");
   const lines: string[] = [];
@@ -39,10 +37,6 @@ export function llmsTxt(opts: { hasDailies: boolean; hasWeekly: boolean; hasMont
   lines.push(`- [公开 API v1 · 最近资讯](${u("/api/v1/items")}): JSON，支持 mode=selected/all、window=24h/7d、by=timeline/published、category、q、limit 与 cursor`);
   lines.push(`- [公开 API v1 · 当前热点](${u("/api/v1/hot-topics")}): 热点榜 Top 10；每条含从 1 开始的 rank，links.story 指向事件页`);
   lines.push(`- [公开 API v1 · 事件详情](${u("/api/v1/stories/{publicId}")}): 事件报道时间线与随演化更新的综述；publicId 只来自 hot-topics 的 links.story，不要猜测`);
-  if (FEATURES.codexResetMonitor) {
-    lines.push(`- [公开 API v1 · Codex 重置监控（轮询用）](${u("/api/v1/codex-resets/recent")}): 最近 7 天与尚未落地的预告，结构与完整快照相同；建议每 5 分钟带 If-None-Match 轮询`);
-    lines.push(`- [公开 API v1 · Codex 重置监控（完整历史）](${u("/api/v1/codex-resets")}): 全部重置与发卡记录的日历快照`);
-  }
   if (opts.hasDailies) {
     lines.push(`- [公开 API v1 · 最新${daily}](${u("/api/v1/dailies/latest")}): 最新一期结构化${daily}`);
     lines.push(`- [公开 API v1 · ${daily}列表](${u("/api/v1/dailies")}): 历史${daily}索引；指定日期使用 /api/v1/dailies/{YYYY-MM-DD}`);
@@ -72,10 +66,6 @@ export function llmsTxt(opts: { hasDailies: boolean; hasWeekly: boolean; hasMont
   if (opts.hasWeekly) lines.push(`- [${withSubject("周报")}](${u("/weekly")}): 每周综合回顾`);
   if (opts.hasMonthly) lines.push(`- [${withSubject("月报")}](${u("/monthly")}): 每月盘点`);
   lines.push(`- [主题](${u("/topics")}): 按公司、方向、内容形态聚合的主题页`);
-  if (FEATURES.leaderboard && opts.hasLeaderboard) {
-    lines.push(`- [模型榜](${u("/leaderboard")}): 汇总多家公开模型评测榜单的共识排名`);
-    lines.push(`- [模型榜算法规则](${u("/leaderboard/rules")}): 模型身份统一、共同参评比较、缺失评测处理和共识指数计算方式`);
-  }
   lines.push("", "## 使用说明", "");
   lines.push("- 内容为第三方原文的聚合摘要与编辑策展，原文版权归各来源所有；重要事实请回原文核对。");
   lines.push("- API v1 区分原文发布时间 publishedAt 与本站首次收到时间 discoveredAt；links.aihot 回到站内阅读页，links.original 指向第三方原文。");

@@ -38,7 +38,7 @@ docker compose up -d --build
 
 - 构建时 npm 走国内镜像：`docker compose build --build-arg NPM_REGISTRY=https://registry.npmmirror.com`，然后 `docker compose up -d`。
 - 拉取 Docker 镜像慢，先给 Docker 配置镜像加速。
-- 海外信源抓不到时，在 `.env` 里设置 `EGRESS_PROXY_URL`。信源、图片、模型榜、网页保存的兼容模型连接及 Codex 使用此代理；原有环境变量模型连接按对应适配器处理，见[模型配置](chatgpt-auth.md)。
+- 海外信源抓不到时，在 `.env` 里设置 `EGRESS_PROXY_URL`。信源、图片、网页保存的兼容模型连接及 Codex 使用此代理；原有环境变量模型连接按对应适配器处理，见[模型配置](chatgpt-auth.md)。
 - 对外提供网站服务需要先完成 ICP 备案，备案号填在 `industry/site.ts` 的 `icp`。
 
 ### 配域名和 HTTPS（可选）

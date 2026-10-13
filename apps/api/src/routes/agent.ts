@@ -1,13 +1,11 @@
-import { FEATURES } from "@aihot/industry/features";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { V1_CACHE_CONTROL } from "@aihot/contracts/http-policy";
 import { PUBLIC_API_CATEGORY_KEYS, type PublicApiCategoryKey } from "@aihot/contracts/taxonomy";
 import { isValidDate } from "@aihot/contracts/time";
-import { agentGuide, codexAnswer, dailyAnswer, hotAnswer, latestAnswer, searchAnswer, searchItems, storyAnswer } from "@aihot/backend/publication/agent";
+import { agentGuide, dailyAnswer, hotAnswer, latestAnswer, searchAnswer, searchItems, storyAnswer } from "@aihot/backend/publication/agent";
 import { v1Items } from "@aihot/backend/publication/v1";
 import { resolveStory, v1HotTopics, v1Story } from "@aihot/backend/publication/stories";
 import { v1Daily } from "@aihot/backend/publication/reports";
-import { codexResetPage } from "@aihot/backend/monitor/read";
 import { QueryError, sendProblem, sendTextWithEtag, strictQuery } from "../http/respond.ts";
 import { enumParam, intParam, publicHandler } from "./v1.ts";
 
@@ -76,10 +74,5 @@ export function registerAgent(app: FastifyInstance) {
     const res = await v1Daily(date);
     if (!res) return sendProblem(req, reply, { status: 404, code: "not_found", detail: `没有 ${date} 的日报；不要换一天冒充。`, cacheControl: "public, max-age=60" });
     return markdown(req, reply, dailyAnswer(res.report, "http"), "agent-daily", V1_CACHE_CONTROL.dailyByDate);
-  }));
-
-  if (FEATURES.codexResetMonitor) app.get("/api/v1/agent/codex-resets", publicHandler(async (req, reply) => {
-    strictQuery(req, []);
-    return markdown(req, reply, codexAnswer(await codexResetPage()), "agent-codex", V1_CACHE_CONTROL.codexResets);
   }));
 }
