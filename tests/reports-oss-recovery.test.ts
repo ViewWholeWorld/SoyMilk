@@ -8,6 +8,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import { closeDb, sql } from "@aihot/backend/db";
 import { stopBoss } from "@aihot/backend/jobs/queue";
 import { catchUpReports, composeDaily, composeWeekly, composeMonthly } from "@aihot/backend/reports/compose";
+import { recordRun } from "@aihot/backend/jobs/queue";
+import { dueWeekly } from "@aihot/backend/reports/compose";
+import { SCHEDULES } from "../apps/worker/src/schedules.ts";
 
 const T = tag();
 const SOURCE = `report-recovery-${T}`;
@@ -34,6 +37,78 @@ async function item(at: string) {
   return id;
 }
 const report = async (kind: string, key: string) => (await sql`SELECT content, revision, generated_at FROM reports WHERE kind = ${kind} AND key = ${key}`)[0];
+
+// 套件共用测试库：取现存历史之前的一年，不依赖其他文件留下的收录日期。
+async function startupYear() {
+  const [row] = await sql<{ at: Date }[]>`SELECT min(at) AS at FROM (
+    SELECT min(applied_at) AS at FROM schema_migrations
+    UNION ALL SELECT min(discovered_at) FROM articles
+  ) evidence`;
+  return row!.at.getUTCFullYear() - 1;
+}
+const catchUpSchedule = SCHEDULES.find(s => s.name === "reports.catch-up")!;
+const runCatchUp = (now: Date) => recordRun("reports.catch-up", () => catchUpReports(now), { skipWhen: catchUpSchedule.skipWhen });
+async function latestCatchUp() {
+  return (await sql`SELECT status,detail,error FROM job_runs WHERE job='reports.catch-up' ORDER BY id DESC LIMIT 1`)[0]!;
+}
+
+test("建站前的空日报、周报和月报记录为跳过，不调用模型或写空报告", async () => {
+  const y = await startupYear();
+  await item(`${y}-02-02T00:00:00Z`);
+  const now = new Date(`${y}-02-02T03:00:00Z`);
+  const calls = provider.hits();
+  const result = await runCatchUp(now);
+  assert.equal(result.skipped.length, 3);
+  assert.deepEqual(result.generated, []);
+  assert.deepEqual(result.failed, []);
+  const run = await latestCatchUp();
+  assert.equal(run.status, "skipped");
+  assert.deepEqual(run.detail.skipped, result.skipped);
+  assert.equal(run.error, null);
+  assert.equal((await sql`SELECT count(*)::int AS n FROM reports`)[0]!.n, 0);
+  await runCatchUp(now);
+  assert.equal(provider.hits(), calls);
+});
+
+test("补成日报并跳过建站前空周月报时，整轮仍记录成功", async () => {
+  const y = await startupYear();
+  await item(`${y}-02-01T12:00:00Z`);
+  const result = await runCatchUp(new Date(`${y}-02-02T03:00:00Z`));
+  assert.deepEqual(result.generated, [`daily:${y}-02-02`]);
+  assert.equal(result.skipped.length, 2);
+  assert.equal((await latestCatchUp()).status, "ok");
+});
+
+test("旧文章清理不会让数据库初始化后的空月报变成跳过", async () => {
+  const y = await startupYear();
+  await item(`${y}-02-02T01:00:00Z`);
+  const [migration] = await sql`SELECT name,applied_at FROM schema_migrations ORDER BY applied_at,name LIMIT 1`;
+  await sql`UPDATE schema_migrations SET applied_at=${new Date(`${y}-01-01T00:00:00Z`)} WHERE name=${migration!.name}`;
+  try {
+    await assert.rejects(runCatchUp(new Date(`${y}-02-02T03:00:00Z`)), /monthly:/);
+    assert.equal((await latestCatchUp()).status, "failed");
+  } finally {
+    await sql`UPDATE schema_migrations SET applied_at=${migration!.applied_at} WHERE name=${migration!.name}`;
+  }
+});
+
+test("建站前周期后来补入可用历史材料时仍能生成报告", async () => {
+  const y = await startupYear();
+  const received = new Date(`${y}-02-02T01:00:00Z`);
+  await item(received.toISOString());
+  const now = new Date(`${y}-02-02T03:00:00Z`);
+  await runCatchUp(now);
+  const id = await item(`${y}-01-15T12:00:00Z`);
+  await sql`UPDATE articles SET discovered_at=${received} WHERE id=${id}`;
+  await sql`UPDATE publications SET discovered_at=${received} WHERE article_id=${id}`;
+  for (const [kind,key] of [["daily",`${y}-02-02`],["weekly",dueWeekly(now)]]) {
+    await sql`INSERT INTO reports (kind,key,window_start,window_end,content,generated_at) VALUES (${kind!},${key!},now(),now(),'{}',now())`;
+  }
+  const result = await runCatchUp(now);
+  assert.deepEqual(result.generated, [`monthly:${y}-01`]);
+  assert.equal((await latestCatchUp()).status, "ok");
+  assert.ok(await report("monthly",`${y}-01`));
+});
 
 test("automatic retries preserve all three published issue kinds; explicit corrections keep a revision", async () => {
   const id = await item("2024-02-01T12:00:00Z");

@@ -319,15 +319,41 @@ const nextMonth = (label: string) => {
   return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
 };
 
+async function reportingStartedAt(): Promise<Date | null> {
+  // 初始化记录不会随文章清理后移；更早的导入收录或报告也作为历史运行证据。
+  const [row] = await sql<{ at: Date | null }[]>`
+    SELECT min(at) AS at FROM (
+      SELECT min(applied_at) AS at FROM schema_migrations
+      UNION ALL SELECT min(discovered_at) FROM articles
+      UNION ALL SELECT min(generated_at) FROM reports
+    ) evidence`;
+  return row!.at;
+}
+
+async function emptyBeforeStart(kind: ReportKind, key: string, startedAt: Date | null): Promise<boolean> {
+  if (!startedAt) return false;
+  const end = kind === "daily" ? new Date(beijingMidnight(key).getTime() + 8 * 3600_000)
+    : kind === "weekly" ? beijingMidnight(addDays(isoWeekRange(key)!.end, 1))
+    : beijingMidnight(`${nextMonth(key)}-01`);
+  if (end > startedAt) return false;
+  const start = kind === "daily" ? new Date(end.getTime() - 86400_000)
+    : beijingMidnight(kind === "weekly" ? isoWeekRange(key)!.start : `${key}-01`);
+  // 有真实材料的历史导入仍可补报；跳过不写空报告，也不永久阻止之后补入材料。
+  return (await candidates(start, end)).length === 0;
+}
+
 /**
  * Catch-up (hourly): every issue due since the first of its kind that does not exist yet, oldest first,
  * as the legacy recovery did — a long stop or an older gap is filled too, not only the last week. A kind
- * with no issue yet only gets its latest due one. An issue that fails does not hold up the others; at
+ * with no issue yet only gets its latest due one. Empty windows entirely before startup are skipped.
+ * An issue that fails does not hold up the others; at
  * most `limit` issues are written per run, the next run continues.
  */
-export async function catchUpReports(now = new Date(), limit = 8): Promise<{ generated: string[]; failed: string[] }> {
+export async function catchUpReports(now = new Date(), limit = 8): Promise<{ generated: string[]; failed: string[]; skipped: Array<{ report: string; reason: string }> }> {
   const generated: string[] = [];
   const failed: string[] = [];
+  const skipped: Array<{ report: string; reason: string }> = [];
+  const startedAt = await reportingStartedAt();
   const kinds: Array<{ kind: "daily" | "weekly" | "monthly"; due: string; next: (k: string) => string; compose: (k: string, reason: string) => Promise<unknown> }> = [
     { kind: "daily", due: dueDaily(now), next: (k) => addDays(k, 1), compose: composeDaily },
     { kind: "weekly", due: dueWeekly(now), next: nextWeek, compose: composeWeekly },
@@ -340,6 +366,10 @@ export async function catchUpReports(now = new Date(), limit = 8): Promise<{ gen
       if (have.has(key)) continue;
       if (shutdownSignal.signal.aborted || generated.length >= limit) break kinds;
       try {
+        if (await emptyBeforeStart(k.kind, key, startedAt)) {
+          skipped.push({ report: `${k.kind}:${key}`, reason: "报告周期早于建站，且没有可用精选" });
+          continue;
+        }
         await k.compose(key, "catch-up");
         generated.push(`${k.kind}:${key}`);
       } catch (error) {
@@ -349,5 +379,5 @@ export async function catchUpReports(now = new Date(), limit = 8): Promise<{ gen
     }
   }
   if (failed.length) throw new Error(`report catch-up: ${failed.join(", ")} failed${generated.length ? `; ${generated.join(", ")} written` : ""}`);
-  return { generated, failed };
+  return { generated, failed, skipped };
 }

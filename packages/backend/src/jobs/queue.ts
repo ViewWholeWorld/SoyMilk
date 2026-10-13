@@ -134,12 +134,13 @@ export async function work<Q extends QueueName>(boss: PgBoss, name: Q, options: 
 
 // Scheduled task bookkeeping: every run leaves a row, so operators see the latest result.
 
-export async function recordRun<T>(job: string, fn: () => Promise<T>): Promise<T> {
+export async function recordRun<T>(job: string, fn: () => Promise<T>, options: { skipWhen?: (result: T) => boolean } = {}): Promise<T> {
   const [row] = await sql<{ id: number }[]>`INSERT INTO job_runs (job) VALUES (${job}) RETURNING id`;
   try {
     const result = await fn();
     const detail = result && typeof result === "object" ? result : { result };
-    await sql`UPDATE job_runs SET status = 'ok', finished_at = now(), detail = ${sql.json(detail as never)} WHERE id = ${row!.id}`;
+    const status = options.skipWhen?.(result) ? "skipped" : "ok";
+    await sql`UPDATE job_runs SET status = ${status}, finished_at = now(), detail = ${sql.json(detail as never)} WHERE id = ${row!.id}`;
     return result;
   } catch (error) {
     await sql`UPDATE job_runs SET status = 'failed', finished_at = now(), error = ${String(error).slice(0, 4000)} WHERE id = ${row!.id}`;

@@ -24,6 +24,7 @@ interface Scheduled {
   cron: string;
   run: () => Promise<unknown>;
   missed?: "skip" | "once";
+  skipWhen?: (result: unknown) => boolean;
 }
 
 const collecting = process.env.COLLECT_ENABLED !== "false";
@@ -45,7 +46,13 @@ export const SCHEDULES: Scheduled[] = [
     missed: "once",
     run: () => composeMonthly(dueMonthly()),
   },
-  { name: "reports.catch-up", cron: "15 * * * *", run: () => catchUpReports() },
+  {
+    name: "reports.catch-up", cron: "15 * * * *", run: () => catchUpReports(),
+    skipWhen: (result) => {
+      const report = result as Awaited<ReturnType<typeof catchUpReports>>;
+      return report.skipped.length > 0 && report.generated.length === 0;
+    },
+  },
   { name: "ops.retention", cron: "30 3 * * *", missed: "once", run: () => dailyRetention() },
   // IndexNow for new indexable pages (off unless INDEXNOW_SUBMIT_ENABLED).
   { name: "seo.indexnow", cron: "50 5 * * *", missed: "once", run: () => submitIndexNow() },
@@ -80,7 +87,7 @@ export async function registerSchedules(boss: PgBoss) {
     await ensureQueue(queue, { policy: "singleton", retryLimit: 1, expireInSeconds: 3600 });
     await boss.schedule(queue, s.cron, {}, { tz: "Asia/Shanghai", missed: s.missed ?? "skip" });
     // Schedules fire at minute boundaries; a 15 s pickup keeps them on time with a third of the polling.
-    await boss.work(queue, { pollingIntervalSeconds: 15 }, async () => recordRun(s.name, s.run));
+    await boss.work(queue, { pollingIntervalSeconds: 15 }, async () => recordRun(s.name, s.run, { skipWhen: s.skipWhen }));
   }
   // 已移除的定时任务必须取消旧调度，避免继续产生无人处理的任务。
   const names = new Set(SCHEDULES.map((s) => `cron.${s.name}`));
