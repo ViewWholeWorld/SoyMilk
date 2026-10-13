@@ -473,6 +473,14 @@
   overflow-x: auto;
 }
 .prose pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+.prose .code-block { margin-top: 1.2em; border: 1px solid var(--line); border-radius: var(--radius-tile); overflow: hidden; }
+.prose .code-block pre { margin: 0; border: 0; border-radius: 0; }
+.prose .code-block-head { display: flex; justify-content: space-between; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--ink-3); }
+.prose .code-block-copy { cursor: pointer; padding: 4px 8px; border-radius: var(--radius-control); }
+.prose .code-block-copy:hover { background: var(--bg-sunk); color: var(--ink); }
+.prose .hljs-keyword, .prose .hljs-literal { color: var(--accent); }
+.prose .hljs-string, .prose .hljs-title { color: var(--ink); }
+.prose .hljs-comment { color: var(--ink-4); }
 .prose table {
   display: block;
   overflow-x: auto;

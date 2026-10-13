@@ -62,7 +62,7 @@ async function queryExtras(ranking: HotRanking): Promise<Extras> {
   const faces = await sql<{ name: string; icon_url: string | null; avatar: string | null }[]>`
       SELECT DISTINCT ON (s.id) s.name, s.icon_url, a.x_post->>'avatarUrl' AS avatar
       FROM story_signals ss JOIN sources s ON s.id = ss.source_id
-      LEFT JOIN articles a ON a.id = ss.article_id AND a.x_post ? 'avatarUrl'
+      LEFT JOIN articles a ON a.id = CASE WHEN s.icon_url IS NULL THEN ss.article_id END AND a.x_post ? 'avatarUrl'
       WHERE ss.story_id = ANY(${ids}::bigint[])
       ORDER BY s.id, (a.id IS NULL), a.discovered_at DESC`;
   const extras: Extras = {
@@ -91,7 +91,8 @@ export async function rankingExtras(ranking: HotRanking) {
         .sort((x, y) => Number(y.p.kind === "editorial") - Number(x.p.kind === "editorial") || tierRank(x.p.tier) - tierRank(y.p.tier) || Number(!!y.icon) - Number(!!x.icon) || x.i - y.i);
       // Every name stays for the tooltip; only visible Faces need srcSet.
       return people.map(({ p, icon }, i): HotParticipant => {
-        const person: HotParticipant = { name: p.name, kind: p.kind, iconUrl: proxiedImage(icon, "avatar") };
+        const person: HotParticipant = { name: p.name, kind: p.kind, iconUrl: null };
+        if (p.kind === "editorial" && i < MAX_FACES) person.iconUrl = proxiedImage(icon, "avatar");
         const srcSet = p.kind === "editorial" && i < MAX_FACES ? proxiedImageSet(icon, "avatar") : undefined;
         if (srcSet) person.iconSrcSet = srcSet;
         return person;

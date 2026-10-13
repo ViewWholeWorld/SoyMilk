@@ -16,6 +16,8 @@ import { StarButton } from "../features/feed/parts";
 import { GroupSources } from "../features/feed/ReadingGroup";
 import { StoryFollowups } from "../features/item/StoryFollowups";
 import { MediaGallery } from "../features/item/MediaGallery";
+import { ArticleBody } from "../features/item/ArticleBody";
+import { ArticleOutline } from "../features/item/ArticleOutline";
 import { QuotedPost } from "../features/item/QuotedPost";
 import { IconArrowLeft, IconCopy, IconDownload, IconExternal, IconImage, IconMenu, IconShare } from "../components/icons";
 
@@ -208,17 +210,7 @@ export default function ItemPage() {
   );
   const outline = showOutline && (
     <RailSection title="本文目录">
-      <nav aria-label="本文目录">
-        <ol className="-ml-px space-y-0.5 border-l border-line">
-          {item.outline.map((o) => (
-            <li key={o.id}>
-              <a href={`#${o.id}`} className={`-ml-px block border-l border-transparent py-1 text-[12.5px] leading-snug text-ink-3 transition-colors hover:border-accent hover:text-ink ${o.level > 2 ? "pl-5" : "pl-3"}`}>
-                {o.text}
-              </a>
-            </li>
-          ))}
-        </ol>
-      </nav>
+        <ArticleOutline entries={item.outline} />
     </RailSection>
   );
   const notes = (
@@ -345,7 +337,7 @@ export default function ItemPage() {
               {hasTranslation && lang === "zh" && !item.body.complete && (
                 <p className="mb-5 rounded-control bg-bg-sunk px-3 py-2 text-[13px] text-ink-3">译文尚不完整，完整内容请切换到原文。</p>
               )}
-              <div className="prose" dangerouslySetInnerHTML={{ __html: bodyHtml }} />
+              <ArticleBody html={bodyHtml} />
             </section>
           )}
 
