@@ -10,6 +10,9 @@ const body = `<p>Before <strong>bold</strong>, between <em>italic</em>, after.</
 const xhtml = (html: string) => `<div xmlns="http://www.w3.org/1999/xhtml">${html}</div>`;
 const pages: Record<string, string> = {
   "/title": `<title type="xhtml">${xhtml("New <em>research</em> result")}</title><summary type="xhtml">${xhtml("First <b>important</b> result, then another.")}</summary>`,
+  "/plain": `<title>${escapeXml("Use <component> & tools")}</title><summary type="text">${escapeXml("A <short> & literal summary")}</summary>`,
+  "/short": `<title>Short post</title><content type="text">${escapeXml("Use <component> & tools")}</content>`,
+  "/summary": `<title>Summary body</title><summary type="text">${escapeXml("Short <literal> body")}</summary>`,
   "/body": `<title>New result</title><content type="xhtml">${xhtml(body)}</content>`,
   "/html": `<title>New result</title><content type="html">${escapeXml(body)}</content>`,
   "/cdata": `<title>New result</title><content type="html"><![CDATA[${body}]]></content>`,
@@ -27,10 +30,22 @@ after(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
-async function read(path: string) {
+async function read(path: string, summaryIsBody = false) {
   const feedUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}${path}`;
-  return (await fetchRss({ config: { feedUrl }, participation_mode: "editorial" } as never)).candidates;
+  return (await fetchRss({ config: { feedUrl, summaryIsBody }, participation_mode: "editorial" } as never)).candidates;
 }
+
+test("Atom 纯文本的尖括号与实体保持原样，短正文只有明确许可配置才确认", async () => {
+  const [plain] = await read("/plain");
+  assert.equal(plain!.title, "Use <component> & tools");
+  assert.equal(plain!.excerpt, "A <short> & literal summary");
+  assert.equal((await read("/short"))[0]!.bodyStatus, "pending");
+  const [body] = await read("/short", true);
+  assert.equal(body!.bodyStatus, "ok");
+  assert.equal(body!.bodyText, "Use <component> & tools");
+  assert.match(body!.bodyHtml!, /&lt;component&gt;/);
+  assert.equal((await read("/summary", true))[0]!.bodyText, "Short <literal> body");
+});
 
 test("Atom XHTML titles and summaries keep the article and its text in order", async () => {
   const items = await read("/title");

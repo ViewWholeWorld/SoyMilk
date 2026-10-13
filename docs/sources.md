@@ -1,5 +1,7 @@
 # 信源
 
+RSS／Atom 明确设置 `summaryIsBody=true` 时可接受短正文；Atom 默认及 `type=text` 保留纯文本尖括号，HTML/XHTML 继续清理。上述解析不改变七天采集窗口或来源全文许可。
+
 信源在后台“信源”页管理：新建、试抓一次看看抓到什么、改频率、启停、看失败原因和最近的条目。首次启动时，`industry/sources.json` 里的示范信源会被导入。
 
 ## 六种信源
