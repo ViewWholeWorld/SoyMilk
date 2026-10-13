@@ -6,6 +6,7 @@ import { useLocation, useNavigation } from "react-router";
 import { Collapse } from "../../components/ui/Presence";
 import type { TimelineCard, TimelineFilters, TimelineResponse } from "@aihot/contracts/site";
 import { FeedItem } from "./FeedItem";
+import { isUnreadCard, shouldLoadUnread } from "./unread";
 import { IconChevronDown } from "../../components/icons";
 import { RingMark } from "../../components/Logo";
 import { EmptyState } from "../../components/ui/Page";
@@ -21,6 +22,7 @@ interface ListState {
   dayCounts: Record<string, number>;
   collapsed: string[];
   batches: number;
+  unreadOnly: boolean;
 }
 
 function filterQuery(f: TimelineFilters, extra: Record<string, string | number | null | undefined> = {}) {
@@ -33,8 +35,8 @@ function filterQuery(f: TimelineFilters, extra: Record<string, string | number |
   return sp.toString();
 }
 
-function fromResponse(r: TimelineResponse): ListState {
-  return { cards: r.cards, nextCursor: r.nextCursor, dayCounts: r.dayCounts, collapsed: [], batches: 1 };
+function fromResponse(r: TimelineResponse, unreadOnly = false): ListState {
+  return { cards: r.cards, nextCursor: r.nextCursor, dayCounts: r.dayCounts, collapsed: [], batches: 1, unreadOnly };
 }
 
 const WEEKDAY_SHORT = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
@@ -153,7 +155,7 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
         setState(snap.data);
         restoreAnchor(snap.anchor, snap.scrollY);
       } else {
-        setState(fromResponse(initial));
+        setState(fromResponse(initial, stateRef.current.unreadOnly ?? false));
       }
     }
   }, [filterKey, initial, historyKey]);
@@ -218,7 +220,7 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
         // Cursor no longer fits: start over from the head.
         const head = await fetch(`/api/site/timeline?${key}`, { signal: controller.signal });
         if (!head.ok) throw new Error(String(head.status));
-        if (current()) setState(fromResponse((await head.json()) as TimelineResponse));
+        if (current()) setState(fromResponse((await head.json()) as TimelineResponse, stateRef.current.unreadOnly));
         return;
       }
       if (!res.ok) throw new Error(String(res.status));
@@ -259,16 +261,25 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
   }, [state.nextCursor, state.batches, loadMore]);
 
   const today = beijingDate(Date.now());
+  const unreadOnly = state.unreadOnly ?? false;
+  const unreadVisible = useCallback((card: TimelineCard) => isUnreadCard(card, readSet), [readSet]);
   const days = useMemo(() => {
     const out: Array<{ day: string; cards: TimelineCard[] }> = [];
     for (const c of state.cards) {
+      if (unreadOnly && !unreadVisible(c)) continue;
       const d = beijingDate(c.anchorAt);
       const last = out[out.length - 1];
       if (last && last.day === d) last.cards.push(c);
       else out.push({ day: d, cards: [c] });
     }
     return out;
-  }, [state.cards]);
+  }, [state.cards, unreadOnly, unreadVisible]);
+
+  const visibleCount = days.reduce((n, d) => n + d.cards.length, 0);
+  // 全部已读时继续取页，但保留原有自动加载上限和失败重试。
+  useEffect(() => {
+    if (unreadOnly && shouldLoadUnread(visibleCount, state.nextCursor, state.batches, loadingMore, loadError, AUTO_BATCHES)) void loadMore();
+  }, [unreadOnly, visibleCount, loadingMore, loadError, state.nextCursor, state.batches, loadMore]);
 
   const toggleDay = (day: string) =>
     setState((s) => ({ ...s, collapsed: s.collapsed.includes(day) ? s.collapsed.filter((d) => d !== day) : [...s.collapsed, day] }));
@@ -276,16 +287,24 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
   let order = 0;
   return (
     <div className="relative">
+      <div className="mb-2 flex justify-end">
+        <button type="button" aria-pressed={unreadOnly} onClick={() => setState(s => ({ ...s, unreadOnly: !s.unreadOnly }))}
+          className={`rounded-full border px-3 py-1.5 text-[12.5px] ${unreadOnly ? "border-accent bg-accent-soft text-accent" : "border-line text-ink-3"}`}>
+          只看未读
+        </button>
+      </div>
       {days.length > 0 && <TimelineTimeNote />}
-      {days.length === 0 && (
+      {days.length === 0 && !loadingMore && (
         <div className="lg:card">
-          <EmptyState title="这个筛选下还没有精选内容">换个类别看看，或者去全部动态里找找。</EmptyState>
+          {unreadOnly
+            ? <EmptyState title={state.nextCursor ? "这批精选都读过了" : "没有未读的精选内容"}>{state.nextCursor ? "继续加载，可以找到更早的未读精选。" : "关闭「只看未读」可以看到全部内容。"}</EmptyState>
+            : <EmptyState title="这个筛选下还没有精选内容">换个类别看看，或者去全部动态里找找。</EmptyState>}
         </div>
       )}
 
       {days.map(({ day, cards }) => {
         const collapsed = state.collapsed.includes(day);
-        const count = state.dayCounts[day] ?? cards.length;
+        const count = unreadOnly ? cards.length : state.dayCounts[day] ?? cards.length;
         return (
           <section key={day} aria-label={day} className="lg:mb-1">
             <DayHeader day={day} today={today} count={count} collapsed={collapsed} onToggle={() => toggleDay(day)} />
@@ -307,7 +326,7 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
       })}
 
       <div ref={sentinel} aria-hidden="true" />
-      <FeedEnd loading={loadingMore} error={loadError} hasMore={!!state.nextCursor} manual={state.batches >= AUTO_BATCHES} empty={state.cards.length === 0} onMore={loadMore} />
+      <FeedEnd loading={loadingMore} error={loadError} hasMore={!!state.nextCursor} manual={state.batches >= AUTO_BATCHES} empty={visibleCount === 0} onMore={loadMore} />
     </div>
   );
 }

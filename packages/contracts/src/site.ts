@@ -78,6 +78,8 @@ export interface GroupInfo {
   additionalSourceCount: number;
   /** Distinct public reports across the group's facts. */
   reportCount: number;
+  /** 当前筛选范围内的精选成员，用于浏览器本地未读筛选。 */
+  memberIds?: string[];
   /** Facts of the group (the card's own included) with at least one selected item under the current filters. */
   developmentCount: number;
   /** The newest development when it is not the card's own fact: why the card sits where it does. */

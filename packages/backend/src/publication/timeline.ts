@@ -202,6 +202,7 @@ export async function loadTimeline(q: TimelineQuery): Promise<Omit<TimelineRespo
       // Reports of the facts that have a selected report (the developments), counted once each.
       reportCount: new Set(reports.filter((r) => byFact.has(r.fact_id)).map((r) => r.article_id)).size,
       developmentCount: byFact.size,
+      memberIds: [...new Set([...byFact.values()].flatMap(rows => rows.map(r => r.id)))],
       latestDevelopment: newest ? { factId: newest.public_id, title: newest.title, at: new Date(firstSeen(newestRows)).toISOString() } : null,
     };
     const showGroup = group.reportCount > 1 || group.developmentCount > 1;
