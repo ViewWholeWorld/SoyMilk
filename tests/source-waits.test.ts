@@ -125,7 +125,11 @@ test("日志清理前累计的真实失败在反复等待时保持不变", async
 test("预算关闭只等待，保持真实失败次数和重试时间", async () => {
   const id = await source("budget");
   for (let i = 0; i < 2; i++) await sql`INSERT INTO fetch_runs(source_id,status,error) VALUES(${id},'failed','HTTP 500')`;
+  // 旧版预算等待已保留 fail_count，历史诊断及纠正不能再扣除它。
+  await sql`INSERT INTO fetch_runs(source_id,status,error) VALUES(${id},'failed','Budget for jina exhausted (minute)')`;
   await sql`UPDATE sources SET fail_count=2,health='degraded' WHERE id=${id}`;
+  assert.equal((await health(id)).fail_count, 2);
+  assert.equal((await health(id)).failed, 2);
   await sql`UPDATE budgets SET per_minute=0 WHERE service='jina'`;
   try {
     assert.equal((await collectSource(id)).status, "skipped");

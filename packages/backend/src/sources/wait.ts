@@ -15,3 +15,6 @@ export const WAITING_FETCH_RUN = sql`(
   coalesce(detail->'waiting'->>'kind','') IN ('budget','busy','disabled','configuration','unknown')
   OR coalesce(error,'') ~ ${LEGACY_WAIT}
 )`;
+// 旧版预算等待虽记为 failed，但从未增加连续失败计数，不参与扣减。
+export const MISCOUNTED_FETCH_WAIT = sql`(${WAITING_FETCH_RUN}
+  AND coalesce(error,'') !~ ${String.raw`^Budget for .+ exhausted \(.+\)$`})`;

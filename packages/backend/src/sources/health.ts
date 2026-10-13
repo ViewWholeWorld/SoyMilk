@@ -1,7 +1,7 @@
 // 以近七天实际发现和抓取结果诊断信源；成功请求不等于有产出。
 import { sql } from "../db.ts";
 import type { Finding } from "../notify/feishu.ts";
-import { sourceWaitMessage, WAITING_FETCH_RUN } from "./wait.ts";
+import { sourceWaitMessage, WAITING_FETCH_RUN, MISCOUNTED_FETCH_WAIT } from "./wait.ts";
 
 interface HealthRow {
   id: string; name: string; participation_mode: string; created_at: Date; health: string;
@@ -24,7 +24,7 @@ export async function sourceHealth(now = Date.now()) {
       SELECT source_id,max(id) FILTER (WHERE status='ok' OR (status='skipped' AND detail->'waiting' IS NOT NULL)) AS last_checked FROM fetch_runs
       WHERE started_at <= ${until} GROUP BY source_id
     ), corrections AS (
-      SELECT h.source_id,count(*) FILTER (WHERE status='failed' AND ${WAITING_FETCH_RUN})::int AS waited
+      SELECT h.source_id,count(*) FILTER (WHERE status='failed' AND ${MISCOUNTED_FETCH_WAIT})::int AS waited
       FROM history h LEFT JOIN fetch_runs f ON f.source_id=h.source_id AND f.id > coalesce(h.last_checked,0) AND f.started_at <= ${until}
       GROUP BY h.source_id
     ), seen AS (

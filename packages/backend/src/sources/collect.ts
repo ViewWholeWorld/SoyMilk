@@ -12,7 +12,7 @@ import { unsupportedConfig } from "./config-keys.ts";
 import { fetchJsonList } from "./json-list.ts";
 import { fetchXSearch, planXShards, readXSearch, shardHandle, shardQuery, SHARDABLE_SQL, tweetToCandidate, type XBacklog } from "./x.ts";
 import { FetchError, type Candidate, type SourceRow } from "./types.ts";
-import { collectionWait, WAITING_FETCH_RUN } from "./wait.ts";
+import { collectionWait, MISCOUNTED_FETCH_WAIT } from "./wait.ts";
 
 export interface CollectResult {
   sourceId: string;
@@ -83,7 +83,7 @@ async function recordWait(sourceId: string, runId: number, wait: NonNullable<Ret
       error=${message},detail=${tx.json({ ...detail, waiting: wait } as never)} WHERE id=${runId}`;
     // 只扣除上次成功或等待纠正之后的历史误计，保留已清理运行日志的真实失败前缀。
     const [row] = await tx<{ waited: number }[]>`SELECT count(*)::int AS waited FROM fetch_runs
-      WHERE source_id=${sourceId} AND status='failed' AND ${WAITING_FETCH_RUN}
+      WHERE source_id=${sourceId} AND status='failed' AND ${MISCOUNTED_FETCH_WAIT}
       AND id > coalesce((SELECT max(id) FROM fetch_runs WHERE source_id=${sourceId} AND id <> ${runId}
         AND (status='ok' OR (status='skipped' AND detail->'waiting' IS NOT NULL))),0)`;
     const failures = Math.max(0, (source?.fail_count ?? 0) - row!.waited);

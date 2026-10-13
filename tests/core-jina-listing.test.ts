@@ -58,13 +58,13 @@ const round = async () => (await sql<{ round: string | null }[]>`SELECT cursor->
 
 test("a listing read with an unknown outcome is not paid for again until it is released", async () => {
   const lost = await collectSource(SOURCE, { force: true });
-  assert.equal(lost.status, "failed");
+  assert.equal(lost.status, "skipped");
   assert.equal(hits, 1);
   const [first] = await receipts();
   assert.equal(first!.status, "unknown");
 
   // The next scheduled fetch comes back to the same receipt instead of sending the request again.
-  assert.equal((await collectSource(SOURCE, { force: true })).status, "failed");
+  assert.equal((await collectSource(SOURCE, { force: true })).status, "skipped");
   assert.equal(hits, 1, "no second paid request");
   assert.equal((await receipts()).length, 1);
   assert.ok(await round(), "the round stays open while its read is unresolved");
