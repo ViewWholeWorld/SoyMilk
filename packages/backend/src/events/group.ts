@@ -359,6 +359,7 @@ async function decide(articleId: string, opts: GroupOptions): Promise<GroupResul
     const late = await manualDecision(tx, articleId);
     if (late) {
       await tx`UPDATE articles SET grouped_at = coalesce(grouped_at, now()) WHERE id = ${articleId}`;
+      for (const id of receipts) await completeReceipt(tx, id);
       return { manual: late, factId: null, storyId: null };
     }
     await lockStoryMembership(tx);
@@ -370,6 +371,7 @@ async function decide(articleId: string, opts: GroupOptions): Promise<GroupResul
     // 与撤回共用article锁，来源隔离/合并共用成员锁；晚到模型不得创建旧文字副本。
     if (!current || current.mode !== "editorial" || current.visibility !== "public" || current.revision !== a.revision ||
         current.analysis_id !== an.id || current.title !== (publication?.title ?? null) || current.summary !== (publication?.summary ?? null)) {
+      for (const id of receipts) await completeReceipt(tx, id);
       return { manual: null, factId: null, storyId: null };
     }
     if (storyId !== null) {
@@ -384,9 +386,10 @@ async function decide(articleId: string, opts: GroupOptions): Promise<GroupResul
     await recordSignal(tx, story, articleId, source, "editorial", observedAt);
     await recordDecision(tx, articleId, fact, story, verdict, decisionCandidates, receipts[0] ?? null);
     await tx`UPDATE articles SET grouped_at = coalesce(grouped_at, now()) WHERE id = ${articleId}`;
+    // 归组与回执一起提交；失败后仍可复用已保存的模型响应。
+    for (const id of receipts) await completeReceipt(tx, id);
     return { manual: null, factId: fact, storyId: story };
   });
-  for (const id of receipts) await completeReceipt(sql, id);
   await publishArticle(articleId);
   if (written.manual) return { verdict: "manual", factId: written.manual.factId };
   if (!written.storyId || !written.factId) return { verdict: "standalone" };

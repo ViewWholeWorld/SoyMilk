@@ -114,6 +114,24 @@ async function storyWithRoot(text: string, suffix: string) {
   return { storyId: Number(story!.id), publicId: String(story!.public_id), factId: Number(fact!.id), articleId: article };
 }
 
+test("回执提交失败时归组一起回滚，重试复用已保存模型结果", async () => {
+  const id = await report("receipt-atomic", FACT_TITLE);
+  relation = "SAME_OCCURRENCE"; pairRelation = null; hold.open();
+  await sql.unsafe(`CREATE OR REPLACE FUNCTION soymilk_group_receipt_fault() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test receipt completion failed'; RETURN NEW; END $$`);
+  await sql.unsafe(`CREATE TRIGGER soymilk_group_receipt_fault BEFORE UPDATE OF status ON receipts FOR EACH ROW WHEN (NEW.status='completed' AND NEW.purpose='group_article') EXECUTE FUNCTION soymilk_group_receipt_fault()`);
+  try {
+    await assert.rejects(groupArticle(id), /test receipt completion failed/);
+    assert.equal((await sql`SELECT 1 FROM fact_articles WHERE article_id=${id}`).length, 0, "业务归属必须回滚");
+    assert.equal((await sql`SELECT grouped_at FROM articles WHERE id=${id}`)[0]!.grouped_at, null);
+  } finally {
+    await sql.unsafe(`DROP TRIGGER IF EXISTS soymilk_group_receipt_fault ON receipts`);
+    await sql.unsafe(`DROP FUNCTION IF EXISTS soymilk_group_receipt_fault()`);
+  }
+  const hits = provider.hits();
+  assert.equal((await groupArticle(id)).verdict, "same-fact");
+  assert.equal(provider.hits(), hits, "复用原回执，不增加模型或向量请求");
+});
+
 // Failure cases before changing the writer: a merge during judgement can strand either a signal or
 // a newly created fact; a signal-only detach can leave evidence because it has no fact membership.
 for (const relationToRoot of ["SAME_OCCURRENCE", "SAME_STORY"] as const) {
