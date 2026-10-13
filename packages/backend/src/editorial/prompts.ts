@@ -39,10 +39,16 @@ function expand(name: string, seen: string[] = []): { text: string; used: string
 
 /** A prompt with its values filled in. */
 export function promptText(name: string, values: Record<string, string> = {}): string {
+  return renderPromptText(expand(name).text, values);
+}
+
+/** 评测候选与生产提示词使用相同的变量和行业包引用规则。 */
+export function renderPromptText(text: string, values: Record<string, string> = {}): string {
   const all: Record<string, string> = { siteName: SITE.name, ...values };
-  return expand(name).text.replace(TOKEN, (_token, _include, key: string) => {
+  const expanded = text.replace(TOKEN, (token, include, key: string) => include ? expand(key).text : token);
+  return expanded.replace(TOKEN, (_token, _include, key: string) => {
     const value = all[key];
-    if (value === undefined) throw new Error(`prompt ${name}: no value for {{${key}}}`);
+    if (value === undefined) throw new Error(`prompt: no value for {{${key}}}`);
     return value;
   });
 }

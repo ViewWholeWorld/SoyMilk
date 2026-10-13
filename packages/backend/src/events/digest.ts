@@ -1,23 +1,17 @@
 // Story digest: rewritten incrementally as reports arrive; contradictions with earlier reporting are
 // stated explicitly. v1 `digest` and `latest` read the same stored version.
-import { z } from "zod";
 import { modelFor } from "../editorial/models.ts";
-import { beijingDate, beijingTime } from "@aihot/contracts/time";
 import { sql } from "../db.ts";
 import { chatJson } from "../providers/llm.ts";
 import { completeReceipt } from "../providers/receipts.ts";
 import { digestReports, digestInputsHash } from "./derived-content.ts";
 import { promptText, promptVersion } from "../editorial/prompts.ts";
+import { buildDigestInput, DigestSchema } from "./digest-input.ts";
 
 export const DIGEST_PROMPT_VERSION = promptVersion("story-digest");
 
 const SYSTEM = promptText("story-digest");
 
-const Schema = z.object({
-  title: z.string().max(120).catch(""),
-  digest: z.string().min(10).max(2000),
-  latest: z.string().max(300).catch(""),
-});
 
 export function storyStatusFor(latestAt: Date | null, now = Date.now()): "active" | "watching" | "settled" {
   if (!latestAt) return "settled";
@@ -46,16 +40,12 @@ export async function composeStoryDigest(storyId: number, opts: { afterCorrectio
     last.context_article_ids.every(id => known.has(id));
   if (!opts.afterCorrection && proven && last!.inputs_hash === inputsHash) return { updated: false };
   const incremental = proven && !opts.afterCorrection;
-  const window = reports.slice(-40);
-  const contextIds = [...new Set([...(incremental ? last!.context_article_ids! : []), ...window.map(r => r.id)])].sort();
-  const lines = window.map(r => `${incremental && !known.has(r.id) ? "【新】" : ""}${beijingDate(r.at)} ${beijingTime(r.at)}｜${r.source_name}${r.first_party ? "（一手）" : ""}｜${r.title}｜${(r.summary ?? "").slice(0, 220)}`);
+  const { user, windowIds } = buildDigestInput(reports, incremental ? story.digest : null, known);
+  const contextIds = [...new Set([...(incremental ? last!.context_article_ids! : []), ...windowIds])].sort();
   // 旧标题本身没有独立provenance；即使保留已验证综述，也不将它作为模型依据。
-  const user = incremental
-    ? `已核对输入的上一版综述：${story.digest}\n\n报道（按时间，标【新】的是新增报道）：\n${lines.join("\n")}`
-    : `请只依据下面这些报道的当前内容重写综述，不要沿用以前版本的说法。\n报道（按时间）：\n${lines.join("\n")}`;
   const res = await chatJson({
     model: await modelFor("digest"), purpose: "story_digest", subject: `story:${storyId}@${ids.length}`, promptVersion: DIGEST_PROMPT_VERSION,
-    system: SYSTEM, user, schema: Schema, temperature: 0.3, maxTokens: 1200,
+    system: SYSTEM, user, schema: DigestSchema, temperature: 0.3, maxTokens: 1200,
   });
   return sql.begin(async (tx) => {
     const [current] = await tx<{ version: number }[]>`SELECT version FROM stories WHERE id=${storyId} AND merged_into IS NULL FOR UPDATE`;
