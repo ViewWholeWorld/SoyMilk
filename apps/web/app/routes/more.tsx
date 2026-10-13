@@ -5,6 +5,8 @@ import type { loader as rootLoader } from "../root";
 import { useChangelogDot } from "../components/shell/Sidebar";
 import { pageMeta } from "../lib/seo";
 import { ThemeSwitch } from "../components/shell/ThemeSwitch";
+import { Select } from "../components/ui/Controls";
+import { useFontPreference, setFontPreference } from "../lib/local-state";
 import { IconBookmark, IconChevronRight, IconFlame, IconGrid, IconHeart, IconHistory, IconMessage, IconMoon, IconPlug } from "../components/icons";
 
 /** Shared caches may keep this page for five minutes. */
@@ -55,6 +57,7 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
 export default function MorePage() {
   const root = useRouteLoaderData<typeof rootLoader>("root");
   const changelogDot = useChangelogDot(root?.changelogVersion ?? null);
+  const font = useFontPreference();
   return (
     <div className="mx-auto max-w-[var(--page-max-reading)] pb-8">
       <h1 className="pb-4 pt-5 text-[22px] font-bold text-ink lg:pt-1">更多</h1>
@@ -79,6 +82,13 @@ export default function MorePage() {
                 <ThemeSwitch className="w-[124px]" />
               </li>
             )}
+            {g.title === "偏好" && <li className="flex min-h-[58px] items-center gap-3 px-4 py-2 text-[15px] font-medium text-ink">
+              <span className="flex-1">阅读字体</span>
+              <Select aria-label="阅读字体" value={font ?? "system"} onChange={e => setFontPreference(e.target.value === "browser" ? "browser" : "system")}>
+                <option value="system">网站默认字体</option>
+                <option value="browser">浏览器默认字体</option>
+              </Select>
+            </li>}
           </Group>
         ))}
       </div>

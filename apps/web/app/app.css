@@ -196,6 +196,10 @@
     -moz-osx-font-smoothing: grayscale;
     -webkit-tap-highlight-color: transparent;
   }
+  html[data-font="browser"] body {
+    font-family: initial;
+  }
+
   body {
     background: var(--bg);
     color: var(--ink);

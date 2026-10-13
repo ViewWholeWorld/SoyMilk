@@ -26,6 +26,27 @@ async function reader(starred: unknown[] = []) {
 
 const displayDate = (value: string) => `${beijingDate(value)} ${beijingTime(value)}`;
 
+test("字体备份兼容旧格式，并尊重已经明确选择的网站字体", async () => {
+  const { state } = await reader();
+  assert.equal(state.getFontPreference(), null);
+  assert.equal((await state.importBundle(JSON.stringify({ version: 1, starred: [], read: [], theme: null }))).fontApplied, false);
+  assert.equal((await state.importBundle(JSON.stringify({ version: 1, starred: [], read: [], font: "browser" }))).fontApplied, true);
+  assert.equal(state.exportBundle().font, "browser");
+  state.setFontPreference("system");
+  assert.equal((await state.importBundle(JSON.stringify({ version: 1, font: "browser" }))).fontApplied, false);
+  assert.equal(state.getFontPreference(), "system");
+});
+
+test("拒绝字体写入时本标签页仍保留选择，不改已有收藏", async () => {
+  const { state, values } = await reader([{ id: "original", title: "原收藏" }]);
+  const original = values.get(state.KEYS.starred);
+  window.localStorage.setItem = () => { throw new Error("denied"); };
+  state.setFontPreference("browser");
+  assert.equal(state.getFontPreference(), "browser");
+  assert.equal(state.exportBundle().font, "browser");
+  assert.equal(values.get(state.KEYS.starred), original);
+});
+
 test("import keeps bookmarks with invalid dates and persists displayable replacements", async () => {
   const invalid = ["broken", "", "999999-01-01", "+275760-09-13T00:00:00.000Z", null, 42, {}];
   const { state, values } = await reader();

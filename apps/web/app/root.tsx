@@ -4,7 +4,7 @@ import {
   isRouteErrorResponse, Link, Links, Meta, Outlet, Scripts, ScrollRestoration, useLoaderData, useLocation, useNavigation, useRouteError, useRouteLoaderData,
   type ShouldRevalidateFunction,
 } from "react-router";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import type { Route } from "./+types/root";
 import "./app.css";
 import { Sidebar } from "./components/shell/Sidebar";
@@ -12,7 +12,7 @@ import { MobileTabBar } from "./components/shell/MobileTabBar";
 import { BackToTop, NavigationProgress } from "./components/shell/Chrome";
 import { RingMark } from "./components/Logo";
 import { buttonClass } from "./components/ui/Controls";
-import { THEME_BOOT_SCRIPT } from "./lib/local-state";
+import { THEME_BOOT_SCRIPT, FONT_BOOT_SCRIPT, getFontPreference, useFontPreference } from "./lib/local-state";
 import { apiGet } from "./lib/api.server";
 import { useHydratedFlag } from "./lib/hydration";
 
@@ -39,6 +39,8 @@ export async function loader({ request }: Route.LoaderArgs) {
 export const shouldRevalidate: ShouldRevalidateFunction = () => false;
 
 export function Layout({ children }: { children: React.ReactNode }) {
+  const font = useFontPreference();
+  useEffect(() => { document.documentElement.setAttribute("data-font", getFontPreference() ?? "system"); }, [font]);
   return (
     <html lang={SITE.locale} suppressHydrationWarning>
       <head>
@@ -47,6 +49,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <meta name="theme-color" media="(prefers-color-scheme: light)" content="#faf9f6" />
         <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#13191c" />
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
+        <script dangerouslySetInnerHTML={{ __html: FONT_BOOT_SCRIPT }} />
         <Meta />
         <Links />
       </head>

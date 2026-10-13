@@ -7,6 +7,7 @@ export const KEYS = {
   starred: "aihot-starred-items",
   read: "aihot-read-items",
   theme: "aihot-theme",
+  font: "aihot-font",
   changelogSeen: "aihot-changelog-seen-version",
   feedbackDraft: "aihot-feedback-draft-v1",
 } as const;
@@ -66,6 +67,7 @@ function emit(key?: string) {
 }
 function onStorage(event: StorageEvent) {
   if (event.storageArea && event.storageArea !== storage("local")) return;
+  if (event.key === null || event.key === KEYS.font) unsavedFont = undefined;
   if (event.key === null) cache.clear();
   else cache.delete(event.key);
   // Clear the snapshot once, before notifying all cards. Each key is parsed at most once.
@@ -87,6 +89,7 @@ function subscribeKey(key: string) {
 const subscribeStarred = subscribeKey(KEYS.starred);
 const subscribeRead = subscribeKey(KEYS.read);
 const subscribeTheme = subscribeKey(KEYS.theme);
+const subscribeFont = subscribeKey(KEYS.font);
 const subscribeChangelog = subscribeKey(KEYS.changelogSeen);
 
 // Snapshot cache so useSyncExternalStore gets stable references between changes.
@@ -221,6 +224,23 @@ export function markRead(id: string) {
     invalidate(KEYS.read);
   });
 }
+// 字体选择与收藏一样只保存在浏览器；拒绝存储时本标签页仍能应用。
+export type FontPreference = "system" | "browser" | null;
+let unsavedFont: FontPreference | undefined;
+export function getFontPreference(): FontPreference {
+  if (unsavedFont !== undefined) return unsavedFont;
+  const value = readRaw(KEYS.font);
+  return value === "browser" || value === "system" ? value : null;
+}
+export function setFontPreference(pref: FontPreference) {
+  unsavedFont = writeRaw(KEYS.font, pref) ? undefined : pref;
+  invalidate(KEYS.font);
+}
+export function useFontPreference(): FontPreference {
+  return useSyncExternalStore(subscribeFont, getFontPreference, () => null);
+}
+export const FONT_BOOT_SCRIPT = `(function(){var f='system';try{if(localStorage.getItem('${KEYS.font}')==='browser')f='browser'}catch(e){}document.documentElement.setAttribute('data-font',f)})();`;
+
 // --- theme ---
 export type ThemePreference = "light" | "dark" | null;
 
@@ -266,11 +286,12 @@ export interface ExportBundle {
   starred: LocalStarredItem[];
   read: string[];
   theme: "light" | "dark" | "auto" | null;
+  font?: "system" | "browser";
 }
 
 export function exportBundle(): ExportBundle {
   const pref = getThemePreference();
-  return { version: 1, starred: getStarred(), read: getReadIds(), theme: pref ?? "auto" };
+  return { version: 1, starred: getStarred(), read: getReadIds(), theme: pref ?? "auto", font: getFontPreference() ?? "system" };
 }
 
 export interface ImportReport {
@@ -279,6 +300,7 @@ export interface ImportReport {
   readAdded: number;
   readSkipped: number;
   themeApplied: boolean;
+  fontApplied: boolean;
   /** The stars were saved but the read marks could not be (storage full or unavailable). */
   readFailed: boolean;
 }
@@ -298,6 +320,7 @@ export async function importBundle(text: string): Promise<ImportReport> {
     starred: Array.isArray(d.starred) ? d.starred : [],
     read: Array.isArray(d.read) ? d.read : [],
     theme: d.theme ?? null,
+    font: d.font ?? null,
   });
 }
 
@@ -311,7 +334,7 @@ function starredUnreadable(): boolean {
   }
 }
 
-export function mergeLocalData(incoming: { starred: unknown[]; read: unknown[]; theme: unknown }): Promise<ImportReport> {
+export function mergeLocalData(incoming: { starred: unknown[]; read: unknown[]; theme: unknown; font?: unknown }): Promise<ImportReport> {
   return editLocalData(() => {
     // The reader's own data stays recoverable (export it, or fix it) rather than replaced by the import.
     if (starredUnreadable()) throw new Error("这台设备上已有的收藏数据无法读取，为避免覆盖，这次没有导入。");
@@ -350,9 +373,11 @@ export function mergeLocalData(incoming: { starred: unknown[]; read: unknown[]; 
     if (!getThemePreference() && (incoming.theme === "light" || incoming.theme === "dark")) {
       themeApplied = writeRaw(KEYS.theme, incoming.theme);
     }
+    const fontApplied = getFontPreference() === null && (incoming.font === "system" || incoming.font === "browser") && writeRaw(KEYS.font, incoming.font);
+    if (fontApplied) unsavedFont = undefined;
     cache.clear();
     emit();
-    return { starredAdded: accepted.length, starredSkipped, readAdded: readFailed ? 0 : Math.min(readAdditions.length, readRoom), readSkipped, themeApplied, readFailed };
+    return { starredAdded: accepted.length, starredSkipped, readAdded: readFailed ? 0 : Math.min(readAdditions.length, readRoom), readSkipped, themeApplied, fontApplied, readFailed };
   });
 }
 
