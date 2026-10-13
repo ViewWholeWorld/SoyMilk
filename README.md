@@ -6,7 +6,7 @@ SoyMilk 是从 [AIHOT](https://github.com/KKKKhazix/AIHOT) Fork 后定制的私�
 
 ## 当前功能
 
-- 候选版本 `3.4.1` 增加精选未读筛选、阅读字体、代码复制与按需高亮，改进 Atom 解析、事件归组回执和信源诊断；正式 NAS 状态以现场核验为准。详见 [移植计划](docs/upstream-port-plan-20261013.md)。
+- 当前版本 `3.4.2` 包含精选未读筛选、阅读字体、代码复制与按需高亮，以及 Atom 解析、事件归组回执和信源诊断改进，已于北京时间 2026-10-13 15:29 发布到 NAS。详见 [移植计划](docs/upstream-port-plan-20261013.md)和[发布核验](docs/soymilk-operations.md)。
 - 事件综述先讲核心变化，维护者可用 [综述评测工具](docs/story-digest-evaluation.md) 比较同一新闻输入的提示词，不写回事件。
 - `/admin/models` 统一管理 API Key 连接、Codex 网页授权、默认模型及各项能力的模型与 reasoning effort。HTTP 内网和 Tailscale IP 可使用设备代码授权，无需本站 HTTPS 回调。
 - 正式 worker 复用 Codex 连接，模型与文章分析并发上限为 2，每次调用使用独立会话。回执、站内预算、账号管理让路和订阅限流保护继续生效。
