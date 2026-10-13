@@ -188,7 +188,7 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
         // 详情失败不阻塞整批，但记录真实失败供健康诊断；预算和停机只等待。
         if (!requestWait(error) && !shutdownSignal.signal.aborted && !(error instanceof DOMException && error.name === "AbortError")) {
           detailFailures++;
-          if (detailErrors.length < 20) detailErrors.push({ url: c.url, error: error instanceof Error ? error.name : "FetchError" });
+          if (detailErrors.length < 20) detailErrors.push({ url: c.url, error: error instanceof FetchError && error.status !== null ? `HTTP ${error.status}` : error instanceof Error ? error.name : "FetchError" });
         }
       }
     }

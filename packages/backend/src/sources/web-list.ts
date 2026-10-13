@@ -369,12 +369,11 @@ export async function fetchDetail(url: string, source: SourceRow, need: DetailNe
   let body: ExtractedBody | null = null;
   if ((need.date && !dateInJina) || (need.title && !titleInJina) || need.summary) {
     const res = await guardedFetch(url, { timeoutMs: 20_000 });
-    if (res.status === 200) {
-      html = res.text();
-      if (need.body && /html/.test(res.headers.get("content-type") ?? "")) {
-        try { body = readable(html, res.url); }
-        catch { /* A failed extraction must not discard the detail metadata. */ }
-      }
+    if (res.status !== 200) throw new FetchError(`HTTP ${res.status}`, res.status);
+    html = res.text();
+    if (need.body && /html/.test(res.headers.get("content-type") ?? "")) {
+      try { body = readable(html, res.url); }
+      catch { /* A failed extraction must not discard the detail metadata. */ }
     }
   }
   const $ = html === null ? null : cheerio.load(html);
