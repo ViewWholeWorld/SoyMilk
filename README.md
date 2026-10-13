@@ -6,7 +6,7 @@ SoyMilk 是从 [AIHOT](https://github.com/KKKKhazix/AIHOT) Fork 后定制的私�
 
 ## 当前功能
 
-- NAS 正式版本在北京时间 2026-10-13 20:06—20:11 的审查中核对为 `3.4.3`，包含精选未读筛选、阅读字体、代码复制与按需高亮、信源诊断和建站前空报告跳过。仓库候选 `3.4.6` 修复详情页 HTTP 错误漏计、失效游标反复请求和采集等待误报。详见 [移植计划](docs/upstream-port-plan-20261013.md)和[发布核验](docs/soymilk-operations.md)。
+- NAS 于北京时间 2026-10-13 22:49:53 手动发布 `3.4.6`，修复详情页 HTTP 错误漏计、失效游标反复请求和采集等待误报；精选未读筛选、阅读字体、代码复制与按需高亮、信源诊断和建站前空报告跳过继续保留。正式站点冒烟、公开 MCP、Hermes 和 Tailscale 核验通过。后续版本仍需现场核对，详见 [移植计划](docs/upstream-port-plan-20261013.md)和[发布核验](docs/soymilk-operations.md)。
 - 事件综述先讲核心变化，维护者可用 [综述评测工具](docs/story-digest-evaluation.md) 比较同一新闻输入的提示词，不写回事件。
 - `/admin/models` 统一管理 API Key 连接、Codex 网页授权、默认模型及各项能力的模型与 reasoning effort。HTTP 内网和 Tailscale IP 可使用设备代码授权，无需本站 HTTPS 回调。
 - 正式 worker 复用 Codex 连接，模型与文章分析并发上限为 2，每次调用使用独立会话。回执、站内预算、账号管理让路和订阅限流保护继续生效。

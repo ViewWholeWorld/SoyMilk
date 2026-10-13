@@ -22,9 +22,21 @@
 
 标准版本同步、完整类型检查、网页生产构建全部通过；两个新库各应用 41 个既有迁移并同步 44 个主题。第二个新空 `soymilk_fixes_final2_smoke_test` 库启动 API 与构建后的网页，**30 项冒烟和五个匿名只读 MCP 工具合约全部通过**，无效日期、不存在事件与超限参数返回预期错误。无新增迁移；沿用 Node.js 24.21.0、固定依赖，已安装包版本及 workspace 链接核验通过，运行的均为本次源码。
 
-NAS 检查目录为 `/share/homes/tromso/apps/soymilk-review-fixes-20261013-e6eebb2-4ac1`，使用新建内部网络、512 MiB tmpfs PostgreSQL、虚构凭据和本地替身；环境清空后显式设定，采集、模型、飞书和 IndexNow 安全阀保持关闭，没有生产授权、数据或环境挂载，没有真实模型或外部付费请求。验收后两个临时容器与内部网络已按精确名称和标签清理，测试数据库随 tmpfs 删除，源码包与日志保留。正式 API、worker、web、数据库的容器身份、镜像、启动时间和状态前后一致，本轮未部署或推送。
+NAS 检查目录为 `/share/homes/tromso/apps/soymilk-review-fixes-20261013-e6eebb2-4ac1`，使用新建内部网络、512 MiB tmpfs PostgreSQL、虚构凭据和本地替身；环境清空后显式设定，采集、模型、飞书和 IndexNow 安全阀保持关闭，没有生产授权、数据或环境挂载，没有真实模型或外部付费请求。验收后两个临时容器与内部网络已按精确名称和标签清理，测试数据库随 tmpfs 删除，源码包与日志保留。正式 API、worker、web、数据库的容器身份、镜像、启动时间和状态前后一致，该隔离验收阶段未部署或推送；随后授权的正式发布见下节。
 
 本机证据保存在忽略目录 `.data/review-fixes-20261013/logs/`：`final2-status.tsv`、`final2-stages.log`、`final2-backend.log`、`final2-web.log`、`final2-typecheck.log`、`final2-build.log`、`final2-smoke.log`、`final2-mcp.log`；此前分项失败、首轮全套失败及补充预算复现日志继续保留。清理与正式服务比较见 `cleanup-complete.log`、`cleanup-isolation.log` 和 `production-before*.log`／`production-after.log`。临时清理脚本首次把该 NAS 的 tmpfs 当作 Mounts 项检查而停止，按实际 `HostConfig.Tmpfs` 复核后清理完成；未影响测试结果或生产服务。
+
+## 2026-10-13 审查修复正式发布
+
+使用者随后授权合并、部署并检查生产错误日志。六个修复与验收提交快进合并并推送 `main`；正式源码为 `06f84dc52ff2dcb529319b9db2f2f8ec009989fe`，版本 `3.4.6`。547 个跟踪文件的源码包 SHA256 为 `64354e400a5fdaaee39d569fe71c4593718b304fb6c02f21a675c093ec350a3e`，不包含生产环境、授权、数据或 Git 目录。
+
+沿用 `deploy/nas/Dockerfile` 构建 Bookworm 正式镜像，重新通过完整类型、网页生产构建及 **44/44 网页测试**，失败、取消、跳过为 0，网页测试耗时 4.848 秒。正式镜像 ID 为 `sha256:7f4a685e5bd061c74f2f0b342c63d274161c5c7cac64cdb5793c61e0d9ceca51`。精简后的镜像在独立内部网络、新空 `soymilk_release_346_test` tmpfs 数据库通过版本同步、41 个迁移、44 个主题、启动、30 项冒烟，以及实际公告、未读、字体、OpenAPI 和已下线页面检查。环境安全阀关闭，仅挂载两个检查脚本，无生产凭据或数据；临时资源已清理。
+
+北京时间 **22:49:53**，备份和归档解析验证完成后手动切换正式应用。正式站点 30 项冒烟、五工具 MCP 合约、Hermes 原生客户端通过原固定地址的五工具发现与非空资讯读取、内网和 Tailscale 真实页面及 OpenAPI `3.4.6` 均通过。三应用容器各 325 个代码和配置文件与提交一致，锁文件完整 JSON 相同；setup 命令及四服务实际镜像一致，数据库容器、三个私有覆盖、模型、预算、安全阀、worker 复用与并发、Hermes 配置均保留。后台只读核验与生产日志结论见[维护快照](soymilk-operations.md#验证现况)。完整后端 662 项结果沿用上节同应用代码的独立空库验收，未连接生产库运行测试。
+
+首次候选检查在 30 项冒烟通过后，外置脚本位于 `/control`，无法按其位置解析 `/app` 的 `linkedom`；改为明确从应用依赖解析后，新空库全部通过，应用镜像未改变。首次 Hermes 检查已连接并读到工具结果，但辅助断言沿用旧 SDK 的 `isError` 属性；匹配当前 SDK 的 `is_error` 和初始化序列化字段后通过，协议为 `2025-11-25`。没有修改 Hermes 配置、调用模型、放宽断言或重启 Hermes；首次失败日志保留，不能把检查脚本失败说成服务故障。
+
+本机证据在忽略目录 `.data/release-review-20261013/logs/`；NAS 为 `/share/homes/tromso/apps/soymilk-release-3.4.6-06f84dc-20261013`。主要日志为 `build.log`、`image-check.log`、`deploy.log`、`live-mcp.log`、`live-pages.log`、`hermes-check.log`、`live-source.log`、`production-*-before.json`／`production-*-after.json` 和 `final-status.json`，只保存筛选后的生产必要统计。私有数据库与附件备份留在 NAS 的 `backups/manual-20261013-3.4.6-06f84dc`，不下载或提交。
 
 ## 2026-10-13 上游移植正式发布与版本补丁
 
