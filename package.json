@@ -1,5 +1,6 @@
 {
   "name": "aihot",
+  "version": "3.4.1",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -11,6 +12,7 @@
     "node": ">=24.11"
   },
   "scripts": {
+    "check:version": "node scripts/check-release-version.ts",
     "db:migrate": "node --env-file-if-exists=.env scripts/migrate.ts",
     "dev:api": "npm run dev -w @aihot/api",
     "dev:worker": "npm run dev -w @aihot/worker",

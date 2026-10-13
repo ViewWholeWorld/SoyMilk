@@ -14,6 +14,7 @@ export function headers() {
 }
 
 interface Release {
+  version?: string;
   date: string;
   time: string;
   kind: "更新" | "优化" | "公告" | "下线";
@@ -153,6 +154,7 @@ export default function ChangelogPage() {
                         </div>
                         <article className="min-w-0 sm:border-l sm:border-line sm:pl-8">
                           <h3 className="text-[15px] font-bold leading-snug text-ink">{r.title}</h3>
+                          {r.version && <p className="mono mt-1 text-[12px] text-ink-4">v{r.version}</p>}
                           <ReleaseBody lines={r.body} />
                         </article>
                       </li>
