@@ -18,7 +18,13 @@
 
 首次完整候选 `aa272a5` 回归为 **662 项中 659 通过、3 失败、取消及跳过 0**，耗时 283.724 秒。旧 `core-jina-listing` 仍期待未知结果为 failed，首项因此提前结束并使共享模式和回执未恢复，连带后续存储及管理员预览用例失败；该轮网页 44 项、版本、类型、构建、30 项冒烟和五工具 MCP 均通过。两处未知结果状态断言同步为 skipped，付费次数、同回执恢复、实际存储失败与新一轮抓取断言保留。连同历史预算保护，在新空 `soymilk_fixes_budget_final_test` 库 **32 项相关回归全部通过**，失败、取消、跳过 0，耗时 14.734 秒。该阶段仍不记为新版全套通过。
 
-NAS 检查目录为 `/share/homes/tromso/apps/soymilk-review-fixes-20261013-e6eebb2-4ac1`，使用新建内部网络、512 MiB tmpfs PostgreSQL、虚构凭据和本地替身。分项检查不作为最终修复版本的全套结果；完整回归在三项修复完成后另行记录。
+最终受测提交 `0e6dd5e18a96e0d14a4336d81fb7d59b82c3d7f0`，版本 `3.4.6`，源码包 SHA256 为 `c0e3b7752f82579afc4701fdbf1211e41367801dbbc18a512908259e3a8cebf0`，未提交覆盖为空。北京时间 **2026-10-13 22:19:18—22:24:28**，在新空 `soymilk_fixes_final2_test` 库完成 **后端 662/662，失败、取消、跳过均为 0**，耗时 271.695 秒。相对修复前 651 项，新增四项详情与七项等待回归。**完整网页 44/44，同样零失败、取消和跳过**，耗时 6.670 秒，相对原 41 项增加三项实际分页回调回归。
+
+标准版本同步、完整类型检查、网页生产构建全部通过；两个新库各应用 41 个既有迁移并同步 44 个主题。第二个新空 `soymilk_fixes_final2_smoke_test` 库启动 API 与构建后的网页，**30 项冒烟和五个匿名只读 MCP 工具合约全部通过**，无效日期、不存在事件与超限参数返回预期错误。无新增迁移；沿用 Node.js 24.21.0、固定依赖，已安装包版本及 workspace 链接核验通过，运行的均为本次源码。
+
+NAS 检查目录为 `/share/homes/tromso/apps/soymilk-review-fixes-20261013-e6eebb2-4ac1`，使用新建内部网络、512 MiB tmpfs PostgreSQL、虚构凭据和本地替身；环境清空后显式设定，采集、模型、飞书和 IndexNow 安全阀保持关闭，没有生产授权、数据或环境挂载，没有真实模型或外部付费请求。验收后两个临时容器与内部网络已按精确名称和标签清理，测试数据库随 tmpfs 删除，源码包与日志保留。正式 API、worker、web、数据库的容器身份、镜像、启动时间和状态前后一致，本轮未部署或推送。
+
+本机证据保存在忽略目录 `.data/review-fixes-20261013/logs/`：`final2-status.tsv`、`final2-stages.log`、`final2-backend.log`、`final2-web.log`、`final2-typecheck.log`、`final2-build.log`、`final2-smoke.log`、`final2-mcp.log`；此前分项失败、首轮全套失败及补充预算复现日志继续保留。清理与正式服务比较见 `cleanup-complete.log`、`cleanup-isolation.log` 和 `production-before*.log`／`production-after.log`。临时清理脚本首次把该 NAS 的 tmpfs 当作 Mounts 项检查而停止，按实际 `HostConfig.Tmpfs` 复核后清理完成；未影响测试结果或生产服务。
 
 ## 2026-10-13 上游移植正式发布与版本补丁
 
