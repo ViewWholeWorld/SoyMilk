@@ -1,0 +1,88 @@
+# 全局 Git 规范
+
+适用于所有仓库。若仓库自己的 AGENTS.md、CONTRIBUTING.md 或 docs 中有 Git 规范，以仓库规范为准，本文件只补充其未覆盖的部分。
+
+## 分支模型
+
+默认采用精简 Git Flow：
+
+| 分支 | 角色 | 规则 |
+| --- | --- | --- |
+| `main`（或 `master`） | 发布分支，只含已发布版本 | 只接受 `release/*`、`hotfix/*` 合入；每个合并点打 `vX.Y.Z` 标签；不直接提交、不强推、不删除 |
+| `develop` | 集成分支，下一版本的开发线 | 日常短期分支的起点和合并目标；应始终通过全部检查；不直接提交、不强推、不删除 |
+| 短期分支 | 一个任务一个分支 | 见下表；合并后删除 |
+
+| 前缀 | 从哪切出 | 合并到 | 用途 |
+| --- | --- | --- | --- |
+| `feature/` | `develop` | `develop` | 新功能、功能增强 |
+| `bugfix/` | `develop` | `develop` | 未发布的缺陷修复 |
+| `refactor/` | `develop` | `develop` | 不改变行为的重构 |
+| `docs/` | `develop` | `develop` | 只改文档 |
+| `test/` | `develop` | `develop` | 只改测试 |
+| `chore/` | `develop` | `develop` | 依赖、构建、脚本、配置 |
+| `release/vX.Y.Z` | `develop` | `main`，再回合 `develop` | 发版冻结：只改版本号、变更日志和阻断性修复 |
+| `hotfix/` | `main` | `main`，再回合 `develop` | 已发布版本的紧急修复，合并后发 patch 版本 |
+
+兼容规则：
+
+- 仓库没有 `develop` 时，退化为 GitHub Flow：默认分支（`git symbolic-ref refs/remotes/origin/HEAD`，通常是 `main`）同时充当集成分支，上表中的 `develop` 都换成默认分支，`release/` 不使用。不要自行创建 `develop`；需要引入时先征得用户同意。
+- 仓库有自己的分支约定（如 `dev`、`trunk`、`support/*`）时，沿用仓库约定。
+
+命名：`<前缀>/<简短描述>`，小写英文、数字、连字符，有 issue 时编号放最前（如 `bugfix/42-login-redirect`、`release/v1.3.0`）。不使用工具默认前缀（如 `codex/`）。一个分支只做一件事，尽量一周内合并。
+
+合并方式（由用户或维护者在 PR 上执行）：短期分支合入集成分支用 Squash merge，提交已按步骤拆好时可用 Rebase merge；`release/*`、`hotfix/*` 合入 `main` 及 `main` 回合 `develop` 用 Merge commit（`--no-ff`）。
+
+## 开始任务前
+
+- 先运行 `git status` 和 `git branch -a` 了解现状；工作区有不属于本任务的未提交改动时，不要覆盖、暂存或丢弃，先告知用户。
+- 按「分支模型」确定起点分支（通常是 `develop`，hotfix 为 `main`），从其最新状态切出任务分支：`git switch <起点> && git pull --ff-only && git switch -c <前缀>/<描述>`。
+- 不在 `main`、`master`、`develop` 上直接提交。
+
+## 提交
+
+- 只有用户明确要求时才提交；不确定时先问。
+- 格式使用 Conventional Commits：`<type>(<scope>): <描述>`。type 取 `feat`、`fix`、`perf`、`refactor`、`docs`、`test`、`style`、`build`、`ci`、`chore`、`revert`；scope 取改动的模块名，可省略。
+- 描述语言跟随仓库现有提交历史；无历史时跟随用户语言。标题不超过 72 字符，结尾不加句号，写做了什么而不是改了哪个文件。
+- 破坏性变更写成 `type(scope)!:`，并在脚注加 `BREAKING CHANGE: <迁移说明>`。
+- 一个提交只做一件事，且单独检出也能通过检查；格式化、重构、功能改动分开提交。
+- 逐个文件暂存，不用 `git add .` / `git add -A`；提交前检查 `git diff --staged`。
+- 发现可能含密钥或运行数据的文件（`.env`、私钥、凭据、数据库、日志、构建产物）时不要提交，告知用户。
+- 不使用 `--no-verify`；钩子失败就修复问题。钩子自动修改了文件时，重新暂存后创建新提交。
+- 不 amend 已推送的提交；需要修正时追加新提交。
+
+## 提交前验证
+
+- 从仓库配置中找出检查命令（`package.json` scripts、`pyproject.toml`、`Makefile`、`Cargo.toml`、CI 配置、项目文档），运行与改动相关的测试、类型检查、lint 和 `git diff --check`。
+- 检查失败时先修复；无法修复或无法运行时，如实说明失败内容或原因，不要声称已通过。
+
+## 推送与 PR
+
+- 推送自己的任务分支：`git push -u origin <分支>`；rebase 后只能用 `git push --force-with-lease` 推送自己的分支。
+- PR 目标按「分支模型」表中的“合并到”列选择（日常为集成分支，`release/*`、`hotfix/*` 为 `main`），标题同提交格式（不超过 70 字符）。描述包含：改动摘要、已验证（命令与结果）、未验证或已知限制。
+- 与他人共用的分支不要 rebase，用 merge 同步上游。
+
+## 必须先取得用户明确同意
+
+以下操作每次都要先说明影响并等待确认，一次同意只对当次操作有效：
+
+- 推送到或合并进 `main`、`master`、`develop`、`release/*`；合并任何 PR。
+- 强推任何非本人任务分支；`git reset --hard`、`git clean -f`、`git branch -D`、`git checkout -- .`、`git restore .`、`git stash drop`。
+- 删除远程分支、创建或推送标签、发版。
+- 改写已推送的历史（rebase、amend、filter-repo 等）。
+- 修改 git config、钩子、分支保护、CI 配置或密钥。
+
+撤销已合并的改动使用 `git revert <sha>`，不改写历史。
+
+## 版本与发布（仅在用户要求时）
+
+遵循 SemVer：`feat` 升 minor，`fix`/`perf` 升 patch，破坏性变更升 major（1.0 前升 minor）。流程：
+
+1. 从 `develop` 切出 `release/vX.Y.Z`，同步更新所有版本号所在文件和变更日志，完成验证。
+2. 向 `main` 提 PR；合并后在 `main` 上打附注标签 `git tag -a vX.Y.Z -m "vX.Y.Z"` 并推送。
+3. 向 `develop` 提 PR 回合 `main`。
+
+紧急修复从 `main` 切出 `hotfix/*`，升 patch 版本，其余同上。无 `develop` 的仓库直接在默认分支上打标签。上述合并、打标签、推送标签都需用户确认。
+
+## 完成后汇报
+
+说明：所在分支、创建的提交（短 SHA + 标题）、是否已推送、PR 链接（如有），以及验证结果和未完成项。
