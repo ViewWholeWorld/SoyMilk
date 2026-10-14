@@ -46,6 +46,7 @@ docker compose up -d --build
 | [Hermes Agent 接入](docs/hermes.md) | NAS 内部 MCP 连接、资讯技能、只读范围与接入核验 |
 | [隔离回归测试](docs/testing.md) | 本地模型替身、安全阀、临时数据及共享数据库断言 |
 | [网页模型与授权](docs/chatgpt-auth.md) | API Key、Codex 设备代码、模型强度和 worker 保护 |
+| [模型定价实施计划](docs/model-pricing-plan.md) | 待实现的模型价格、费用统计、参考价同步与分阶段验收 |
 | [时间轴与时区](docs/timeline-time.md) | 北京时间、收录与原文时间、截图核验 |
 | [兴趣信源与部署历史](docs/soymilk-feeds.md) | 五个领域的信源选择及各阶段记录 |
 | [连接复用实测](docs/codex-reuse-benchmark.md) | 有界实验结果与正式接入记录 |
