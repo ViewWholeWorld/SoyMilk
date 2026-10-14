@@ -43,6 +43,8 @@ docker compose up -d --build
 | 文档 | 内容 |
 | --- | --- |
 | [当前维护说明](docs/soymilk-operations.md) | NAS 入口、正式配置、预算、只读核验和验证现况 |
+| [上游审查台账](docs/upstream-review.md) | 已审核的完整 SHA、待移植清单、历史决定和下次检查流程 |
+| [上游修复计划（2026-10-14）](docs/upstream-fix-plan-20261014.md) | 待实施的地址／图片／提示词安全、归组恢复及评测校验 |
 | [Hermes Agent 接入](docs/hermes.md) | NAS 内部 MCP 连接、资讯技能、只读范围与接入核验 |
 | [隔离回归测试](docs/testing.md) | 本地模型替身、安全阀、临时数据及共享数据库断言 |
 | [网页模型与授权](docs/chatgpt-auth.md) | API Key、Codex 设备代码、模型强度和 worker 保护 |
