@@ -27,6 +27,7 @@
 - NAS 的额外 Compose 覆盖由 `deploy/nas/compose.sh` 统一加载。更新时保留 worker 复用与预算恢复覆盖，先核对运行服务，不能只运行根目录的 Compose 而丢失 NAS 设置。
 - Hermes 接入见 `docs/hermes.md`：保留私有 `compose.web-time.yml` 中 web 的固定内部网络连接及 Hermes 的现有 MCP；SoyMilk 仅白名单五个匿名只读工具，技能源在 `integrations/hermes/skills/soymilk-news/`，不授予后台、数据库或模型调用能力。
 - NAS 更新见 `docs/manual-deploy.md`：已取消 GitHub CI、自动发布镜像和自动部署，上游改动在独立分支手动移植并完成隔离验证。保留现有 `compose.release.yml` 作为最后的手动镜像覆盖，每次更新核对 setup/API/worker/web 的实际镜像与 setup 的 `--topics-only` 命令。迁移、基础 Compose 和受保护定制变更需要人工确认；失败只回退应用，不恢复旧数据库或删除付费回执。
+- 检查上游先读 `docs/upstream-review.md`：按完整 SHA 续接审核，同时复查未关闭待办；已审核不等于已移植或已部署。完整检查范围并记录逐项结论后才推进审核游标，实现与部署另记状态。
 - 改完至少跑：
   ```bash
   npm run typecheck
