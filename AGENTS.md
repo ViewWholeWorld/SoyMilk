@@ -55,7 +55,8 @@
 
 ## 提交与文档
 
-- 不同 feature 分开实现和提交；每项完成对应验证后先提交 Git，再开始下一项。该功能的文档同步更新，保留使用者已有改动。
+- 开始任务前阅读并遵守 [Git 规范](docs/git-guidelines.md)，包括分支、提交、验证、推送与发布规则；本文及仓库专用部署规范优先，Git 规范补充未覆盖的部分。
+- 不同 feature 分开实现和提交；仅在使用者明确要求提交时，每项完成对应验证后先提交 Git，再开始下一项。该功能的文档同步更新，保留使用者已有改动。
 - README 和 `docs/soymilk-operations.md` 说明当前使用方式；实测和部署历史明确标注日期与阶段。配置变化时同步更新相关文档和本文件，删除已经失效的操作建议。
 - 用户可见的功能、内容规则或功能下线同步记录到 `industry/changelog.json`，最新条目放在最前面并同步 `latestVersion`。该文件是网页更新日志的数据源，不能只更新开发文档；仅维护配置或测试调整记录在 `docs/changelog.md` 即可。
 - 应用 SemVer 同步根 `package.json`、锁文件根包、`PUBLIC_VERSIONS.v1OpenApi`、网站日志顶层及最新条目的 `version`，运行 `npm run check:version` 核验。导航使用的 `latestVersion` 仍为北京时间日期时间，历史公告不补造版本。
