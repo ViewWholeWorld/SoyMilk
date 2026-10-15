@@ -5,37 +5,16 @@ import type { AdminSelectBenchCases, AdminSelectBenchRuns, BeforeJson } from "@a
 import { randomBytes } from "node:crypto";
 import { sql } from "../db.ts";
 import { audit } from "../audit.ts";
-
-interface CaseIn {
-  caseId: string;
-  title: string;
-  stratum?: string | null;
-  gold: string;
-  decision: string | null;
-  score?: number | null;
-  relevance?: string | null;
-  category?: string | null;
-  reason?: string | null;
-  receiptId?: number | null;
-  error?: string | null;
-}
-
-interface ModelReport {
-  summary: Record<string, unknown>;
-  sweep?: unknown[];
-  cases?: CaseIn[];
-}
+import { parseSelectionReport } from "../editorial/selection-evidence.ts";
 
 /** Accepts { meta, models } or the older report shape keyed by model name. */
 export async function importSelectBenchRun(report: unknown, label: string, actor: string) {
-  const r = report as { meta?: Record<string, unknown>; models?: Record<string, ModelReport> } & Record<string, ModelReport>;
-  const models = (r.models ?? Object.fromEntries(Object.entries(r).filter(([k]) => k !== "meta"))) as Record<string, ModelReport>;
-  const names = Object.keys(models).filter((m) => models[m]?.summary);
-  if (!names.length) throw new Error("report has no model summaries");
-  const meta = r.meta ?? {};
+  const { meta, models } = parseSelectionReport(report);
+  const names = Object.keys(models);
   const id = `sb-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomBytes(3).toString("hex")}`;
   const summary = Object.fromEntries(names.map((m) => [m, { ...models[m]!.summary, sweep: models[m]!.sweep ?? [] }]));
-  const sampleSize = Number(meta.n ?? (models[names[0]!]!.summary as { n?: number }).n ?? 0);
+  const sampleSize = Number(meta.n ?? models[names[0]!]!.summary.n ?? 0);
+  if (!Number.isSafeInteger(sampleSize) || sampleSize < 0) throw new SyntaxError("report sample size must be a nonnegative integer");
   await sql.begin(async (tx) => {
     await tx`
       INSERT INTO selectbench_runs (id, label, split, sample_size, seed, prompt_version, models, summary, imported_by)
@@ -58,11 +37,11 @@ export async function importSelectBenchRun(report: unknown, label: string, actor
           receipt_id: c.receiptId ?? null,
           error: c.error ?? null,
         }));
-        await tx`INSERT INTO selectbench_results ${tx(rows)} ON CONFLICT DO NOTHING`;
+        await tx`INSERT INTO selectbench_results ${tx(rows)}`;
       }
     }
+    await audit(actor, "selectbench.import", `selectbench:${id}`, null, null, { label, models: names, sampleSize }, { db: tx });
   });
-  await audit(actor, "selectbench.import", `selectbench:${id}`, null, null, { label, models: names, sampleSize });
   return { id };
 }
 
@@ -78,6 +57,9 @@ export async function listSelectBenchRuns(): Promise<BeforeJson<AdminSelectBench
 export async function selectBenchRun(id: string, f: { model?: string; outcome?: string; stratum?: string; disagree?: boolean }): Promise<BeforeJson<AdminSelectBenchCases> | null> {
   const [run] = await sql<BeforeJson<AdminSelectBenchCases["run"]>[]>`SELECT * FROM selectbench_runs WHERE id = ${id}`;
   if (!run) return null;
+  const [conflict] = await sql`SELECT case_id FROM selectbench_results WHERE run_id=${id}
+    GROUP BY case_id HAVING count(DISTINCT gold)>1 LIMIT 1`;
+  if (conflict) throw new SyntaxError(`报告案例 ${conflict.case_id} 的人工答案跨模型冲突，请核对原始报告`);
   const outcome = f.outcome ?? null;
   // One row per case with every model's decision, so disagreements are visible side by side.
   const rows = await sql<AdminSelectBenchCases["rows"]>`
