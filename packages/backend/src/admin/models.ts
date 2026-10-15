@@ -2,7 +2,8 @@
 // the prompt versions in use, quality / latency / cost of the last days per model, the switch history
 // and the SelectBench runs that compare models on the same batch. A switch is audited and applies to
 // new work only.
-import type { AdminModels, AdminTokenSummary, BeforeJson, ModelEstimateStatus } from "@aihot/contracts/admin";
+import type { AdminModels, AdminTokenSummary, BeforeJson, ModelBillingKind, ModelEstimateStatus } from "@aihot/contracts/admin";
+import { ACTUAL_CURRENCY, MODEL_COST_FIELDS } from "./model-costs.ts";
 import { sql } from "../db.ts";
 import { CAPABILITIES, invalidateModelCache, modelSources, type Capability, type CapabilityKey } from "../editorial/models.ts";
 import { registeredModels } from "../providers/llm.ts";
@@ -26,20 +27,34 @@ interface UsageRow {
   cache_reported_calls: number;
   tokens_reasoning: string | null;
   actual_cost: string | null;
-  currency: string | null;
+  actual_currency: string | null;
   provider_key: string | null;
   requested_model: string | null;
-  billing_kind: string | null;
-  estimated_complete: string | null;
-  estimated_approximate: string | null;
-  estimated_partial: string | null;
+  billing_kind: ModelBillingKind | null;
+  estimated_total: string | null;
+  complete_estimate: string | null;
+  approximate_estimate: string | null;
+  partial_estimate: string | null;
   partial_calls: number;
   unknown_calls: number;
   estimated_currency: string | null;
 }
 
+// Legacy usage was not normalized; malformed values must not make the admin page fail.
+function usageTokens(key: string, legacyExpression: string) {
+  const legacy = sql.unsafe(legacyExpression);
+  return sql`CASE WHEN a.normalized_usage IS NOT NULL THEN
+    CASE WHEN a.normalized_usage->>'status' = 'invalid' THEN NULL ELSE (a.normalized_usage->>${key})::bigint END
+    ELSE CASE WHEN (${legacy}) ~ '^[0-9]{1,16}$' THEN (${legacy})::bigint ELSE NULL END END`;
+}
+
 export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>> {
+  days = Number.isFinite(days) ? Math.min(90, Math.max(1, days)) : 7;
   const MODELS = await registeredModels();
+  const input = usageTokens("inputTotal", "a.usage->>'prompt_tokens'");
+  const output = usageTokens("outputTotal", "a.usage->>'completion_tokens'");
+  const cachedInput = usageTokens("cacheRead", "coalesce(a.usage->'prompt_tokens_details'->>'cached_tokens', a.usage->'input_tokens_details'->>'cached_tokens', a.usage->>'cached_input_tokens', a.usage->>'prompt_cache_hit_tokens')");
+  const reasoning = usageTokens("reasoningOutput", "coalesce(a.usage->'completion_tokens_details'->>'reasoning_tokens', a.usage->'output_tokens_details'->>'reasoning_tokens', a.usage->>'reasoning_output_tokens')");
   const since = new Date(Date.now() - days * 86400_000);
   const [sources, usage, history, benches, bootstrap] = await Promise.all([
     modelSources(),
@@ -50,24 +65,16 @@ export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>>
              count(*) FILTER (WHERE a.status = 'unknown')::int AS unknown,
              percentile_disc(0.5) WITHIN GROUP (ORDER BY a.latency_ms) AS p50,
              percentile_disc(0.95) WITHIN GROUP (ORDER BY a.latency_ms) AS p95,
-             sum((a.usage->>'prompt_tokens')::bigint) AS tokens_in, sum((a.usage->>'completion_tokens')::bigint) AS tokens_out,
+             sum(${input}) AS tokens_in, sum(${output}) AS tokens_out,
              sum(c.cached) AS tokens_cached,
-             sum((a.usage->>'prompt_tokens')::bigint) FILTER(WHERE c.cached IS NOT NULL) AS tokens_cache_measured,
+             sum(${input}) FILTER(WHERE c.cached IS NOT NULL) AS tokens_cache_measured,
              count(*) FILTER(WHERE c.cached IS NOT NULL)::int AS cache_reported_calls,
-             sum(coalesce(a.usage->'completion_tokens_details'->>'reasoning_tokens', a.usage->'output_tokens_details'->>'reasoning_tokens', a.usage->>'reasoning_output_tokens')::bigint) AS tokens_reasoning,
-             sum(a.cost) FILTER (WHERE a.cost_basis = 'actual')::text AS actual_cost, a.currency AS currency,
-             a.provider_key, a.requested_model, a.billing_kind,
-             sum(a.estimated_cost) FILTER (WHERE a.estimate_status = 'complete')::text AS estimated_complete,
-             sum(a.estimated_cost) FILTER (WHERE a.estimate_status = 'approximate')::text AS estimated_approximate,
-             sum(a.estimated_cost) FILTER (WHERE a.estimate_status = 'partial')::text AS estimated_partial,
-             count(*) FILTER (WHERE a.estimate_status = 'partial')::int AS partial_calls,
-             count(*) FILTER (WHERE a.estimate_status IN ('unpriced','missing_usage','invalid_usage') OR a.estimate_status IS NULL)::int AS unknown_calls,
-             max(a.estimated_currency) AS estimated_currency
+             sum(${reasoning}) AS tokens_reasoning,
+             ${MODEL_COST_FIELDS},a.provider_key,a.requested_model,a.billing_kind
       FROM receipt_attempts a JOIN receipts r ON r.id = a.receipt_id
-      CROSS JOIN LATERAL (SELECT coalesce(a.usage->'prompt_tokens_details'->>'cached_tokens', a.usage->'input_tokens_details'->>'cached_tokens',
-        a.usage->>'cached_input_tokens', a.usage->>'prompt_cache_hit_tokens')::bigint AS cached) c
+      CROSS JOIN LATERAL (SELECT ${cachedInput} AS cached) c
       WHERE a.started_at >= ${since} AND a.origin = 'live' AND a.model IS NOT NULL
-      GROUP BY 1, 2, 3, a.provider_key, a.requested_model, a.billing_kind, a.currency, a.estimated_currency ORDER BY 1, 4 DESC`,
+      GROUP BY 1, 2, 3, a.provider_key, a.requested_model, a.billing_kind, ${ACTUAL_CURRENCY}, a.estimated_currency ORDER BY 1, 4 DESC`,
     sql<BeforeJson<AdminModels["history"][number]>[]>`
       SELECT created_at AS at, actor, subject, reason, before, after FROM audit_log WHERE action = 'models.switch' ORDER BY created_at DESC LIMIT 30`,
     sql<{ id: string; label: string; sample_size: number; prompt_version: string | null; models: string[]; summary: unknown; created_at: Date }[]>`
@@ -104,17 +111,18 @@ export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>>
         cacheHitRate: Number(u.tokens_cache_measured ?? 0) > 0 ? Number(u.tokens_cached)/Number(u.tokens_cache_measured) : null,
         reasoningTokensOut: u.tokens_reasoning === null ? null : Number(u.tokens_reasoning),
         actualCost: u.actual_cost,
-        currency: u.currency,
-        estimate: u.estimated_complete === null && u.estimated_approximate === null ? null : { amount: u.estimated_complete ?? u.estimated_approximate!, currency: u.estimated_currency ?? "USD" },
-        estimateStatus: (u.estimated_approximate !== null ? "approximate" : u.estimated_complete !== null ? "complete" : u.partial_calls > 0 ? "partial" : u.unknown_calls > 0 ? "unpriced" : null) as ModelEstimateStatus | null,
-        estimateComplete: u.estimated_complete,
-        estimateApproximate: u.estimated_approximate,
-        estimatePartial: u.estimated_partial,
+        currency: u.actual_currency,
+        estimate: u.complete_estimate === null && u.approximate_estimate === null ? null : { amount: u.estimated_total!, currency: u.estimated_currency ?? "USD" },
+        estimateStatus: (u.approximate_estimate !== null ? "approximate" : u.complete_estimate !== null ? "complete" : u.partial_calls > 0 ? "partial" : u.unknown_calls > 0 ? "unpriced" : null) as ModelEstimateStatus | null,
+        estimateComplete: u.complete_estimate,
+        estimateApproximate: u.approximate_estimate,
+        estimatePartial: u.partial_estimate,
         estimatedCurrency: u.estimated_currency,
         partialCalls: u.partial_calls,
         unknownCalls: u.unknown_calls,
         providerKey: u.provider_key,
         requestedModel: u.requested_model,
+        billingKind: u.billing_kind,
       })),
   }));
   const choices = Object.values(MODELS).map((m) => ({ key: m.key, service: m.service, vision: !!m.vision }));

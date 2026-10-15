@@ -1,0 +1,143 @@
+{
+  "openai": {
+    "name": "OpenAI",
+    "env": [
+      "OPENAI_API_KEY"
+    ],
+    "npm": "@ai-sdk/openai",
+    "doc": "https://platform.openai.com/docs/models",
+    "id": "openai",
+    "models": {
+      "gpt-4.1": {
+        "id": "gpt-4.1",
+        "name": "GPT-4.1",
+        "cost": {
+          "input": 2.0,
+          "output": 8.0,
+          "cache_read": 0.5
+        },
+        "limit": {
+          "context": 1047576,
+          "output": 32768
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        }
+      },
+      "gpt-6-luna": {
+        "id": "gpt-6-luna",
+        "name": "GPT-6 Luna",
+        "cost": {
+          "input": 0.1,
+          "output": 0.5,
+          "cache_read": 0.01,
+          "cache_write": 0.125,
+          "tiers": [
+            {
+              "tier": {
+                "type": "context",
+                "size": 272000
+              },
+              "input": 0.2,
+              "output": 0.75,
+              "cache_read": 0.02,
+              "cache_write": 0.25
+            }
+          ]
+        },
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        }
+      }
+    }
+  },
+  "deepseek": {
+    "name": "DeepSeek",
+    "env": [
+      "DEEPSEEK_API_KEY"
+    ],
+    "npm": "@ai-sdk/openai-compatible",
+    "doc": "https://api-docs.deepseek.com/quick_start/pricing",
+    "api": "https://api.deepseek.com",
+    "id": "deepseek",
+    "models": {
+      "deepseek-flash": {
+        "id": "deepseek-flash",
+        "name": "DeepSeek V4.1 Flash",
+        "cost": {
+          "input": 0.15,
+          "output": 0.6,
+          "reasoning": 0.6,
+          "cache_read": 0.003
+        },
+        "limit": {
+          "output": 393216
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        }
+      }
+    }
+  },
+  "xiaomi": {
+    "name": "Xiaomi",
+    "env": [
+      "XIAOMI_API_KEY"
+    ],
+    "npm": "@ai-sdk/openai-compatible",
+    "api": "https://api.xiaomimimo.com/v1",
+    "doc": "https://platform.xiaomimimo.com/#/docs",
+    "id": "xiaomi",
+    "models": {
+      "mimo-v2.6-flash": {
+        "id": "mimo-v2.6-flash",
+        "name": "MiMo-V2.6-Flash",
+        "cost": {
+          "input": 0.14,
+          "output": 0.28,
+          "cache_read": 0.0028
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 131072
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "audio",
+            "video"
+          ],
+          "output": [
+            "text"
+          ]
+        }
+      }
+    }
+  }
+}

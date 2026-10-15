@@ -354,6 +354,7 @@ export interface AdminModelUsage {
   unknownCalls: number;
   providerKey: string | null;
   requestedModel: string | null;
+  billingKind: ModelBillingKind | null;
 }
 
 export interface AdminBootstrapBudget {
@@ -392,19 +393,59 @@ export interface AdminModelPricingRule {
   effective: { currency: "USD" | "CNY"; inputPerMtok: string | null; outputPerMtok: string | null; cacheReadPerMtok: string | null; cacheWritePerMtok: string | null;
     source: "custom" | "models.dev" | "unpriced"; supported: boolean; unsupportedReason: string | null; stale: boolean; sourceUpdatedAt: Timestamp | null; priceHash: string | null };
 }
-export interface AdminModelPricing { rules: AdminModelPricingRule[]; calculatorVersion: "v1"; }
+export interface AdminModelPriceSnapshot {
+  providerKey: string; providerLabel: string | null; requestedModel: string; billingKind: ModelBillingKind; configured: boolean;
+  currency: "USD" | "CNY"; inputPerMtok: string | null; outputPerMtok: string | null; cacheReadPerMtok: string | null; cacheWritePerMtok: string | null;
+  mode: ModelPricingMode | null; revision: number | null; referenceProviderId: string | null; referenceModelId: string | null;
+  source: "custom" | "models.dev" | "legacy" | "unpriced"; sourceUpdatedAt: Timestamp | null; priceHash: string | null;
+  stale: boolean; supported: boolean; calculatorVersion: "v1";
+}
+export interface AdminModelPricingTarget {
+  providerKey: string; providerLabel: string | null; requestedModel: string; billingKind: ModelBillingKind;
+  officialProviderId?: string | null; deleted: boolean; historical: boolean; effective: AdminModelPriceSnapshot;
+}
+export interface AdminModelPricing { rules: AdminModelPricingRule[]; targets: AdminModelPricingTarget[]; calculatorVersion: "v1"; }
 export interface AdminModelCosts {
-  days: number;
+  days: number; from: Timestamp; to: Timestamp; page: number; attemptPage: number; limit: number; total: number; attemptTotal: number;
+  totals: Array<{ billing_kind: ModelBillingKind | null; currency: string | null; calls: number; actual_cost: string | null; complete_estimate: string | null; approximate_estimate: string | null; partial_estimate: string | null; combined_cost: string | null }>;
+  attempts: Array<{ id: number; receipt_id: number; started_at: Timestamp; provider_key: string | null; provider_label: string | null; requested_model: string | null; billing_kind: ModelBillingKind | null;
+    service: string; purpose: string; status: string; estimate_status: ModelEstimateStatus; cache_status: string; estimated_cost: string | null; estimated_currency: string | null; actual_cost: string | null; actual_currency: string | null; reasons: string[] | null }>;
   rows: Array<{ provider_key: string | null; provider_label: string | null; requested_model: string | null; billing_kind: ModelBillingKind | null; purpose: string; calls: number;
     actual_cost: string | null; actual_currency: string | null; complete_estimate: string | null; approximate_estimate: string | null; partial_estimate: string | null;
     estimated_currency: string | null; partial_calls: number; unknown_calls: number }>;
-  coverage: { live_attempts: number; priced_attempts: number; approximate_attempts: number; partial_attempts: number; unknown_attempts: number };
+  coverage: { live_attempts: number; priced_attempts: number; approximate_attempts: number; partial_attempts: number; unknown_attempts: number; actual_attempts: number; cache_unknown_attempts: number; unattributed_attempts: number };
 }
 export interface AdminModelPriceCatalog {
   page: number; limit: number; total: number;
   rows: Array<{ providerId: string; modelId: string; name: string; currency: "USD" | "CNY"; inputPerMtok: string | null; outputPerMtok: string | null;
     cacheReadPerMtok: string | null; cacheWritePerMtok: string | null; supported: boolean; unsupportedReason: string | null; active: boolean; retrievedAt: Timestamp; priceHash: string }>;
   sync: { etag: string | null; last_modified: string | null; last_attempt_at: Timestamp | null; last_success_at: Timestamp | null; last_error: string | null; entry_count: number; catalog_revision: string | null } | null;
+}
+
+export interface AdminModelBackfillMapping {
+  billingKind: ModelBillingKind;
+  service: string; model: string; from: Timestamp; to: Timestamp; providerKey: string; requestedModel: string; evidence: string;
+}
+export interface AdminModelBackfillRequest {
+  filters: { from: Timestamp; to: Timestamp; includeImported: boolean; missingOnly: boolean; service?: string; model?: string };
+  mappings: AdminModelBackfillMapping[]; maxAttemptId: number; previewHash: string;
+}
+export interface AdminModelBackfillSummary { billingKind: ModelBillingKind | null; currency: string | null; calls: number; complete: string | null; approximate: string | null; partial: string | null; unknown: number; }
+export interface AdminModelBackfillPreview {
+  request: AdminModelBackfillRequest; total: number; sampled: number; truncated: boolean; summary: AdminModelBackfillSummary[];
+  prices: AdminModelPriceSnapshot[]; calculatorVersion: "v1"; notice: string;
+  rows: Array<{ attemptId: number; service: string; model: string | null; startedAt: Timestamp; actualCost: string | null; actualCurrency: string | null;
+    snapshot: AdminModelPriceSnapshot | null; evidence: Record<string, unknown>; result: { amount: string | null; currency: string | null; status: ModelEstimateStatus; detail: { reasons: string[] } } }>;
+}
+export interface AdminModelBackfillRun {
+  id: string; status: "ready" | "completed"; total: number; processed: number; created_by: string; created_at: Timestamp; updated_at: Timestamp; completed_at: Timestamp | null;
+}
+export interface AdminModelBackfills { enabled: boolean; runs: AdminModelBackfillRun[]; }
+export interface AdminModelBackfill {
+  run: AdminModelBackfillRun; page: number; limit: number; summary: AdminModelBackfillSummary[];
+  rows: Array<{ attempt_id: number; provider_key: string | null; requested_model: string | null; billing_kind: ModelBillingKind | null; amount: string | null; currency: string | null;
+    estimate_status: ModelEstimateStatus | null; processed_at: Timestamp | null; metadata: { actualCost?: string | null; actualCurrency?: string | null; service?: string; model?: string } | null;
+    pricing_snapshot: AdminModelPriceSnapshot | null; mapping_evidence: Record<string, unknown> | null; detail: { reasons: string[] } | null }>;
 }
 
 export interface AdminSelectBenchRun {

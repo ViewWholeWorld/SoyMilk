@@ -64,6 +64,16 @@ function formatAmount(value: bigint): string {
   return fraction ? `${whole}.${fraction}` : whole.toString();
 }
 
+export function sumModelAmounts(values: Array<string | null>): string | null {
+  const known = values.filter((value): value is string => value !== null);
+  if (!known.length) return null;
+  return formatAmount(known.reduce((total, value) => {
+    if (!/^\d+(?:\.\d{1,12})?$/.test(value)) throw new Error("invalid decimal amount");
+    const [whole, fraction = ""] = value.split(".");
+    return total + BigInt(whole!) * AMOUNT_SCALE + BigInt(fraction.padEnd(12, "0"));
+  }, 0n));
+}
+
 function component(tokens: number, price: string): bigint {
   return (BigInt(tokens) * scaled(price) * AMOUNT_SCALE + SCALE * TOKEN_DIVISOR / 2n) / (SCALE * TOKEN_DIVISOR);
 }
@@ -80,6 +90,7 @@ export function emptyPricingSnapshot(providerKey: string, requestedModel: string
 
 export function estimateModelCost(snapshot: PricingSnapshot | null, usage: Record<string, unknown> | null | undefined): EstimateResult {
   const normalized = normalizeModelUsage(usage);
+  if (normalized.status === "unknown") return { amount: null, currency: snapshot?.currency ?? null, status: "unpriced", normalized, detail: { reasons: [normalized.reason!], components: {} } };
   if (normalized.status === "invalid") return { amount: null, currency: snapshot?.currency ?? null, status: "invalid_usage", normalized, detail: { reasons: [normalized.reason!], components: {} } };
   if (snapshot && ![snapshot.inputPerMtok, snapshot.outputPerMtok, snapshot.cacheReadPerMtok, snapshot.cacheWritePerMtok].every(validSnapshotPrice)) {
     return { amount: null, currency: snapshot.currency, status: "unpriced", normalized, detail: { reasons: ["pricing snapshot contains an invalid price"], components: {} } };
@@ -116,7 +127,7 @@ export function estimateModelCost(snapshot: PricingSnapshot | null, usage: Recor
   const missingRequired = (ordinary !== null && ordinary > 0 && snapshot.inputPerMtok === null) || (output !== null && output > 0 && snapshot.outputPerMtok === null)
     || (read > 0 && snapshot.cacheReadPerMtok === null && snapshot.inputPerMtok === null)
     || (write > 0 && snapshot.cacheWritePerMtok === null && snapshot.inputPerMtok === null);
-  if (missingRequired) return { amount: null, currency: snapshot.currency, status: "partial", normalized, detail: { reasons, components } };
+  if (missingRequired) return { amount: Object.keys(components).length ? formatAmount(amount) : null, currency: snapshot.currency, status: "partial", normalized, detail: { reasons, components } };
   if (input === null || output === null) reasons.push(normalized.reason ?? "input or output token count is missing");
   if (normalized.cacheStatus === "partial") reasons.push("cache details are incomplete; unreported cache types use ordinary input price");
   if (snapshot.stale) reasons.push("reference price is stale; using the last successful value");
@@ -126,7 +137,7 @@ export function estimateModelCost(snapshot: PricingSnapshot | null, usage: Recor
   return { amount: formatAmount(amount), currency: snapshot.currency, status, normalized, detail: { reasons, components } };
 }
 
-export interface BillingContext { providerKey: string; providerLabel: string | null; billingKind: BillingKind; requestedModel: string; }
+export interface BillingContext { providerKey: string; providerLabel: string | null; billingKind: BillingKind; requestedModel: string; officialProviderId?: string | null; }
 
 interface PricingRow {
   provider_key: string; requested_model: string; billing_kind: BillingKind; mode: PricingMode; currency: "USD" | "CNY";
@@ -146,7 +157,17 @@ export async function pricingSnapshotFor(db: Db, context: BillingContext): Promi
     FROM model_pricing p LEFT JOIN model_price_catalog c ON c.source='models.dev'
       AND c.source_provider_id=p.reference_provider_id AND c.source_model_id=p.reference_model_id
     WHERE p.provider_key=${context.providerKey} AND p.requested_model=${context.requestedModel}`;
-  if (!row) return emptyPricingSnapshot(context.providerKey, context.requestedModel, context.billingKind, context.providerLabel);
+  if (!row) {
+    const empty = emptyPricingSnapshot(context.providerKey, context.requestedModel, context.billingKind, context.providerLabel);
+    if (!context.officialProviderId) return empty;
+    const [reference] = await db<{ currency: "USD" | "CNY"; input: string; output: string; read: string | null; write: string | null; retrieved_at: Date; price_hash: string; supported: boolean; active: boolean }[]>`
+      SELECT currency,input_per_mtok::text AS input,output_per_mtok::text AS output,cache_read_per_mtok::text AS read,cache_write_per_mtok::text AS write,retrieved_at,price_hash,supported,active
+      FROM model_price_catalog WHERE source='models.dev' AND source_provider_id=${context.officialProviderId} AND source_model_id=${context.requestedModel}`;
+    if (!reference?.supported) return empty;
+    return { ...empty, configured: true, supported: true, mode: "reference", referenceProviderId: context.officialProviderId, referenceModelId: context.requestedModel,
+      source: "models.dev", currency: reference.currency, inputPerMtok: reference.input, outputPerMtok: reference.output, cacheReadPerMtok: reference.read, cacheWritePerMtok: reference.write,
+      priceHash: reference.price_hash, sourceUpdatedAt: reference.retrieved_at.toISOString(), stale: !reference.active || Date.now() - reference.retrieved_at.getTime() > 7 * 86400_000 };
+  }
   let prices = { input: row.input_per_mtok, output: row.output_per_mtok, read: row.cache_read_per_mtok, write: row.cache_write_per_mtok };
   let source: PricingSnapshot["source"] = row.mode === "custom" ? "custom" : "models.dev";
   let currency = row.currency;
@@ -168,7 +189,7 @@ export async function pricingSnapshotFor(db: Db, context: BillingContext): Promi
     }
     if (!supported) source = "unpriced";
   }
-  return { configured: source !== "unpriced", providerKey: context.providerKey, providerLabel: context.providerLabel, billingKind: row.billing_kind,
+  return { configured: source !== "unpriced", providerKey: context.providerKey, providerLabel: context.providerLabel, billingKind: context.billingKind,
     requestedModel: context.requestedModel, mode: row.mode, revision: row.revision, referenceProviderId: row.reference_provider_id, referenceModelId: row.reference_model_id,
     currency, inputPerMtok: prices.input, outputPerMtok: prices.output, cacheReadPerMtok: prices.read, cacheWritePerMtok: prices.write,
     source, sourceUpdatedAt, priceHash, stale, supported, calculatorVersion: "v1" };

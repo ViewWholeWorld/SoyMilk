@@ -96,8 +96,10 @@ test("review receipt guards preserve article, revision, purpose and service boun
   assert.deepEqual(next.response, { pair: "new" });
 });
 
-test("stale recovery waiting on a response transaction preserves its committed answer and attempt", async () => {
-  const request = { service: "invariant-recovery-race", purpose: "invariant_test", identity: { race: tag() } };
+for (const withPricing of [false, true]) {
+test(`stale recovery waiting on a response transaction preserves its committed answer and attempt${withPricing ? " with pricing" : ""}`, async () => {
+  const request = { service: "invariant-recovery-race", purpose: "invariant_test", identity: { race: tag() },
+    billingContext: withPricing ? { providerKey: "environment:default", requestedModel: "fixture-model", providerLabel: "Fixture", billingKind: "api" as const } : undefined };
   const asked = gate();
   const answer = gate();
   let sent = 0;
@@ -151,3 +153,4 @@ test("stale recovery waiting on a response transaction preserves its committed a
   const [attempt] = await sql<{ status: string }[]>`SELECT status FROM receipt_attempts WHERE receipt_id = ${row!.id}`;
   assert.equal(attempt!.status, "received");
 });
+}

@@ -35,6 +35,9 @@ function nestedInteger(value: unknown, ...keys: string[]): number | null | "inva
 /** Normalize the OpenAI-compatible and Codex usage fields without inferring omitted cache data. */
 export function normalizeModelUsage(usage: Record<string, unknown> | null | undefined): NormalizedModelUsage {
   if (!usage) return { inputTotal: null, outputTotal: null, cacheRead: null, cacheWrite: null, reasoningOutput: null, cacheStatus: "unknown", status: "missing", reason: "provider did not return usage" };
+  if (usage.cache_read_input_tokens !== undefined || usage.cache_creation_input_tokens !== undefined) {
+    return { inputTotal: null, outputTotal: null, cacheRead: null, cacheWrite: null, reasoningOutput: null, cacheStatus: "unknown", status: "unknown", reason: "additive cache usage requires a protocol-specific adapter" };
+  }
   const input = integer(usage.prompt_tokens ?? usage.input_tokens);
   const output = integer(usage.completion_tokens ?? usage.output_tokens);
   const cacheRead = firstPresent(nestedInteger(usage, "prompt_tokens_details", "cached_tokens"), nestedInteger(usage, "input_tokens_details", "cached_tokens"), integer(usage.cached_input_tokens ?? usage.prompt_cache_hit_tokens));
@@ -47,6 +50,10 @@ export function normalizeModelUsage(usage: Record<string, unknown> | null | unde
   const outputTotal = output as number | null;
   const read = cacheRead as number | null;
   const write = cacheWrite as number | null;
+  const reasoning = reasoningOutput as number | null;
+  if (outputTotal !== null && reasoning !== null && reasoning > outputTotal) {
+    return { inputTotal, outputTotal, cacheRead: read, cacheWrite: write, reasoningOutput: reasoning, cacheStatus: "unknown", status: "invalid", reason: "reasoning token details exceed total output tokens" };
+  }
   if (inputTotal !== null && (read ?? 0) + (write ?? 0) > inputTotal) {
     return { inputTotal, outputTotal, cacheRead: read, cacheWrite: write, reasoningOutput: reasoningOutput as number | null, cacheStatus: "partial", status: "invalid", reason: "cache token details exceed total input tokens" };
   }

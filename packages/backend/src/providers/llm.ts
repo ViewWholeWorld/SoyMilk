@@ -14,7 +14,7 @@ import { requestCodex, type CodexServer } from "./codex.ts";
 import { withCodexServer } from "./codex-session.ts";
 import { guardedFetch, type GuardedResponse } from "../lib/http-fetch.ts";
 import { shutdownSignal } from "../lib/shutdown.ts";
-import type { BillingContext } from "./model-pricing.ts";
+import { modelBillingContext } from "./model-billing.ts";
 
 export interface ModelSpec {
   key: string;
@@ -239,12 +239,7 @@ async function executeChatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>, sp
     ...(spec.jsonMode && opts.json !== false ? { response_format: { type: "json_object" } } : {}),
     ...(spec.extra ?? {}),
   };
-  const billingContext: BillingContext = {
-    providerKey: codex ? "subscription:codex" : access ? "subscription:chatgpt" : spec.connection ? `connection:${spec.connection.id ?? spec.key.replace(/^connection:/, "")}` : spec.key === "default" ? "environment:default" : `preset:${spec.service}`,
-    providerLabel: spec.connection?.name ?? spec.service,
-    billingKind: codex || access ? "subscription_equivalent" : "api",
-    requestedModel: spec.model,
-  };
+  const billingContext = modelBillingContext(spec, codex ? "codex" : access ? "chatgpt" : "api-key", baseUrl);
 
   const receipt = await paidRequest(
     {
