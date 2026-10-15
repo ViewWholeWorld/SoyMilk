@@ -21,7 +21,8 @@ import { modelFor } from "../editorial/models.ts";
 import { sql, type Db, type Tx } from "../db.ts";
 import { newShortId, newUuid } from "../lib/ids.ts";
 import { chatJson } from "../providers/llm.ts";
-import { completeReceipt } from "../providers/receipts.ts";
+import { completeReceipt, ReceiptUnknownError, requestWait } from "../providers/receipts.ts";
+import { shutdownSignal } from "../lib/shutdown.ts";
 import { embeddingsAvailable, cosine } from "../providers/embeddings.ts";
 import { isHistorical, STALE_ON_DISCOVERY_MS } from "../content/materials.ts";
 import { enqueue, QUEUES } from "../jobs/queue.ts";
@@ -341,7 +342,7 @@ async function decide(articleId: string, opts: GroupOptions): Promise<GroupResul
       }
     } catch (error) {
       // A failed identity call must not block publication: the report stays standalone for now.
-      await markGrouped(articleId);
+      if (!requestWait(error) && !(error instanceof ReceiptUnknownError) && !shutdownSignal.signal.aborted) await markGrouped(articleId);
       await publishArticle(articleId);
       throw error;
     }
