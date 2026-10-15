@@ -13,26 +13,27 @@ export function sourceHealthList(rows: HealthRow[], describe: (row: HealthRow) =
 }
 export async function sourceHealth(now = Date.now()) {
   const since = new Date(now - 7 * 86400_000);
-  const until = new Date(now);
+  // JavaScript snapshots have millisecond precision; include the full final millisecond in PostgreSQL.
+  const until = new Date(now + 1);
   const rows = await sql<HealthRow[]>`
     WITH runs AS (
       SELECT source_id,
         count(*) FILTER (WHERE status IN ('ok','failed') AND NOT ${WAITING_FETCH_RUN})::int AS runs,
         count(*) FILTER (WHERE status='failed' AND NOT ${WAITING_FETCH_RUN})::int AS failed
-      FROM fetch_runs WHERE started_at >= ${since} AND started_at <= ${until} GROUP BY source_id
+      FROM fetch_runs WHERE started_at >= ${since} AND started_at < ${until} GROUP BY source_id
     ), history AS (
       SELECT source_id,max(id) FILTER (WHERE status='ok' OR (status='skipped' AND detail->'waiting' IS NOT NULL)) AS last_checked FROM fetch_runs
-      WHERE started_at <= ${until} GROUP BY source_id
+      WHERE started_at < ${until} GROUP BY source_id
     ), corrections AS (
       SELECT h.source_id,count(*) FILTER (WHERE status='failed' AND ${MISCOUNTED_FETCH_WAIT})::int AS waited
-      FROM history h LEFT JOIN fetch_runs f ON f.source_id=h.source_id AND f.id > coalesce(h.last_checked,0) AND f.started_at <= ${until}
+      FROM history h LEFT JOIN fetch_runs f ON f.source_id=h.source_id AND f.id > coalesce(h.last_checked,0) AND f.started_at < ${until}
       GROUP BY h.source_id
     ), seen AS (
-      SELECT article_id,source_id FROM article_discoveries WHERE discovered_at >= ${since} AND discovered_at <= ${until}
-      UNION SELECT id,source_id FROM articles WHERE discovered_at >= ${since} AND discovered_at <= ${until}
+      SELECT article_id,source_id FROM article_discoveries WHERE discovered_at >= ${since} AND discovered_at < ${until}
+      UNION SELECT id,source_id FROM articles WHERE discovered_at >= ${since} AND discovered_at < ${until}
     ), discoveries AS (SELECT source_id,count(*)::int AS n FROM seen GROUP BY source_id),
-    items AS (SELECT source_id,count(*) FILTER (WHERE published_at IS NULL)::int AS undated FROM articles WHERE discovered_at >= ${since} AND discovered_at <= ${until} GROUP BY source_id),
-    revisions AS (SELECT article_id FROM article_revisions WHERE created_at >= ${since} AND created_at <= ${until} AND revision > 1 GROUP BY article_id HAVING count(*) >= 5),
+    items AS (SELECT source_id,count(*) FILTER (WHERE published_at IS NULL)::int AS undated FROM articles WHERE discovered_at >= ${since} AND discovered_at < ${until} GROUP BY source_id),
+    revisions AS (SELECT article_id FROM article_revisions WHERE created_at >= ${since} AND created_at < ${until} AND revision > 1 GROUP BY article_id HAVING count(*) >= 5),
     repeated AS (SELECT a.source_id,count(*)::int AS n FROM revisions r JOIN articles a ON a.id=r.article_id GROUP BY a.source_id)
     SELECT s.id,s.name,s.participation_mode,s.created_at,
       CASE WHEN coalesce(c.waited,0)=0 THEN s.health WHEN s.fail_count-c.waited >= 5 THEN 'failing' WHEN s.fail_count-c.waited > 0 THEN 'degraded' ELSE 'ok' END AS health,
@@ -45,7 +46,7 @@ export async function sourceHealth(now = Date.now()) {
     WHERE s.enabled AND s.kind NOT IN ('external','mp_account') AND s.participation_mode IN ('editorial','hot_signal') ORDER BY s.name,s.id`;
   // 旧记录未保存逐条错误时保留汇总；有详情时只计真实失败，避免把预算等待当故障。
   const details = await sql<{ source_id: string; detail: { detailFailures?: number; detailErrors?: Array<{ error?: string }> } | null }[]>`
-    SELECT source_id,detail FROM fetch_runs WHERE started_at >= ${since} AND started_at <= ${until} AND detail IS NOT NULL`;
+    SELECT source_id,detail FROM fetch_runs WHERE started_at >= ${since} AND started_at < ${until} AND detail IS NOT NULL`;
   const byId = new Map(rows.map(s => [s.id,s]));
   for (const run of details) {
     const row = byId.get(run.source_id);

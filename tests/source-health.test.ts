@@ -38,3 +38,18 @@ test("七天边界包含当时记录，未来及过期失败不计入，停用�
   await sql`UPDATE sources SET enabled=false WHERE id=${id}`;
   assert.ok((await sourceHealth(now)).every(g => !g.sources.some(s => s.id===id)));
 });
+
+test("毫秒末尾的数据库记录参与统计与旧等待纠正，下一毫秒仍排除", async () => {
+  const now = Date.now();
+  const id = T + '-microseconds';
+  await sql`INSERT INTO sources(id,name,kind,health,fail_count) VALUES(${id},'微秒边界','rss','failing',6)`;
+  for (let i = 0; i < 5; i++) await sql`INSERT INTO fetch_runs(source_id,status,error,started_at)
+    VALUES(${id},'failed','Receipt 123 is in flight',${new Date(now)}::timestamptz + interval '999 microseconds')`;
+  await sql`INSERT INTO fetch_runs(source_id,status,error,started_at,detail)
+    VALUES(${id},'failed','HTTP 502',${new Date(now)}::timestamptz + interval '999 microseconds',${sql.json({ detailFailures: 1 })})`;
+  await sql`INSERT INTO fetch_runs(source_id,status,error,started_at,detail)
+    VALUES(${id},'failed','HTTP 503',${new Date(now + 1)},${sql.json({ detailFailures: 1 })})`;
+  const row = (await sourceHealth(now))[0]!.sources.find(source => source.id === id)!;
+  assert.equal(row.runs, 1); assert.equal(row.failed, 1); assert.equal(row.detail_failures, 1);
+  assert.equal(row.fail_count, 1); assert.equal(row.health, 'degraded');
+});
