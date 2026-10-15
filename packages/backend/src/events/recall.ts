@@ -77,7 +77,7 @@ export async function vectorsFor(items: Array<{ id: string; text: string; revisi
     } else missing.push({ ...it, hash });
   }
   if (missing.length) {
-    const got = await ensureEmbeddings("article", missing.map((m) => ({ id: m.id, text: m.text })));
+    const got = await ensureEmbeddings("article", missing.map((m) => ({ id: m.id, text: m.text, revision: m.revision })));
     for (const m of missing) {
       const v = got.get(m.id);
       if (!v) continue;
@@ -98,13 +98,14 @@ export async function vectorsFor(items: Array<{ id: string; text: string; revisi
 export async function warmRecallWindow(onProgress?: (done: number, total: number) => void): Promise<{ total: number; embedded: number }> {
   if (!embeddingsAvailable()) return { total: 0, embedded: 0 };
   // Reports waiting for a regroup included: each counts again once its turn comes.
-  const ids = [...new Set((await recallPool(true)).map((r) => r.article_id))];
-  const texts = await reportTexts(ids);
-  const items = ids.map((id) => ({ id, text: texts.get(id) ?? "" })).filter((x) => x.text);
+  const itemsById = new Map((await recallPool(true)).map((r) => [r.article_id, { id: r.article_id, revision: r.revision }]));
+  const items = [...itemsById.values()];
+  const texts = await reportTexts(items.map((item) => item.id));
+  const withText = items.map((item) => ({ ...item, text: texts.get(item.id) ?? "" })).filter((x) => x.text);
   const stored = new Set((await sql<{ ref_id: string; text_hash: string; vector: unknown }[]>`
-    SELECT ref_id, text_hash, vector FROM embeddings WHERE kind = 'article' AND model = ${EMBEDDING_MODEL} AND ref_id = ANY(${items.map((i) => i.id)})`)
+    SELECT ref_id, text_hash, vector FROM embeddings WHERE kind = 'article' AND model = ${EMBEDDING_MODEL} AND ref_id = ANY(${withText.map((i) => i.id)})`)
     .filter((r) => compatibleEmbedding(r.vector)).map((r) => `${r.ref_id}:${r.text_hash}`));
-  const missing = items.filter((i) => !stored.has(`${i.id}:${sha256(i.text)}`));
+  const missing = withText.filter((i) => !stored.has(`${i.id}:${sha256(i.text)}`));
   let done = 0;
   for (let i = 0; i < missing.length; i += 100) {
     const batch = missing.slice(i, i + 100);
@@ -129,7 +130,7 @@ export async function warmRecallWindow(onProgress?: (done: number, total: number
  * Facts whose reports are similar to the query text: the best report of each fact counts. Boosted
  * facts (a post the query replies to or quotes) are always included.
  */
-export async function recallFacts(queryId: string, queryText: string, minScore: number, top: number, boost: PoolRow[] = []): Promise<Recalled[]> {
+export async function recallFacts(queryId: string, queryText: string, minScore: number, top: number, boost: PoolRow[] = [], queryRevision?: number): Promise<Recalled[]> {
   const pool = (await recallPool()).filter((r) => r.article_id !== queryId);
   const best = new Map<number, Recalled>();
   const consider = (r: PoolRow, score: number) => {
@@ -150,7 +151,7 @@ export async function recallFacts(queryId: string, queryText: string, minScore: 
       const revisions = new Map(pool.map((r) => [r.article_id, r.revision]));
       const uncached = ids.filter((id) => !vectorCache.has(id) || vectorCache.get(id)!.revision !== revisions.get(id));
       const texts = await reportTexts(uncached);
-      const fresh = await vectorsFor([{ id: queryId, text: queryText }, ...uncached.map((id) => ({ id, text: texts.get(id) ?? "", revision: revisions.get(id) })).filter((x) => x.text)]);
+      const fresh = await vectorsFor([{ id: queryId, text: queryText, revision: queryRevision }, ...uncached.map((id) => ({ id, text: texts.get(id) ?? "", revision: revisions.get(id) })).filter((x) => x.text)]);
       const mine = fresh.get(queryId);
       if (mine) {
         for (const r of pool) {

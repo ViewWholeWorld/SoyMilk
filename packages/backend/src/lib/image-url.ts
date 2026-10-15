@@ -7,5 +7,6 @@ const TRACKING_HOSTS = new Set([
 
 export function isTrackingImage(src: string, width?: string, height?: string): boolean {
   if (width !== undefined && height !== undefined && Number(width) <= 1 && Number(height) <= 1) return true;
+  if (/^data:/i.test(src.trim())) return !/^data:image\/[a-z0-9.+-]+(?:;[^,]*)?,/i.test(src.trim());
   try { return TRACKING_HOSTS.has(new URL(src).hostname.toLowerCase()); } catch { return false; }
 }

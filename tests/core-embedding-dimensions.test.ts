@@ -127,6 +127,24 @@ test("compatible database/fact cache hits preserve precision, text changes and k
   assert.equal(requests.length, before + 1);
 });
 
+test("changed article revisions use distinct embedding receipt subjects", async () => {
+  const it = item();
+  await ensureEmbeddings("article", [{ ...it, revision: 1 }]);
+  const [old] = await sql<{ id: number; subject: string }[]>`
+    SELECT id, subject FROM receipts WHERE purpose='embedding' AND model=${EMBEDDING_MODEL} ORDER BY id DESC LIMIT 1`;
+  assert.equal(old!.subject, `article:${it.id}@1`);
+  await sql`UPDATE receipts SET status='unknown' WHERE id=${old!.id}`;
+  await sql`UPDATE receipt_attempts SET status='unknown' WHERE receipt_id=${old!.id}`;
+
+  const before = requests.length;
+  await ensureEmbeddings("article", [{ id: it.id, text: `${it.text} changed`, revision: 2 }]);
+  assert.equal(requests.length, before + 1, "a changed revision is allowed to reach the provider");
+  const [next] = await sql<{ subject: string; status: string }[]>`
+    SELECT subject, status FROM receipts WHERE purpose='embedding' AND model=${EMBEDDING_MODEL} ORDER BY id DESC LIMIT 1`;
+  assert.equal(next!.subject, `article:${it.id}@2`);
+  assert.equal(next!.status, "completed");
+});
+
 test("incompatible cached fact vectors fall back to a compatible stored vector", async () => {
   const it = item();
   await stored("fact", it, [1, 0, 0, 0]);

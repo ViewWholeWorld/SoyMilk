@@ -23,6 +23,7 @@ import {
 } from "@aihot/backend/editorial/analyze";
 import { modelFor } from "@aihot/backend/editorial/models";
 import { importSelectBenchRun } from "@aihot/backend/admin/selectbench";
+import { parseSelectionGold, selectionSplit, type GoldRow } from "@aihot/backend/editorial/selection-evidence";
 
 const { values } = parseArgs({
   options: {
@@ -37,17 +38,14 @@ const { values } = parseArgs({
   },
 });
 
-interface GoldRow {
-  caseId: string;
-  material: { title: string; originalTitle: string | null; publishedAt: string | null; sourceName: string; bodyZh: string | null; bodyOriginal: string | null };
-  sourceFacts: { sourceKind: string; sourceTier?: string; firstParty?: boolean; language?: string | null };
-  /** Optional: a split (e.g. development / holdout) and a stratum for reading the mistakes. */
-  samplingContext?: { benchmarkSplit?: string; samplingStratum?: string };
-  gold: { decision: "select" | "reject" | "either" };
+for (const key of ["n", "concurrency"] as const) {
+  if (!/^\d+$/.test(values[key]!) || !Number.isSafeInteger(Number(values[key])) || Number(values[key]) < 1) throw new Error(`--${key} must be a positive integer`);
+}
+if (!/^-?\d+$/.test(values.seed!) || !Number.isSafeInteger(Number(values.seed)) || Number(values.seed) < -2147483648 || Number(values.seed) > 2147483647) {
+  throw new Error("--seed must be a 32-bit integer");
 }
 
-const rows: GoldRow[] = readFileSync(path.resolve(REPO_ROOT, values.gold!), "utf8")
-  .split("\n").filter((l) => l.trim() && !l.trim().startsWith("//")).map((l) => JSON.parse(l));
+const rows = parseSelectionGold(readFileSync(path.resolve(REPO_ROOT, values.gold!), "utf8"));
 
 // Deterministic stratified sample.
 function rng(seed: number) {
@@ -55,7 +53,7 @@ function rng(seed: number) {
   return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 2 ** 32);
 }
 const rand = rng(Number(values.seed));
-const pool = values.split === "all" ? rows : rows.filter((r) => r.samplingContext?.benchmarkSplit === values.split);
+const pool = selectionSplit(rows, values.split!);
 const shuffled = pool.map((r) => ({ r, k: rand() })).sort((a, b) => a.k - b.k).map((x) => x.r);
 const sample = shuffled.slice(0, Number(values.n));
 

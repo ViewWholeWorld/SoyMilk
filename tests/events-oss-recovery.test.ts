@@ -14,7 +14,11 @@ import { consolidate, linkRelatedStories } from "@aihot/backend/events/consolida
 import { groupArticle } from "@aihot/backend/events/group";
 import { mergeStoryInto } from "@aihot/backend/events/merge";
 import { candidateViews, recallFacts } from "@aihot/backend/events/recall";
-import { stopBoss } from "@aihot/backend/jobs/queue";
+import { deferJob, enqueue, getBoss, QUEUES, stopBoss } from "@aihot/backend/jobs/queue";
+import { processGroupingJob } from "@aihot/backend/jobs/events";
+import { ReceiptUnknownError, paidRequest, logicalKeyFor } from "@aihot/backend/providers/receipts";
+import { PgBoss } from "pg-boss";
+import { config } from "@aihot/backend/config";
 import { publishArticle } from "@aihot/backend/publication/publish";
 
 const T = tag();
@@ -113,6 +117,131 @@ async function storyWithRoot(text: string, suffix: string) {
   await sql`INSERT INTO fact_articles (fact_id, article_id, role) VALUES (${fact!.id}, ${article}, 'report')`;
   return { storyId: Number(story!.id), publicId: String(story!.public_id), factId: Number(fact!.id), articleId: article };
 }
+
+test("budget waits survive more than four retry windows and an independent queue client, then group once", async () => {
+  hold.open();
+  const text = randomText();
+  const root = await storyWithRoot(text, "budget-root");
+  const id = await report("budget-wait", text, text);
+  await sql`UPDATE analyses SET selected=true WHERE article_id=${id}`;
+  await publishArticle(id);
+  const [publication] = await sql`SELECT selected_ready_at,visible_after FROM publications WHERE article_id=${id}`;
+  const boss = await getBoss();
+  const [budget] = await sql`SELECT * FROM budgets WHERE service='deepseek'`;
+  const hits = provider.hits();
+  await enqueue(QUEUES.group, { articleId: id }, { singletonKey: id, priority: 900001 });
+  try {
+    await paidRequest({ service: "deepseek", purpose: "budget-fixture", identity: { test: T } }, async () => ({ response: {} }));
+    const windows = [[0,100000,100000,3600], [1,100000,100000,60], [100000,1,100000,600], [100000,100000,1,3600], [0,100000,100000,3600], [0,100000,100000,3600]];
+    for (let i=0; i<6; i++) {
+      const [minute,hour,day,delay] = windows[i]!;
+      await sql`UPDATE budgets SET per_minute=${minute},per_hour=${hour},per_day=${day} WHERE service='deepseek'`;
+      const [job] = await boss.fetch<{ articleId: string }>(QUEUES.group, { minPriority: 900001, ignoreStartAfter: true, includeMetadata: true });
+      assert.ok(job);
+      assert.equal(job.retryCount, 0, "waits are not failed attempts");
+      const result = await processGroupingJob(job.data, job.id, job.retryCount);
+      assert.ok("state" in result && result.state === "waiting");
+      assert.equal((await boss.getJobById(QUEUES.group, job.id))!.state, "completed");
+      const queued = await boss.findJobs(QUEUES.group, { key: id, queued: true });
+      assert.equal(queued.length, 1);
+      assert.ok(queued[0]!.startAfter.getTime() >= Date.now()+(delay!-10)*1000);
+      assert.equal((await sql`SELECT grouped_at FROM articles WHERE id=${id}`)[0]!.grouped_at, null);
+    }
+    assert.equal(provider.hits(), hits);
+    const [after] = await sql`SELECT selected_ready_at,visible_after FROM publications WHERE article_id=${id}`;
+    assert.deepEqual(after, publication, "the existing release gate remains; no fake grouping completion");
+    await sql`UPDATE budgets SET per_minute=100000,per_hour=100000,per_day=100000 WHERE service='deepseek'`;
+    const independent = new PgBoss({ connectionString: config.databaseUrl, schema: "pgboss" });
+    independent.on("error", () => {});
+    await independent.start();
+    let jobs;
+    try {
+      assert.equal((await independent.fetch(QUEUES.group, { minPriority: 900001 })).length, 0, "retryAfter is honored");
+      jobs = await independent.fetch<{ articleId: string }>(QUEUES.group, { minPriority: 900001, ignoreStartAfter: true, includeMetadata: true });
+    } finally { await independent.stop(); }
+    assert.equal(jobs.length, 1);
+    const result = await processGroupingJob(jobs[0]!.data, jobs[0]!.id, jobs[0]!.retryCount);
+    assert.ok("storyId" in result && result.storyId === root.storyId);
+    await boss.complete(QUEUES.group, jobs[0]!.id);
+    assert.equal((await boss.findJobs(QUEUES.group, { key: id, queued: true })).length, 0);
+    assert.equal((await sql`SELECT 1 FROM fact_articles WHERE article_id=${id}`).length, 1);
+  } finally {
+    await sql`UPDATE budgets SET per_minute=${budget!.per_minute},per_hour=${budget!.per_hour},per_day=${budget!.per_day} WHERE service='deepseek'`;
+  }
+});
+
+test("waiting-job completion and successor insertion roll back together; a newer queued payload is retained", async () => {
+  const boss = await getBoss();
+  const id = `atomic-wait-${T}`;
+  await enqueue(QUEUES.group, { articleId: id }, { singletonKey: id, priority: 900002, retryLimit: 2 });
+  let [job] = await boss.fetch(QUEUES.group, { minPriority: 900002, includeMetadata: true });
+  await boss.fail(QUEUES.group, job!.id, { message: "fixture genuine failure" });
+  [job] = await boss.fetch(QUEUES.group, { minPriority: 900002, ignoreStartAfter: true, includeMetadata: true });
+  assert.equal(job!.retryCount, 1);
+  await sql.unsafe(`CREATE FUNCTION test_group_defer_fault() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test successor insert failed'; END $$`);
+  await sql.unsafe(`CREATE TRIGGER test_group_defer_fault BEFORE INSERT ON pgboss.job FOR EACH ROW WHEN (NEW.name='events.group') EXECUTE FUNCTION test_group_defer_fault()`);
+  try { await assert.rejects(deferJob(QUEUES.group, job!.id, { articleId: id }, 60, job!.retryCount), /test successor/); }
+  finally {
+    await sql.unsafe(`DROP TRIGGER test_group_defer_fault ON pgboss.job`);
+    await sql.unsafe(`DROP FUNCTION test_group_defer_fault()`);
+  }
+  assert.equal((await boss.getJobById(QUEUES.group, job!.id))!.state, "active");
+  const newer = await enqueue(QUEUES.group, { articleId: id, force: true }, { singletonKey: id, priority: 900002 });
+  assert.ok(newer, "short policy accepts a successor while active");
+  await deferJob(QUEUES.group, job!.id, { articleId: id }, 3600, job!.retryCount);
+  const queued = await boss.findJobs<{ force?: boolean }>(QUEUES.group, { key: id, queued: true });
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]!.id, newer);
+  assert.equal(queued[0]!.data.force, true);
+  assert.equal(queued[0]!.retryLimit, 1, "waiting does not replenish the spent failure allowance");
+  assert.ok(queued[0]!.startAfter.getTime() >= Date.now()+3590_000);
+  await boss.cancel(QUEUES.group, newer!);
+});
+
+test("resuming a disabled-model wait rechecks a withdrawn source and does not call the model", async () => {
+  hold.open();
+  const text = randomText();
+  await storyWithRoot(text, "withdraw-wait-root");
+  const source = `${SOURCE}-withdraw-wait`;
+  await sql`INSERT INTO sources(id,name,kind,tier,participation_mode) VALUES(${source},'Wait source','rss','T1','editorial')`;
+  const id = await report("withdraw-wait", text, text);
+  await sql`UPDATE articles SET source_id=${source} WHERE id=${id}`;
+  const boss = await getBoss();
+  await enqueue(QUEUES.group, { articleId: id }, { singletonKey: id, priority: 900003 });
+  const [job] = await boss.fetch<{ articleId: string }>(QUEUES.group, { minPriority: 900003, includeMetadata: true });
+  const enabled = config.modelCallsEnabled;
+  const hits = provider.hits();
+  try {
+    config.modelCallsEnabled = false;
+    const result = await processGroupingJob(job!.data, job!.id, job!.retryCount);
+    assert.ok("state" in result && result.state === "waiting");
+  } finally { config.modelCallsEnabled = enabled; }
+  await sql`UPDATE sources SET participation_mode='isolated' WHERE id=${source}`;
+  await sql`UPDATE articles SET revision=revision+1 WHERE id=${id}`;
+  const [resumed] = await boss.fetch<{ articleId: string }>(QUEUES.group, { minPriority: 900003, ignoreStartAfter: true, includeMetadata: true });
+  assert.equal((await processGroupingJob(resumed!.data, resumed!.id, resumed!.retryCount)).verdict, "skipped");
+  await boss.complete(QUEUES.group, resumed!.id);
+  assert.equal(provider.hits(), hits);
+  assert.equal((await sql`SELECT 1 FROM fact_articles WHERE article_id=${id}`).length, 0);
+});
+
+test("unknown grouping response is not bypassed by changed candidates and waiting preserves manual correction", async () => {
+  hold.open();
+  const text = randomText();
+  await storyWithRoot(text, "unknown-root");
+  const id = await report("unknown-query", text, text);
+  const req = { service: "deepseek", model: "deepseek-flash", purpose: "group_article", subject: `article:${id}`, identity: { oldCandidateSet: T }, requestSummary: { promptVersion: "previous" } };
+  await assert.rejects(paidRequest(req, async () => { throw new Error("fixture lost response"); }), ReceiptUnknownError);
+  const hits = provider.hits();
+  await assert.rejects(groupArticle(id), ReceiptUnknownError);
+  assert.equal(provider.hits(), hits);
+  assert.equal((await sql`SELECT grouped_at FROM articles WHERE id=${id}`)[0]!.grouped_at, null);
+  await detachFromFact(id, "editor keeps standalone during wait", "test-editor");
+  assert.equal((await groupArticle(id)).verdict, "manual");
+  assert.equal(provider.hits(), hits);
+  // Remove only this synthetic unknown from subsequent global recovery scans.
+  await sql`UPDATE receipts SET status='failed' WHERE logical_key=${logicalKeyFor(req)}`;
+});
 
 test("回执提交失败时归组一起回滚，重试复用已保存模型结果", async () => {
   const id = await report("receipt-atomic", FACT_TITLE);
