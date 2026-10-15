@@ -2,8 +2,26 @@ import { gate, tag } from "./setup.ts";
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { sql, closeDb } from "@aihot/backend/db";
-import { paidRequest, logicalKeyFor, markStalePendingReceipts } from "@aihot/backend/providers/receipts";
+import { paidRequest, logicalKeyFor, markStalePendingReceipts, ReceiptBusyError, ReceiptUnknownError } from "@aihot/backend/providers/receipts";
 after(closeDb);
+
+test("a new prompt hash waits for an older in-flight or unknown article response without another attempt", async () => {
+  const req = { service: `prompt-upgrade-${tag()}`, purpose: "translate_body", subject: `article:${tag()}@1#0`, identity: { prompt: "old" }, requestSummary: { promptVersion: "old" } };
+  const changed = { ...req, identity: { prompt: "new" }, requestSummary: { promptVersion: "new" } };
+  const asked = gate(); const release = gate();
+  let calls = 0;
+  const first = paidRequest(req, async () => { calls++; asked.open(); await release.promise; throw new Error("fixture lost response"); });
+  const failed = assert.rejects(first, ReceiptUnknownError);
+  await asked.promise;
+  try {
+    await assert.rejects(paidRequest(changed, async () => { calls++; return { response: {} }; }), ReceiptBusyError);
+  } finally { release.open(); }
+  await failed;
+  await assert.rejects(paidRequest(changed, async () => { calls++; return { response: {} }; }), ReceiptUnknownError);
+  assert.equal(calls, 1);
+  assert.equal((await sql`SELECT 1 FROM receipt_attempts WHERE service=${req.service}`).length, 1);
+  await sql`UPDATE receipts SET status='failed' WHERE logical_key=${logicalKeyFor(req)}`;
+});
 
 test("stale recovery waiting on a response transaction preserves its committed answer and attempt", async () => {
   const request = { service: "invariant-recovery-race", purpose: "invariant_test", identity: { race: tag() } };

@@ -136,6 +136,21 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
       SELECT id, subject, status, response, created_at, updated_at FROM receipts WHERE logical_key = ${logicalKey} FOR UPDATE`;
     if (existing) await registerConsumers(tx, existing.id, [existing.subject, req.subject]);
     if (existing?.status === "received" || existing?.status === "completed") return { kind: "reuse" as const, row: existing };
+    // A prompt/candidate update cannot bypass an unresolved paid call for the same input.
+    // Consumers also cover responses shared by articles. Different revisions have distinct subjects.
+    if (req.subject?.startsWith("article:")) {
+      const [unresolved] = await tx<ReceiptRow[]>`
+        SELECT r.id,r.subject,r.status,r.response,r.created_at,r.updated_at FROM receipts r
+        WHERE r.service=${req.service} AND r.purpose=${req.purpose} AND r.logical_key<>${logicalKey}
+          AND (r.subject=${req.subject} OR EXISTS(SELECT 1 FROM receipt_consumers c WHERE c.receipt_id=r.id AND c.subject=${req.subject}))
+          AND (r.status='unknown' OR (r.status='pending' AND r.request->>'promptVersion' IS DISTINCT FROM ${req.requestSummary?.promptVersion as string ?? null}))
+        ORDER BY r.id LIMIT 1 FOR UPDATE OF r`;
+      if (unresolved) {
+        if (unresolved.status === "pending" && Date.now()-unresolved.updated_at.getTime()<PENDING_STALE_MS) return { kind: "busy" as const, row: unresolved };
+        if (unresolved.status === "pending") await markUnknown(tx, unresolved.id, "placeholder went stale without a recorded result");
+        return { kind: "unknown" as const, row: unresolved };
+      }
+    }
     // Finish business writes from saved answers during shutdown, but never reserve or send the
     // next paid page/batch. An answer already in flight still saves below, without this check.
     shutdownSignal.signal.throwIfAborted();
