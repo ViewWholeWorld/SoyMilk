@@ -139,3 +139,7 @@ node --env-file-if-exists=.env scripts/chatgpt-auth.ts logout
 - [模型与推理](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
 - [自托管主机](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms)
 - [预览限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)
+
+## 模型价格与订阅等价金额（候选 3.5.1）
+
+后台模型页可为 Codex / ChatGPT 的具体型号选择参考价或整套人工单价。金额按实际返回的 token 与调用当时的快照估算，仅用于 API 等价比较，不表示订阅账单、余额或现金扣款；与 API 费用分列。缺少缓存细分时明确标记近似，推理 token 已包含在输出中时不再次计费。调价及恢复参考价不改变授权、请求身份或历史回执，参见[定价与补算操作](model-pricing.md)。

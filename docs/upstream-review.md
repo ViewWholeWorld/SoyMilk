@@ -4,7 +4,7 @@ upstream_branch: main
 last_reviewed_commit: e57da5a4f151892a217529744cd68803aec580df
 previous_reviewed_commit: 652bd6bf4190df0030824dd86a982ea96f5623d5
 reviewed_at: "2026-10-14"
-review_document: upstream-fix-plan-20261014.md
+review_document: archive/upstream-fix-plan-20261014.md
 ---
 
 # 上游审查台账
@@ -21,8 +21,8 @@ review_document: upstream-fix-plan-20261014.md
 | 审核日期 | 2026-10-14，北京时间 |
 | 审核时的本站代码 | `9db10fb9b57ac5fb0c88959df69cb1d4f444797c`，应用版本 `3.4.6` |
 | 本次文档的主分支基线 | `81ab91469e7a90be403affe432ee554bd6952d84`；相对上述代码基线仅新增定价计划和 Git 规范等文档 |
-| 审核结果 | 没有新增 feature；修复分成安全边界、归组恢复、评测校验三组；2026-10-15 已在候选 3.4.7 实现，PR 审核补修后最新隔离验收通过（后端 694、网页 44），尚未合并或部署 |
-| 详细证据、实施与验收计划 | [2026-10-14 修复计划](upstream-fix-plan-20261014.md) |
+| 审核结果 | 没有新增 feature；修复分成安全边界、归组恢复、评测校验三组；2026-10-15 已在候选 3.4.7 实现，PR 审核补修后最新隔离验收通过（后端 694、网页 44），已通过 PR #7 合并到 `main@a518ad8`，尚无新版生产部署核验 |
+| 详细证据、实施与验收计划 | [2026-10-14 修复计划](archive/upstream-fix-plan-20261014.md) |
 
 `last_reviewed_commit` 是下次**检查新提交**的起点。不要使用本站版本号、fork 的 HEAD、上游发布时间或“最近一个已移植提交”替代它：本站采用按行为移植，已采纳的上游改动并不连续，也未必保留原提交 SHA。
 
@@ -32,11 +32,11 @@ review_document: upstream-fix-plan-20261014.md
 
 | 编号 | 内容 | 上游提交 | 优先级 | 状态 | 本站实现、PR 与验证 |
 | --- | --- | --- | --- | --- | --- |
-| S1 | 受限域名带尾点时的名称校验 | `ea96060783f556a5d1afbdbc67f7348c38e6131d` | 高 | 待合并 | 候选 3.4.7，[统一验收通过](testing.md#2026-10-15-上游修复候选-347)，实现 `7dc6bdc`，[PR #7](https://github.com/ViewWholeWorld/SoyMilk/pull/7) 待审阅 |
-| S2 | 非图片 `data:` 地址过滤 | `ea96060783f556a5d1afbdbc67f7348c38e6131d` | 高 | 待合并 | 候选 3.4.7，[统一验收通过](testing.md#2026-10-15-上游修复候选-347)，实现 `2e8bba0`，[PR #7](https://github.com/ViewWholeWorld/SoyMilk/pull/7) 待审阅 |
-| S3 | 五个摘要／翻译模板引用共享安全规则 | `ea96060783f556a5d1afbdbc67f7348c38e6131d` | 高 | 待合并 | 候选 3.4.7，[统一验收通过](testing.md#2026-10-15-上游修复候选-347)，实现 `7fef9b7`，[PR #7](https://github.com/ViewWholeWorld/SoyMilk/pull/7) 待审阅 |
-| G1 | 预算等待后的归组恢复，适配本站旧结构 | `791a6f56b2ef5e69b6f1b37e2115804f6eafd22d` | 高 | 待合并 | 候选 3.4.7，队列事务及领取轮次保护；无新增本站应用迁移，pg-boss 内部 schema 42→43 需另行部署授权；[最新统一验收](testing.md#2026-10-15-pr-7-队列领取轮次补修)，初版 `2509db4`，[PR #7](https://github.com/ViewWholeWorld/SoyMilk/pull/7) 待审阅 |
-| E1 | 人工标注及导入证据校验、跨模型答案一致性 | `3c69b496674742c53c183c379e7c11fc98ff5401`、`e57da5a4f151892a217529744cd68803aec580df` | 中 | 待合并 | 候选 3.4.7，含小数均分兼容；[最新统一验收](testing.md#2026-10-15-pr-7-队列领取轮次补修)，初版 `dafadc8`、小数补修 `0aedb80`，[PR #7](https://github.com/ViewWholeWorld/SoyMilk/pull/7) 待审阅 |
+| S1 | 受限域名带尾点时的名称校验 | `ea96060783f556a5d1afbdbc67f7348c38e6131d` | 高 | 已合并待部署 | 候选 3.4.7，[统一验收通过](archive/testing-20261015.md#2026-10-15-上游修复候选-347)，实现 `7dc6bdc`，[PR #7](https://github.com/ViewWholeWorld/SoyMilk/pull/7) 已合并 |
+| S2 | 非图片 `data:` 地址过滤 | `ea96060783f556a5d1afbdbc67f7348c38e6131d` | 高 | 已合并待部署 | 候选 3.4.7，[统一验收通过](archive/testing-20261015.md#2026-10-15-上游修复候选-347)，实现 `2e8bba0`，[PR #7](https://github.com/ViewWholeWorld/SoyMilk/pull/7) 已合并 |
+| S3 | 五个摘要／翻译模板引用共享安全规则 | `ea96060783f556a5d1afbdbc67f7348c38e6131d` | 高 | 已合并待部署 | 候选 3.4.7，[统一验收通过](archive/testing-20261015.md#2026-10-15-上游修复候选-347)，实现 `7fef9b7`，[PR #7](https://github.com/ViewWholeWorld/SoyMilk/pull/7) 已合并 |
+| G1 | 预算等待后的归组恢复，适配本站旧结构 | `791a6f56b2ef5e69b6f1b37e2115804f6eafd22d` | 高 | 已合并待部署 | 候选 3.4.7，队列事务及领取轮次保护；无新增本站应用迁移，pg-boss 内部 schema 42→43 需另行部署授权；[最新统一验收](archive/testing-20261015.md#2026-10-15-pr-7-队列领取轮次补修)，初版 `2509db4`，[PR #7](https://github.com/ViewWholeWorld/SoyMilk/pull/7) 已合并 |
+| E1 | 人工标注及导入证据校验、跨模型答案一致性 | `3c69b496674742c53c183c379e7c11fc98ff5401`、`e57da5a4f151892a217529744cd68803aec580df` | 中 | 已合并待部署 | 候选 3.4.7，含小数均分兼容；[最新统一验收](archive/testing-20261015.md#2026-10-15-pr-7-队列领取轮次补修)，初版 `dafadc8`、小数补修 `0aedb80`，[PR #7](https://github.com/ViewWholeWorld/SoyMilk/pull/7) 已合并 |
 | D1 | Caddy 安全响应头 | `ea96060783f556a5d1afbdbc67f7348c38e6131d` | 低 | 暂缓 | 本站沿用 HTTP 私网部署；未来变更入口时单独评估 |
 
 `ea96060` 同时包含候选实现和暂缓的内容，不能把整个提交简单标为“已合并”。S1—S3、D1 分别关闭后，才能准确说明这个提交的处理结果。E1 的两个提交有前后依赖，应一起适配。
@@ -45,8 +45,8 @@ review_document: upstream-fix-plan-20261014.md
 
 | 审查记录 | 当时边界 | 后续处理 |
 | --- | --- | --- |
-| [2026-10-04 兼容性审核](upstream-review-20261004.md) | `9848e936106db037d99a304887c36aad3fd0fad4` | 不直接合并上游 4.0 整代架构；删表、初始化、付费身份和许可撤回等边界仍须遵守；模型榜和监控按后续决定保持移除 |
-| [2026-10-13 七项移植计划及结果](upstream-port-plan-20261013.md) | `652bd6bf4190df0030824dd86a982ea96f5623d5` | 七项已按本站结构实现并有发布记录；不等于该范围所有上游差异都已采用 |
+| [2026-10-04 兼容性审核](archive/upstream-review-20261004.md) | `9848e936106db037d99a304887c36aad3fd0fad4` | 不直接合并上游 4.0 整代架构；删表、初始化、付费身份和许可撤回等边界仍须遵守；模型榜和监控按后续决定保持移除 |
+| [2026-10-13 七项移植计划及结果](archive/upstream-port-plan-20261013.md) | `652bd6bf4190df0030824dd86a982ea96f5623d5` | 七项已按本站结构实现并有发布记录；不等于该范围所有上游差异都已采用 |
 | 同一计划明确排除的项目 | 同上 | 原生视频、夸张用词二次改写、新内容策略和整代模块架构没有在该轮实施；长期页面缓存仍需许可失效设计，不能因审核游标推进而默认为已完成 |
 
 这些历史排除项不是本次新发现，也不因本次记录新 SHA 而获得实施授权。重新决定采用时，在台账登记独立待办并链接具体方案；不要覆盖历史审核结论。
@@ -85,4 +85,4 @@ git diff --stat "$reviewed_sha" "$observed_sha"
 
 | 日期（北京时间） | 起点，不含 | 终点，包含 | 详细记录 | 状态 |
 | --- | --- | --- | --- | --- |
-| 2026-10-14 | `652bd6bf4190df0030824dd86a982ea96f5623d5` | `e57da5a4f151892a217529744cd68803aec580df` | [修复计划](upstream-fix-plan-20261014.md) | 4 个提交已审核；修复尚未实现 |
+| 2026-10-14 | `652bd6bf4190df0030824dd86a982ea96f5623d5` | `e57da5a4f151892a217529744cd68803aec580df` | [修复计划](archive/upstream-fix-plan-20261014.md) | 4 个提交已审核；S1—S3、G1、E1 已实现并合并，D1 暂缓 |

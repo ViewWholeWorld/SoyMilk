@@ -9,6 +9,7 @@
 import { sql, type Db } from "../db.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
 import { shutdownSignal } from "../lib/shutdown.ts";
+import { estimateModelCost, pricingSnapshotFor, type BillingContext, type PricingSnapshot } from "./model-pricing.ts";
 
 export class BudgetExceededError extends Error {
   readonly service: string;
@@ -63,6 +64,7 @@ export interface CallOutcome {
   requestId?: string | null;
   usage?: Record<string, unknown> | null;
   cost?: { amount: number; currency: string; basis: "actual" | "estimated" } | null;
+  reportedModel?: string | null;
 }
 
 export interface ReceiptRequest {
@@ -76,6 +78,8 @@ export interface ReceiptRequest {
   requestSummary?: Record<string, unknown>;
   /** Distinguishes an explicit re-run (e.g. admin "re-evaluate") from recovery of the same request. */
   attemptTag?: string;
+  /** Non-secret model ownership used for immutable cost snapshots. */
+  billingContext?: BillingContext;
 }
 
 export interface ReceiptResult {
@@ -210,6 +214,9 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
   }
 
   await sql.begin(async (tx) => {
+    // The claim snapshot is immutable. Reading it must not change the receipt/attempt lock order.
+    const [attempt] = req.billingContext ? await tx<{ pricing_snapshot: PricingSnapshot | null }[]>`SELECT pricing_snapshot FROM receipt_attempts WHERE id=${attemptId}` : [];
+    const estimate = req.billingContext ? estimateModelCost(attempt?.pricing_snapshot ?? null, outcome.usage) : null;
     await tx`
       UPDATE receipts SET
         status = 'received',
@@ -225,7 +232,11 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
     await tx`
       UPDATE receipt_attempts SET
         status = 'received', request_id = ${outcome.requestId ?? null}, usage = ${outcome.usage ? tx.json(outcome.usage as never) : null},
+        reported_model = ${typeof outcome.reportedModel === "string" ? outcome.reportedModel : outcome.response && typeof outcome.response === "object" && typeof (outcome.response as Record<string, unknown>).model === "string" ? (outcome.response as Record<string, unknown>).model as string : null},
         cost = ${outcome.cost?.amount ?? null}, currency = ${outcome.cost?.currency ?? null}, cost_basis = ${outcome.cost?.basis ?? null},
+        normalized_usage = ${estimate ? tx.json(estimate.normalized as never) : null},
+        estimated_cost = ${estimate?.amount ?? null}, estimated_currency = ${estimate?.currency ?? null},
+        estimate_status = ${estimate?.status ?? null}, estimate_detail = ${estimate ? tx.json(estimate.detail as never) : null},
         latency_ms = ${Date.now() - started}, finished_at = now()
       WHERE id = ${attemptId}`;
   });
@@ -251,8 +262,11 @@ export async function consumersForRelease(db: Db, id: number): Promise<{ purpose
 }
 
 async function startAttempt(tx: Db, receiptId: number, attempt: number, req: ReceiptRequest): Promise<number> {
+  const pricing = req.billingContext ? await pricingSnapshotFor(tx, req.billingContext) : null;
   const [row] = await tx<{ id: number }[]>`
-    INSERT INTO receipt_attempts (receipt_id, attempt, service, model, status) VALUES (${receiptId}, ${attempt}, ${req.service}, ${req.model ?? null}, 'pending')
+    INSERT INTO receipt_attempts (receipt_id, attempt, service, model, provider_key, provider_label_snapshot, billing_kind, requested_model, pricing_snapshot, status)
+    VALUES (${receiptId}, ${attempt}, ${req.service}, ${req.model ?? null}, ${req.billingContext?.providerKey ?? null}, ${req.billingContext?.providerLabel ?? null},
+            ${req.billingContext?.billingKind ?? null}, ${req.billingContext?.requestedModel ?? null}, ${pricing ? tx.json(pricing as never) : null}, 'pending')
     RETURNING id`;
   return row!.id;
 }

@@ -14,6 +14,7 @@ import { requestCodex, type CodexServer } from "./codex.ts";
 import { withCodexServer } from "./codex-session.ts";
 import { guardedFetch, type GuardedResponse } from "../lib/http-fetch.ts";
 import { shutdownSignal } from "../lib/shutdown.ts";
+import { modelBillingContext } from "./model-billing.ts";
 
 export interface ModelSpec {
   key: string;
@@ -26,7 +27,7 @@ export interface ModelSpec {
   jsonMode: boolean;
   vision?: boolean;
   reasoningEffort?: ReasoningEffort | null;
-  connection?: { type: "api-key" | "codex"; baseUrl?: string; apiKey?: string; generation?: string };
+  connection?: { id?: string; name?: string; type: "api-key" | "codex"; baseUrl?: string; apiKey?: string; generation?: string };
 }
 
 function extraFromEnv(value: string | undefined): Record<string, unknown> | undefined {
@@ -100,7 +101,7 @@ export async function registeredModels(): Promise<Record<string, ModelSpec>> {
     const spec: ModelSpec = { key, service: "llm", model: v.model, baseUrlEnv: "", apiKeyEnv: "", jsonMode: v.jsonMode, vision: v.vision,
       reasoningEffort: v.reasoningEffort,
       extra: v.type === "api-key" && v.reasoningEffort ? { reasoning_effort: v.reasoningEffort } : undefined,
-      connection: { type: v.type, baseUrl: v.baseUrl, apiKey: v.apiKey, generation: v.generation } };
+      connection: { id: v.id, name: v.name, type: v.type, baseUrl: v.baseUrl, apiKey: v.apiKey, generation: v.generation } };
     models[key] = spec;
     if (c.active === v.id) models.default = { ...spec, key: "default" };
   }
@@ -238,6 +239,7 @@ async function executeChatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>, sp
     ...(spec.jsonMode && opts.json !== false ? { response_format: { type: "json_object" } } : {}),
     ...(spec.extra ?? {}),
   };
+  const billingContext = modelBillingContext(spec, codex ? "codex" : access ? "chatgpt" : "api-key", baseUrl);
 
   const receipt = await paidRequest(
     {
@@ -248,6 +250,7 @@ async function executeChatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>, sp
       identity: { model: spec.model, promptVersion: opts.promptVersion, system: sha256(opts.system), user: sha256(userText), temperature, maxTokens, extra: spec.extra ?? null, ...(spec.reasoningEffort ? { reasoningEffort: spec.reasoningEffort } : {}), ...(access ? { transport: "chatgpt-responses-v1", registrationHash: sha256(access.registration) } : {}), ...(spec.connection ? { connection: spec.connection.generation } : {}), ...(codex ? { transport: "codex-app-server", account: codex.generation } : {}) },
       requestSummary: { promptVersion: opts.promptVersion, systemHash: sha256(opts.system), userHash: sha256(userText), userChars: userText.length, temperature, maxTokens, reasoningEffort: spec.reasoningEffort ?? null },
       attemptTag: opts.attemptTag,
+      billingContext,
     },
     async () => {
       const started = Date.now();

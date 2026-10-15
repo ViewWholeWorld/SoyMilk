@@ -1,20 +1,35 @@
 import { SITE } from "@aihot/industry/site";
 import { useState } from "react";
 import { Link } from "react-router";
-import type { AdminCodexModel, AdminModelConfiguration, AdminModelConnection, AdminModels, ReasoningEffort } from "@aihot/contracts/admin";
+import type { AdminCodexModel, AdminModelPriceCatalog, AdminModelConfiguration, AdminModelConnection, AdminModelCosts, AdminModelPricing, AdminModels, AdminModelBackfills, AdminModelBackfill, ReasoningEffort } from "@aihot/contracts/admin";
 import type { Route } from "./+types/models";
 import { adminGet } from "../../lib/admin.server";
 import { useAdminAction } from "../../features/admin/action";
-import { bj, money, num } from "../../features/admin/format";
+import { bj, num } from "../../features/admin/format";
 import { AdminPage, Badge, Button, Card, DataTable, Empty, Field, FilterChips, ReasonDialog, Select } from "../../features/admin/ui";
+import { formatModelCost } from "../../features/admin/model-costs";
+import { ModelPricing } from "../../features/admin/model-pricing";
+import { ModelCostOverview } from "../../features/admin/model-cost-overview";
+import { ModelCostBackfill } from "../../features/admin/model-cost-backfill";
+import { modelCostQuery } from "../../features/admin/model-cost-query";
 import { ModelConnections, ReasoningEffortField } from "../../features/admin/model-connections";
 
 
 
 export async function loader({ request }: Route.LoaderArgs) {
-  const days = new URL(request.url).searchParams.get("days") ?? "7";
-  const [models, configuration] = await Promise.all([adminGet<AdminModels>(request, `/api/admin/models?days=${encodeURIComponent(days)}`), adminGet<AdminModelConfiguration>(request, "/api/admin/model-config")]);
-  return { ...models, configuration };
+  const params = new URL(request.url).searchParams;
+  const days = params.get("days") ?? "7";
+  const priceQuery = params.get("priceQuery") ?? "";
+  const [models, configuration, pricing, costs, priceCatalog, backfills, backfill] = await Promise.all([
+    adminGet<AdminModels>(request, `/api/admin/models?days=${encodeURIComponent(days)}`),
+    adminGet<AdminModelConfiguration>(request, "/api/admin/model-config"),
+    adminGet<AdminModelPricing>(request, "/api/admin/model-pricing"),
+    adminGet<AdminModelCosts>(request, `/api/admin/model-costs?${modelCostQuery(params)}`),
+    adminGet<AdminModelPriceCatalog>(request, `/api/admin/model-price-catalog?q=${encodeURIComponent(priceQuery)}&page=${encodeURIComponent(params.get("pricePage") || "1")}`),
+    adminGet<AdminModelBackfills>(request, "/api/admin/model-cost-backfills"),
+    params.get("backfillRun") ? adminGet<AdminModelBackfill>(request, `/api/admin/model-cost-backfills/${encodeURIComponent(params.get("backfillRun")!)}?page=${encodeURIComponent(params.get("backfillPage") || "1")}`) : Promise.resolve(null),
+  ]);
+  return { ...models, configuration, pricing, costs, priceCatalog, priceQuery, backfills, backfill };
 }
 
 export const meta: Route.MetaFunction = () => [{ title: `大模型配置 · ${SITE.name} 后台` }];
@@ -46,6 +61,11 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
       actions={<FilterChips param="days" options={[{ value: "1", label: "24 小时" }, { value: "", label: "7 天" }, { value: "30", label: "30 天" }]} />}
     >
       <ModelConnections configuration={m.configuration} onCodexModels={setCatalog} />
+      <div className="my-5 grid gap-5">
+        <ModelPricing pricing={m.pricing} catalog={m.priceCatalog} query={m.priceQuery} />
+        <ModelCostOverview costs={m.costs} targets={m.pricing.targets} />
+        <ModelCostBackfill runs={m.backfills} selected={m.backfill} targets={m.pricing.targets} />
+      </div>
       {m.bootstrap && (
         <Card title={m.bootstrap.status === "active" ? "首轮存量正在处理" : m.bootstrap.status === "restored" ? "首轮处理结束，已恢复增量预算" : "首轮临时预算已结束"}>
           <p className="text-[13px] text-ink-2">共 {num(m.bootstrap.total)} 篇，待处理 {num(m.bootstrap.pending)} 篇，待完成事件任务 {num(m.bootstrap.pendingEvents)} 项。
@@ -104,7 +124,7 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
                 <DataTable
                   dense
                   rows={c.usage}
-                  rowKey={(u) => `${u.purpose}|${u.model}|${u.promptVersion}`}
+                  rowKey={(u) => JSON.stringify([u.providerKey, u.requestedModel, u.billingKind, u.purpose, u.model, u.promptVersion, u.currency, u.estimatedCurrency])}
                   columns={[
                     { key: "m", label: "模型", render: (u) => <span className="whitespace-nowrap font-mono text-[12px]">{u.model}</span> },
                     { key: "v", label: "提示版本", render: (u) => <span className="whitespace-nowrap font-mono text-[11.5px] text-ink-3">{u.promptVersion ?? "—"}</span> },
@@ -128,13 +148,7 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
                       label: "费用",
                       align: "right",
                       render: (u) =>
-                        u.actualCost !== null ? (
-                          `${money(u.actualCost)}${u.currency && u.currency !== "CNY" ? ` ${u.currency}` : ""}`
-                        ) : u.estimate ? (
-                          <span title="按用量 × 单价推算">≈ {money(u.estimate.amount)}{u.estimate.currency !== "CNY" ? ` ${u.estimate.currency}` : ""}</span>
-                        ) : (
-                          <span className="whitespace-nowrap text-ink-4" title="服务商没有返回费用，按 token 数和你的模型单价自己估算">未定价</span>
-                        ),
+                        formatModelCost({ billingKind: u.billingKind, actualCost: u.actualCost, actualCurrency: u.currency, completeEstimate: u.estimateComplete, approximateEstimate: u.estimateApproximate, partialEstimate: u.estimatePartial, estimatedCurrency: u.estimatedCurrency }),
                     },
                   ]}
                 />

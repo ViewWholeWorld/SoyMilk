@@ -1,6 +1,8 @@
 # 上游修复审查与实施计划（2026-10-14）
 
-本文件保存 2026-10-14 审查证据、修复方案和验收要求。最初仅授权文档 PR；2026-10-15 使用者要求拉取最新代码并按计划开发，已在独立任务分支实施。原审查证据与当时验证边界保留，当前进度见文末。后续审查从[固定台账](upstream-review.md)续接，实现与部署分别记录。
+> 历史归档：保留当时的计划、实施决定与验收记录。当前状态以[文档索引](../README.md)、[维护说明](../soymilk-operations.md)和[上游台账](../upstream-review.md)为准。
+
+本文件保存 2026-10-14 审查证据、修复方案和验收要求。最初仅授权文档 PR；2026-10-15 使用者要求拉取最新代码并按计划开发，已在独立任务分支实施。原审查证据与当时验证边界保留，当前进度见文末。后续审查从[固定台账](../upstream-review.md)续接，实现与部署分别记录。
 
 ## 1. 基线与审核范围
 
@@ -36,7 +38,7 @@
 
 优先级：高。参考 `ea96060`。
 
-当前位置：[URL 防护](../packages/backend/src/lib/url.ts)中的 `blockedHostname()`、`assertPublicUrl()` 和 `guardedLookup()`。
+当前位置：[URL 防护](../../packages/backend/src/lib/url.ts)中的 `blockedHostname()`、`assertPublicUrl()` 和 `guardedLookup()`。
 
 现有名称黑名单匹配 `localhost`、`.localhost`、`.internal` 等，但没有先去掉 DNS 根域尾点。`localhost.`、`child.localhost.`、`metadata.google.internal.` 和 `anything.internal.` 因此无法命中名称规则。
 
@@ -49,13 +51,13 @@
 3. 保留本站 `assertPublicUrl(url, allowPrivate, proxied)` 参数及代理语义。本站对代理代解析域名使用较窄的内网地址判断，不能被上游不同签名或解析替身参数覆盖。
 4. 保留连接时的二次地址检查及调试开关的原有权限边界。
 
-验收：四个名称及其大小写组合均在 DNS 查询之前拒绝；普通 `example.org.` 可通过受控公开解析；IP 字面量、混合 DNS 回答、IPv6 内嵌地址、DNS 重绑定及代理分支既有行为不退化。测试采用本地解析替身，不查询真实域名。扩展现有 [URL 测试](../tests/url.test.ts)，按本站接口适配上游用例。
+验收：四个名称及其大小写组合均在 DNS 查询之前拒绝；普通 `example.org.` 可通过受控公开解析；IP 字面量、混合 DNS 回答、IPv6 内嵌地址、DNS 重绑定及代理分支既有行为不退化。测试采用本地解析替身，不查询真实域名。扩展现有 [URL 测试](../../tests/url.test.ts)，按本站接口适配上游用例。
 
 ### S2：内联图片地址的 MIME 校验
 
 优先级：高。参考 `ea96060`。
 
-涉及：[图片判断](../packages/backend/src/lib/image-url.ts)、[正文清洗](../packages/backend/src/content/sanitize.ts)、[图片输出](../packages/backend/src/media/imgproxy.ts)。
+涉及：[图片判断](../../packages/backend/src/lib/image-url.ts)、[正文清洗](../../packages/backend/src/content/sanitize.ts)、[图片输出](../../packages/backend/src/media/imgproxy.ts)。
 
 本站辅助函数名为 `isTrackingImage()`，上游已改为 `isNonArticleImage()`。现有清洗允许 `<img>` 的 `data:` scheme，输出代理又直接返回以 `data:` 开头的地址；仅有跟踪域名与一像素图过滤，未校验内联 MIME。
 
@@ -69,25 +71,25 @@
 4. 不改图片签名格式、签名有效期、响应式尺寸、全文许可和缓存策略，不为了清理旧内容批量抓取或调用模型。
 5. 上游仍允许 `image/svg+xml` 等图片 MIME；本轮不借此宣称 SVG 内容已得到独立安全验证，也不扩大现有允许范围。
 
-验收：上述四种非法值在清洗、单图输出和正文图片输出中被拒绝；PNG、JPEG、既有 SVG 图片及普通 HTTP(S) 图片按原许可保留；三种来源属性一致；清洗幂等；跟踪图和 1×1 图继续过滤；正文、RSS 和文章阅读回归。以现有 [正文测试](../tests/markdown-body.test.ts)及媒体相关用例为基础补充实际行为测试，不只检查源代码字符串。
+验收：上述四种非法值在清洗、单图输出和正文图片输出中被拒绝；PNG、JPEG、既有 SVG 图片及普通 HTTP(S) 图片按原许可保留；三种来源属性一致；清洗幂等；跟踪图和 1×1 图继续过滤；正文、RSS 和文章阅读回归。以现有 [正文测试](../../tests/markdown-body.test.ts)及媒体相关用例为基础补充实际行为测试，不只检查源代码字符串。
 
 ### S3：摘要与翻译模板的共享安全规则
 
 优先级：高。参考 `ea96060`。
 
-五个目标文件位于 `industry/prompts/`：`summarize-article.md`、`summarize-long-post.md`、`summarize-short-post.md`、`translate-body.md`、`translate-post.md`。共享规则已存在于 [safety.md](../industry/prompts/safety.md)，将标题、正文、引用和图片文字视为不可信材料。
+五个目标文件位于 `industry/prompts/`：`summarize-article.md`、`summarize-long-post.md`、`summarize-short-post.md`、`translate-body.md`、`translate-post.md`。共享规则已存在于 [safety.md](../../industry/prompts/safety.md)，将标题、正文、引用和图片文字视为不可信材料。
 
 本轮实际展开这五个模板，均未包含这段共享规则；其他防幻觉规则不能替代“不得执行材料中指令”的要求。
 
 实施方案：在各模板任务说明附近引用 `{{> safety}}`，保留本站已有的结论优先、标题自洽、行业规则、事实约束、时间锚点、HTML 链接占位和 JSON 输出契约。不用上游整份行业模板覆盖本站文件。
 
-[提示词加载器](../packages/backend/src/editorial/prompts.ts)会将引用内容纳入版本哈希。实施时需要检查版本变化对在途及重试任务的影响：不得因新的 prompt hash 让未知旧回执绕过等待，也不主动重评或批量重翻历史内容。若现有任务边界无法保证这一点，先补充兼容方案，再推进实现。
+[提示词加载器](../../packages/backend/src/editorial/prompts.ts)会将引用内容纳入版本哈希。实施时需要检查版本变化对在途及重试任务的影响：不得因新的 prompt hash 让未知旧回执绕过等待，也不主动重评或批量重翻历史内容。若现有任务边界无法保证这一点，先补充兼容方案，再推进实现。
 
 验收：实际展开五个模板可见共享规则且无未解析引用；原有变量完整、输出格式和翻译占位约束保持；内容哈希能反映修改；本地模型替身验证材料中的恶意指令不会改变系统任务的构造及输出处理；已有响应复用、未知回执等待和关闭安全阀的行为保持。测试只能验证应用构造与处理，不把本地替身结果写成真实模型抗提示注入效果评测。
 
 ### D1：暂缓 Caddy 响应头改动
 
-上游同时新增 HSTS、`X-Frame-Options`、`X-Content-Type-Options`、`Referrer-Policy` 和 `Permissions-Policy`。本站当前使用已确定的 HTTP 私网入口，单改 [Caddyfile](../deploy/Caddyfile)不能证明实际请求经过 Caddy。
+上游同时新增 HSTS、`X-Frame-Options`、`X-Content-Type-Options`、`Referrer-Policy` 和 `Permissions-Policy`。本站当前使用已确定的 HTTP 私网入口，单改 [Caddyfile](../../deploy/Caddyfile)不能证明实际请求经过 Caddy。
 
 本轮暂缓整个 Caddy 配置部分，不要求将本站迁为 HTTPS。后续如需统一响应头，应先确认实际入口及已有响应头，再按 HTTP／HTTPS 语义分别设计和验证；这项暂缓不阻挡 S1—S3。
 
@@ -97,10 +99,10 @@
 
 ### 4.1 当前路径与风险
 
-- [归组逻辑](../packages/backend/src/events/group.ts)在候选判定的通用异常分支调用 `markGrouped()` 和 `publishArticle()` 后重新抛出异常；预算不足也会进入此分支，造成“尚未完成归组，但已写入 grouped_at”。
-- [事件任务](../packages/backend/src/jobs/events.ts)没有单独处理预算等待。[归组队列](../packages/backend/src/jobs/queue.ts)采用 `retryLimit=4`、20 秒初始延迟及退避；预算窗口可能长于这段重试周期。
+- [归组逻辑](../../packages/backend/src/events/group.ts)在候选判定的通用异常分支调用 `markGrouped()` 和 `publishArticle()` 后重新抛出异常；预算不足也会进入此分支，造成“尚未完成归组，但已写入 grouped_at”。
+- [事件任务](../../packages/backend/src/jobs/events.ts)没有单独处理预算等待。[归组队列](../../packages/backend/src/jobs/queue.ts)采用 `retryLimit=4`、20 秒初始延迟及退避；预算窗口可能长于这段重试周期。
 - `retryReleasedReceiptJobs()` 依赖失败任务的 `receiptId` 和后续放行审计；预算检查在请求发出前失败时通常没有可放行回执，不能依赖这一机制恢复。
-- [内容补扫](../packages/backend/src/jobs/content.ts)只查 `processing_state='new'` 的文章，不是归组补扫。文章已分析完成时，不能保证预算恢复后自动接续归组。
+- [内容补扫](../../packages/backend/src/jobs/content.ts)只查 `processing_state='new'` 的文章，不是归组补扫。文章已分析完成时，不能保证预算恢复后自动接续归组。
 
 这是代码路径检查得到的恢复缺口。本轮没有查询生产数据库或任务队列，不声明当前存在多少篇受影响内容，也不批量重排历史任务。
 
@@ -121,7 +123,7 @@
 3. 公开可见性与归组完成如何分别表达。现有 `grouped_at` 参与精选可见时间计算，不能简单清空后导致文章长期消失或改写时间轴。
 4. 候选变化或部分模型已返回时，如何保留稳定请求身份及已保存结果；不得用重评或新轮次绕过未知回执。
 5. 下一次入队与当前任务结束之间发生崩溃时，谁负责继续；重复恢复如何去重；真实失败如何仍然有界并可诊断。
-6. 若必须增加数据库状态，单独写明兼容旧应用的增量迁移、索引、锁和回退行为；部署仍遵守[手动部署](manual-deploy.md)。上游本轮没有新迁移，不代表本站适配必然不需要迁移。
+6. 若必须增加数据库状态，单独写明兼容旧应用的增量迁移、索引、锁和回退行为；部署仍遵守[手动部署](../manual-deploy.md)。上游本轮没有新迁移，不代表本站适配必然不需要迁移。
 
 ### 4.4 验收
 
@@ -137,13 +139,13 @@
 | 真实错误 | 继续有界失败并保留诊断，不被无限等待掩盖 |
 | 公开页面与时间轴 | 不靠错误的完成标记维持公开，也不因修复重置收录时间 |
 
-扩展 [归组恢复测试](../tests/events-oss-recovery.test.ts)和回执相关回归，使用本地模型替身及隔离空库。补充真正执行队列重排／恢复的行为验证，不能只验证异常类型或数据库某个状态值。
+扩展 [归组恢复测试](../../tests/events-oss-recovery.test.ts)和回执相关回归，使用本地模型替身及隔离空库。补充真正执行队列重排／恢复的行为验证，不能只验证异常类型或数据库某个状态值。
 
 ## 5. E1：SelectBench 输入与跨模型证据校验
 
 优先级：中。将 `3c69b49` 和后续 `e57da5a` 作为同一项适配，避免只完成输入校验而遗漏比较一致性。
 
-涉及：[评测 CLI](../scripts/eval-selection.ts)、[报告导入与读取](../packages/backend/src/admin/selectbench.ts)、[管理员路由](../apps/api/src/routes/admin.ts)、[校准文档](selection.md)。
+涉及：[评测 CLI](../../scripts/eval-selection.ts)、[报告导入与读取](../../packages/backend/src/admin/selectbench.ts)、[管理员路由](../../apps/api/src/routes/admin.ts)、[校准文档](../selection.md)。
 
 ### 5.1 本站缺口
 
@@ -179,23 +181,23 @@ CLI 当前只逐行 `JSON.parse`，没有在采样及模型调用前验证整个
 
 建议顺序：S1、S2、S3 → G1 → E1。安全组三项可分成清晰的小提交；G1 独立设计并验证恢复闭环；E1 同时包含两个相依上游修复。所有项目保持台账编号，不能仅用“已合并上游某 SHA”代替行为状态。
 
-2026-10-14 仅提交本计划和台账。后续实现按 [Git 规范](git-guidelines.md)建立任务分支；仅在使用者明确要求提交时提交。每项完成后同步相关文档；用户可见行为发生变化时，按 AGENTS.md 更新应用版本及网站公告，不能将候选实现写成已上线。
+2026-10-14 仅提交本计划和台账。后续实现按 [Git 规范](../git-guidelines.md)建立任务分支；仅在使用者明确要求提交时提交。每项完成后同步相关文档；用户可见行为发生变化时，按 AGENTS.md 更新应用版本及网站公告，不能将候选实现写成已上线。
 
 ## 7. 验证与发布要求
 
 2026-10-14 审查阶段完成：四个上游提交及 18 个变更文件的审核；本站调用链核对；内存中的 DNS 替身、非法内联图片及五个提示词展开检查。该阶段没有运行数据库、真实模型、生产网络或完整回归；2026-10-15 的实现验收另见文末，不沿用历史 `662/662` 后端通过记录。
 
-实施阶段按照 [隔离测试](testing.md)执行：安全阀关闭、虚构凭据、独立临时数据、内部网络和以 `_test`／`_ci` 结尾的新空库；模型只能使用 `stub()`、`useModelStubs()` 明确绑定的本地替身。
+实施阶段按照 [隔离测试](../testing.md)执行：安全阀关闭、虚构凭据、独立临时数据、内部网络和以 `_test`／`_ci` 结尾的新空库；模型只能使用 `stub()`、`useModelStubs()` 明确绑定的本地替身。
 
 相关用例通过后，完成 AGENTS.md 要求的类型检查、隔离后端完整套件、网页构建与网页测试；站点启动后进行 smoke、公开 MCP 及受影响页面检查。逐次记录实际总数、失败、取消和跳过，解释失败及复核结果。实施时命令与日志以当前仓库配置为准。
 
-部署单独遵循[手动部署](manual-deploy.md)：核对实际运行镜像、迁移与覆盖，保持 worker 并发、预算、Hermes 固定网络和 setup 的 `--topics-only`。本次文档 PR 不触发构建或部署。任何后续应用回退保留数据库及付费回执；若 G1 需要新迁移，先验证旧版本兼容与失败回退，不恢复旧数据库。
+部署单独遵循[手动部署](../manual-deploy.md)：核对实际运行镜像、迁移与覆盖，保持 worker 并发、预算、Hermes 固定网络和 setup 的 `--topics-only`。本次文档 PR 不触发构建或部署。任何后续应用回退保留数据库及付费回执；若 G1 需要新迁移，先验证旧版本兼容与失败回退，不恢复旧数据库。
 
 ## 8. 当前执行状态
 
-2026-10-15 开发续接：基于最新 `main@7e2d154`，分支 `bugfix/upstream-fixes-20261014`，候选版本 `3.4.7`。S1—S3、G1、E1 已实现并完成统一隔离验收：后端 675/675、网页 44/44、类型、构建、版本同步、30 项冒烟、MCP 与实际 HTTP 版本核验通过。使用者授权后已整理五项修复与版本／验收提交并推送任务分支，创建 [PR #7](https://github.com/ViewWholeWorld/SoyMilk/pull/7)，尚未合并或部署。前文保留原审查证据，下表记录本轮实现与验收结果；首次完整超时及同文件、全套复核见 [测试记录](testing.md#2026-10-15-上游修复候选-347)。
+2026-10-15 开发续接：基于最新 `main@7e2d154`，分支 `bugfix/upstream-fixes-20261014`，候选版本 `3.4.7`。S1—S3、G1、E1 已实现并完成统一隔离验收：后端 675/675、网页 44/44、类型、构建、版本同步、30 项冒烟、MCP 与实际 HTTP 版本核验通过。使用者授权后已整理五项修复与版本／验收提交并推送任务分支，创建 [PR #7](https://github.com/ViewWholeWorld/SoyMilk/pull/7)，尚未合并或部署。前文保留原审查证据，下表记录本轮实现与验收结果；首次完整超时及同文件、全套复核见 [测试记录](testing-20261015.md#2026-10-15-上游修复候选-347)。
 
-同日 PR 审核后补齐同版本及跨候选回执保护、真实归组入口的修订号、小数均分导入与队列领取轮次保护；最新统一验收为后端 **694/694**、网页 **44/44**、类型、版本、构建及 30 项冒烟通过。为保护真实 worker 的自动结算，队列运行库升级至 pg-boss `12.35.0`，包含内部 schema **42→43**，已验证旧库升级时任务保留及旧运行库接续；无新增本站应用迁移，但生产内部队列升级仍须按[手动部署](manual-deploy.md)另行取得授权。下表和原实施决定保留初版阶段，后续完整证据见[队列审核补修](testing.md#2026-10-15-pr-7-队列领取轮次补修)。
+同日 PR 审核后补齐同版本及跨候选回执保护、真实归组入口的修订号、小数均分导入与队列领取轮次保护；最新统一验收为后端 **694/694**、网页 **44/44**、类型、版本、构建及 30 项冒烟通过。为保护真实 worker 的自动结算，队列运行库升级至 pg-boss `12.35.0`，包含内部 schema **42→43**，已验证旧库升级时任务保留及旧运行库接续；无新增本站应用迁移，但生产内部队列升级仍须按[手动部署](../manual-deploy.md)另行取得授权。下表和原实施决定保留初版阶段，后续完整证据见[队列审核补修](testing-20261015.md#2026-10-15-pr-7-队列领取轮次补修)。
 
 | 项目 | 实现 | 本次验证边界 | 实现提交／PR／部署 |
 | --- | --- | --- | --- |
@@ -206,7 +208,7 @@ CLI 当前只逐行 `JSON.parse`，没有在采样及模型调用前验证整个
 | E1 | 已实现 | JSONL、CLI 输入优先报错、完整导入与 HTTP 400 回归 | `dafadc8`，统一验收通过 |
 | D1 | 暂缓 | 未改 Caddy 或访问部署入口 | — |
 
-后续持续状态以[固定台账](upstream-review.md)为准；本文件保留本轮证据与设计，实施产生的新决定及验证结果须注明日期，不能覆盖成本轮已完成的内容。
+后续持续状态以[固定台账](../upstream-review.md)为准；本文件保留本轮证据与设计，实施产生的新决定及验证结果须注明日期，不能覆盖成本轮已完成的内容。
 
 ### 2026-10-15 实施决定
 
