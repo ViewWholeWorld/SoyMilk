@@ -39,6 +39,63 @@ test("a changed article identity cannot resend while a same-version receipt is p
   await sql`UPDATE receipts SET status='failed' WHERE id=${received.receiptId}`;
 });
 
+test("changed review candidates wait on primary and shared article receipts until release", async () => {
+  for (const shared of [false, true]) {
+    const article = `article:${tag()}`;
+    const req = { service: `review-candidate-${tag()}`, purpose: "group_review", subject: `${article}:fact:1`, identity: { pair: "old" } };
+    const target = shared ? `article:${tag()}` : article;
+    const changed = { ...req, subject: `${target}:fact:2`, identity: { pair: "new" } };
+    const asked = gate(); const release = gate();
+    let calls = 0;
+    const send = async () => { calls++; return { response: { relation: "new" } }; };
+    const first = paidRequest(req, async () => { calls++; asked.open(); await release.promise; throw new Error("fixture lost review"); });
+    const failed = assert.rejects(first, ReceiptUnknownError);
+    await asked.promise;
+    const [receipt] = await sql<{ id: number }[]>`SELECT id FROM receipts WHERE logical_key=${logicalKeyFor(req)}`;
+    try {
+      if (shared) await assert.rejects(paidRequest({ ...req, subject: `${target}:fact:1` }, send), ReceiptBusyError);
+      await assert.rejects(paidRequest(changed, send), ReceiptBusyError);
+      await sql`UPDATE receipts SET updated_at=now()-interval '11 minutes' WHERE id=${receipt!.id}`;
+      await assert.rejects(paidRequest(changed, send), (error: unknown) => error instanceof ReceiptUnknownError && error.receiptId === receipt!.id);
+      const [stale] = await sql`SELECT status FROM receipts WHERE id=${receipt!.id}`;
+      assert.equal(stale!.status, "unknown");
+    } finally { release.open(); }
+    await failed;
+    await assert.rejects(paidRequest(changed, send), (error: unknown) => error instanceof ReceiptUnknownError && error.receiptId === receipt!.id);
+    assert.equal(calls, 1);
+    assert.equal((await sql`SELECT 1 FROM receipt_attempts WHERE service=${req.service}`).length, 1);
+    await sql`UPDATE receipts SET status='failed' WHERE id=${receipt!.id}`;
+    const resumed = await paidRequest(changed, send);
+    assert.equal(calls, 2);
+    assert.equal(resumed.reused, false);
+    assert.notEqual(resumed.receiptId, receipt!.id);
+  }
+});
+
+test("review receipt guards preserve article, revision, purpose and service boundaries", async () => {
+  const article = `article:${tag()}`;
+  const req = { service: `review-boundaries-${tag()}`, purpose: "group_review", subject: `${article}@1:fact:1`, identity: { pair: "old" } };
+  await assert.rejects(paidRequest(req, async () => { throw new Error("fixture lost review"); }), ReceiptUnknownError);
+  const variants = [
+    { subject: `${article}0@1:fact:2` },
+    { subject: `${article}@2:fact:2` },
+    { purpose: "group_article" },
+    { service: `other-service-${tag()}` },
+  ];
+  for (const [i, variant] of variants.entries()) {
+    const result = await paidRequest({ ...req, ...variant, identity: { pair: i } }, async () => ({ response: { pair: i } }));
+    assert.equal(result.reused, false);
+    assert.deepEqual(result.response, { pair: i });
+  }
+  await sql`UPDATE receipts SET status='failed' WHERE logical_key=${logicalKeyFor(req)}`;
+  // A received answer belongs to its candidate; a different pair still needs its own answer.
+  const received = await paidRequest(req, async () => ({ response: { pair: "old" } }));
+  const next = await paidRequest({ ...req, subject: `${article}@1:fact:2`, identity: { pair: "new" } }, async () => ({ response: { pair: "new" } }));
+  assert.notEqual(next.receiptId, received.receiptId);
+  assert.equal(next.reused, false);
+  assert.deepEqual(next.response, { pair: "new" });
+});
+
 test("stale recovery waiting on a response transaction preserves its committed answer and attempt", async () => {
   const request = { service: "invariant-recovery-race", purpose: "invariant_test", identity: { race: tag() } };
   const asked = gate();

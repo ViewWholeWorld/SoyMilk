@@ -137,12 +137,17 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
     if (existing) await registerConsumers(tx, existing.id, [existing.subject, req.subject]);
     if (existing?.status === "received" || existing?.status === "completed") return { kind: "reuse" as const, row: existing };
     // A changed identity cannot bypass an unresolved paid call for the same article input.
+    // Review candidates share the article's unresolved-call guard, but keep distinct logical keys.
     // Consumers also cover responses shared by articles. Different revisions have distinct subjects.
     if (req.subject?.startsWith("article:")) {
+      const groupReview = req.purpose === "group_review";
+      const subject = groupReview ? req.subject.split(":fact:", 1)[0]! : req.subject;
       const [unresolved] = await tx<ReceiptRow[]>`
         SELECT r.id,r.subject,r.status,r.response,r.created_at,r.updated_at FROM receipts r
         WHERE r.service=${req.service} AND r.purpose=${req.purpose} AND r.logical_key<>${logicalKey}
-          AND (r.subject=${req.subject} OR EXISTS(SELECT 1 FROM receipt_consumers c WHERE c.receipt_id=r.id AND c.subject=${req.subject}))
+          AND (CASE WHEN ${groupReview} THEN split_part(r.subject,':fact:',1) ELSE r.subject END=${subject}
+            OR EXISTS(SELECT 1 FROM receipt_consumers c WHERE c.receipt_id=r.id
+              AND CASE WHEN ${groupReview} THEN split_part(c.subject,':fact:',1) ELSE c.subject END=${subject}))
           AND r.status IN ('pending','unknown')
         ORDER BY r.id LIMIT 1 FOR UPDATE OF r`;
       if (unresolved) {

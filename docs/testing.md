@@ -4,6 +4,20 @@
 
 测试只写入迁移完成的独立空库，数据库名必须以 `_test` 或 `_ci` 结尾。禁止连接生产库、挂载生产数据卷或复制环境文件及授权凭据。NAS 上用独立检查容器和 `--internal` Docker 网络，仅让检查容器与临时 PostgreSQL 相互连接；不发布数据库端口，不使用正式 Compose 项目运行测试。
 
+## 2026-10-15 PR #7 审核补修
+
+拉取 `bugfix/upstream-fixes-20261014@57a88a846b5490df742701ccc0df70171d0b42ff` 后复核两条审核意见：同版本在途回执的保护已存在；`group_review` 仍会因 `article:<id>:fact:<candidate>` 的候选变化漏掉旧回执。本次只在未决回执匹配时去掉 `:fact:` 后缀，同时检查主 subject 和共享消费者；保留逻辑请求键、原 subject、服务／用途及修订边界，不复用另一个候选的已收答案。
+
+新增两项真实数据库回归，覆盖主回执与共享消费者、在途等待、陈旧转未知、未知结果阻断、放行后恢复、文章／修订／用途／服务隔离和已收候选答案隔离。将修复前的 `receipts.ts` 放入独立快照运行新增用例，得到预期失败 `Missing expected rejection (ReceiptBusyError)`；修复后回执相关 **18/18** 通过。
+
+验证使用 Node.js 24.19.0、PostgreSQL 17、`network=none` 容器和新建空 `*_test` 库，应用 41 个既有迁移；仅导入 Git 跟踪文件快照和依赖副本，未挂载仓库运行数据、环境文件或授权目录。安全阀关闭，模型仅使用进程登记的本地替身。424 个应用、行业与测试文件和验收归档逐一 SHA-256 一致。
+
+最终完整后端 **678/678 通过，失败、取消、跳过均为 0，141.510 秒**；完整类型、版本同步、网页生产构建、**网页 44/44**（3.362 秒）与 **30 项空站点冒烟**通过。候选版本继续为 `3.4.7`，无新增依赖、迁移或部署配置。验收阶段未提交或推送；随后使用者授权将本节修复提交到原 [PR #7](https://github.com/ViewWholeWorld/SoyMilk/pull/7) 任务分支，尚未合并或部署。
+
+首轮完整后端为 **678 项中 675 通过、3 失败，取消、跳过 0，144.710 秒**。两项备份故障模拟失败已确认来自容器 `/tmp` 默认 `noexec`：模拟的 `tar` 脚本不能执行；仅将独立容器的 tmpfs 改为 `exec` 后，新空库备份单文件 **10/10** 通过。另一项为既有 `source-waits` 的旧等待计数断言 `0 !== 1`，新空库单文件复核仍为 **6/7**；增加临时只读时间观测的独立副本中该项 **1/1** 通过，随后未修改源码、断言或超时的完整重跑 **678/678** 通过。数据库微秒时间与 JavaScript 毫秒截止的边界是怀疑方向，尚未确认该偶发失败的唯一根因；不能将单次重跑通过写成已修复该历史用例。辅助复现首次还遇到只读依赖符号链接无法解析 workspace、诊断容器没有 Python，改用依赖副本与宿主机生成诊断文件后继续，未改应用。
+
+日志保存在 `/workspace/scratch/soymilk-pr7-review-20261015/`：`backend.log` 保留首轮完整失败，`retry/backend.log` 为最终全套，`focused.log`、`typecheck.log`、`version.log`、`build.log`、`web.log`、`retry/smoke.log`、`before-retry-regression.log`、`backup-recheck.log`、`source-waits-recheck.log`、`clock-probe-retry.log` 和 `source-consistency.log` 为分项证据。临时容器及其测试库已清理，原镜像保留。
+
 ## 2026-10-15 上游修复候选 3.4.7
 
 候选起点为 `main@7e2d154`，任务分支 `bugfix/upstream-fixes-20261014`。本轮实现 S1—S3、G1 和 E1，D1 保持暂缓，无新增依赖、迁移或部署配置。
