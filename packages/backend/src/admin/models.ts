@@ -2,7 +2,7 @@
 // the prompt versions in use, quality / latency / cost of the last days per model, the switch history
 // and the SelectBench runs that compare models on the same batch. A switch is audited and applies to
 // new work only.
-import type { AdminModels, AdminTokenSummary, BeforeJson } from "@aihot/contracts/admin";
+import type { AdminModels, AdminTokenSummary, BeforeJson, ModelEstimateStatus } from "@aihot/contracts/admin";
 import { sql } from "../db.ts";
 import { CAPABILITIES, invalidateModelCache, modelSources, type Capability, type CapabilityKey } from "../editorial/models.ts";
 import { registeredModels } from "../providers/llm.ts";
@@ -27,12 +27,21 @@ interface UsageRow {
   tokens_reasoning: string | null;
   actual_cost: string | null;
   currency: string | null;
+  provider_key: string | null;
+  requested_model: string | null;
+  billing_kind: string | null;
+  estimated_complete: string | null;
+  estimated_approximate: string | null;
+  estimated_partial: string | null;
+  partial_calls: number;
+  unknown_calls: number;
+  estimated_currency: string | null;
 }
 
 export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>> {
   const MODELS = await registeredModels();
   const since = new Date(Date.now() - days * 86400_000);
-  const [sources, usage, prices, history, benches, bootstrap] = await Promise.all([
+  const [sources, usage, history, benches, bootstrap] = await Promise.all([
     modelSources(),
     sql<UsageRow[]>`
       SELECT r.purpose, a.model, r.request->>'promptVersion' AS prompt_version, count(*)::int AS calls,
@@ -46,14 +55,19 @@ export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>>
              sum((a.usage->>'prompt_tokens')::bigint) FILTER(WHERE c.cached IS NOT NULL) AS tokens_cache_measured,
              count(*) FILTER(WHERE c.cached IS NOT NULL)::int AS cache_reported_calls,
              sum(coalesce(a.usage->'completion_tokens_details'->>'reasoning_tokens', a.usage->'output_tokens_details'->>'reasoning_tokens', a.usage->>'reasoning_output_tokens')::bigint) AS tokens_reasoning,
-             sum(a.cost) FILTER (WHERE a.cost_basis = 'actual') AS actual_cost, max(a.currency) AS currency
+             sum(a.cost) FILTER (WHERE a.cost_basis = 'actual')::text AS actual_cost, a.currency AS currency,
+             a.provider_key, a.requested_model, a.billing_kind,
+             sum(a.estimated_cost) FILTER (WHERE a.estimate_status = 'complete')::text AS estimated_complete,
+             sum(a.estimated_cost) FILTER (WHERE a.estimate_status = 'approximate')::text AS estimated_approximate,
+             sum(a.estimated_cost) FILTER (WHERE a.estimate_status = 'partial')::text AS estimated_partial,
+             count(*) FILTER (WHERE a.estimate_status = 'partial')::int AS partial_calls,
+             count(*) FILTER (WHERE a.estimate_status IN ('unpriced','missing_usage','invalid_usage') OR a.estimate_status IS NULL)::int AS unknown_calls,
+             max(a.estimated_currency) AS estimated_currency
       FROM receipt_attempts a JOIN receipts r ON r.id = a.receipt_id
       CROSS JOIN LATERAL (SELECT coalesce(a.usage->'prompt_tokens_details'->>'cached_tokens', a.usage->'input_tokens_details'->>'cached_tokens',
         a.usage->>'cached_input_tokens', a.usage->>'prompt_cache_hit_tokens')::bigint AS cached) c
       WHERE a.started_at >= ${since} AND a.origin = 'live' AND a.model IS NOT NULL
-      GROUP BY 1, 2, 3 ORDER BY 1, 4 DESC`,
-    sql<{ service: string; model: string; currency: string; input_per_mtok: string | null; output_per_mtok: string | null }[]>`
-      SELECT service, model, currency, input_per_mtok, output_per_mtok FROM service_prices`,
+      GROUP BY 1, 2, 3, a.provider_key, a.requested_model, a.billing_kind, a.currency, a.estimated_currency ORDER BY 1, 4 DESC`,
     sql<BeforeJson<AdminModels["history"][number]>[]>`
       SELECT created_at AS at, actor, subject, reason, before, after FROM audit_log WHERE action = 'models.switch' ORDER BY created_at DESC LIMIT 30`,
     sql<{ id: string; label: string; sample_size: number; prompt_version: string | null; models: string[]; summary: unknown; created_at: Date }[]>`
@@ -62,13 +76,6 @@ export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>>
              created_at FROM selectbench_runs r ORDER BY created_at DESC LIMIT 8`,
     bootstrapBudgetStatus(),
   ]);
-  const serviceOf = (model: string) => Object.values(MODELS).find((m) => m.model === model || m.key === model)?.service ?? null;
-  const priced = (u: UsageRow) => {
-    const service = u.model ? serviceOf(u.model) : null;
-    const p = prices.find((x) => x.service === service && x.model === u.model) ?? prices.find((x) => x.service === service && x.model === "");
-    if (!p || (!p.input_per_mtok && !p.output_per_mtok)) return null;
-    return { amount: (Number(u.tokens_in ?? 0) / 1e6) * Number(p.input_per_mtok ?? 0) + (Number(u.tokens_out ?? 0) / 1e6) * Number(p.output_per_mtok ?? 0), currency: p.currency };
-  };
   const capabilities = (Object.entries(CAPABILITIES) as Array<[CapabilityKey, Capability]>).map(([key, c]) => ({
     key,
     label: c.label,
@@ -96,9 +103,18 @@ export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>>
         cacheReportedCalls: u.cache_reported_calls,
         cacheHitRate: Number(u.tokens_cache_measured ?? 0) > 0 ? Number(u.tokens_cached)/Number(u.tokens_cache_measured) : null,
         reasoningTokensOut: u.tokens_reasoning === null ? null : Number(u.tokens_reasoning),
-        actualCost: u.actual_cost === null ? null : Number(u.actual_cost),
+        actualCost: u.actual_cost,
         currency: u.currency,
-        estimate: priced(u),
+        estimate: u.estimated_complete === null && u.estimated_approximate === null ? null : { amount: u.estimated_complete ?? u.estimated_approximate!, currency: u.estimated_currency ?? "USD" },
+        estimateStatus: (u.estimated_approximate !== null ? "approximate" : u.estimated_complete !== null ? "complete" : u.partial_calls > 0 ? "partial" : u.unknown_calls > 0 ? "unpriced" : null) as ModelEstimateStatus | null,
+        estimateComplete: u.estimated_complete,
+        estimateApproximate: u.estimated_approximate,
+        estimatePartial: u.estimated_partial,
+        estimatedCurrency: u.estimated_currency,
+        partialCalls: u.partial_calls,
+        unknownCalls: u.unknown_calls,
+        providerKey: u.provider_key,
+        requestedModel: u.requested_model,
       })),
   }));
   const choices = Object.values(MODELS).map((m) => ({ key: m.key, service: m.service, vision: !!m.vision }));

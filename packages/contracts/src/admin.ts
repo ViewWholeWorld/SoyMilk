@@ -342,9 +342,18 @@ export interface AdminModelUsage {
   cacheReportedCalls: number;
   cacheHitRate: number | null;
   reasoningTokensOut: number | null;
-  actualCost: number | null;
+  actualCost: string | null;
   currency: string | null;
-  estimate: { amount: number; currency: string } | null;
+  estimate: { amount: string; currency: string } | null;
+  estimateStatus: ModelEstimateStatus | null;
+  estimateComplete: string | null;
+  estimateApproximate: string | null;
+  estimatePartial: string | null;
+  estimatedCurrency: string | null;
+  partialCalls: number;
+  unknownCalls: number;
+  providerKey: string | null;
+  requestedModel: string | null;
 }
 
 export interface AdminBootstrapBudget {
@@ -370,6 +379,32 @@ export interface AdminModels {
   choices: Array<{ key: string; service: string; vision: boolean }>;
   history: Array<{ at: Timestamp; actor: string; subject: string; reason: string | null; before: { model: string; source: string } | null; after: { model: string; source: string } | null }>;
   benches: Array<{ id: string; label: string; sample_size: number; prompt_version: string | null; models: string[]; created_at: Timestamp }>;
+}
+
+export type ModelBillingKind = "api" | "subscription_equivalent";
+export type ModelPricingMode = "reference" | "custom";
+export type ModelEstimateStatus = "complete" | "approximate" | "partial" | "unpriced" | "missing_usage" | "invalid_usage";
+export interface AdminModelPricingRule {
+  providerKey: string; requestedModel: string; billingKind: ModelBillingKind; mode: ModelPricingMode;
+  referenceProviderId: string | null; referenceModelId: string | null; currency: "USD" | "CNY";
+  inputPerMtok: string | null; outputPerMtok: string | null; cacheReadPerMtok: string | null; cacheWritePerMtok: string | null;
+  revision: number; updatedAt: Timestamp; updatedBy: string | null; note: string | null;
+  effective: { currency: "USD" | "CNY"; inputPerMtok: string | null; outputPerMtok: string | null; cacheReadPerMtok: string | null; cacheWritePerMtok: string | null;
+    source: "custom" | "models.dev" | "unpriced"; supported: boolean; unsupportedReason: string | null; stale: boolean; sourceUpdatedAt: Timestamp | null; priceHash: string | null };
+}
+export interface AdminModelPricing { rules: AdminModelPricingRule[]; calculatorVersion: "v1"; }
+export interface AdminModelCosts {
+  days: number;
+  rows: Array<{ provider_key: string | null; provider_label: string | null; requested_model: string | null; billing_kind: ModelBillingKind | null; purpose: string; calls: number;
+    actual_cost: string | null; actual_currency: string | null; complete_estimate: string | null; approximate_estimate: string | null; partial_estimate: string | null;
+    estimated_currency: string | null; partial_calls: number; unknown_calls: number }>;
+  coverage: { live_attempts: number; priced_attempts: number; approximate_attempts: number; partial_attempts: number; unknown_attempts: number };
+}
+export interface AdminModelPriceCatalog {
+  page: number; limit: number; total: number;
+  rows: Array<{ providerId: string; modelId: string; name: string; currency: "USD" | "CNY"; inputPerMtok: string | null; outputPerMtok: string | null;
+    cacheReadPerMtok: string | null; cacheWritePerMtok: string | null; supported: boolean; unsupportedReason: string | null; active: boolean; retrievedAt: Timestamp; priceHash: string }>;
+  sync: { etag: string | null; last_modified: string | null; last_attempt_at: Timestamp | null; last_success_at: Timestamp | null; last_error: string | null; entry_count: number; catalog_revision: string | null } | null;
 }
 
 export interface AdminSelectBenchRun {

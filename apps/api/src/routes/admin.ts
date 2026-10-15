@@ -6,6 +6,7 @@ import { actorOf } from "@aihot/backend/admin/auth";
 
 import { importSelectBenchRun, listSelectBenchRuns, selectBenchRun } from "@aihot/backend/admin/selectbench";
 import { modelsOverview, switchModel } from "@aihot/backend/admin/models";
+import { listModelPricing, saveModelPricing, restoreModelPricing, listModelPriceCatalog, syncModelPriceCatalog, modelCosts } from "@aihot/backend/admin/model-pricing";
 import { activateConnection, cancelLogin, codexModels, codexStatus, connectCodex, disconnectCodex, loginStatus, modelConfiguration, removeConnection, saveConnection } from "@aihot/backend/admin/model-config";
 import { sha256 } from "@aihot/backend/lib/ids";
 
@@ -125,6 +126,15 @@ export function registerAdmin(app: FastifyInstance) {
     const b = body<{ model: string | null; reason: string }>(req);
     return switchModel(param(req, "capability"), b.model ?? null, String(b.reason ?? ""), actorOf(admin));
   }));
+  app.get("/api/admin/model-pricing", adminHandler(async () => listModelPricing()));
+  app.put("/api/admin/model-pricing", adminHandler(async (req, _reply, admin) => saveModelPricing(req.body, actorOf(admin))));
+  app.post("/api/admin/model-pricing/restore", adminHandler(async (req, _reply, admin) => restoreModelPricing(req.body, actorOf(admin))));
+  app.get("/api/admin/model-price-catalog", adminHandler(async (req) => listModelPriceCatalog({ q: q(req).q, page: page(req), limit: Number(q(req).limit) || 40 })));
+  app.post("/api/admin/model-price-catalog/sync", adminHandler(async (_req, _reply, admin) => {
+    const result = await syncModelPriceCatalog();
+    return { ...result, actor: actorOf(admin) };
+  }));
+  app.get("/api/admin/model-costs", adminHandler(async (req) => modelCosts(Math.min(90, Number(q(req).days) || 7))));
 
   // SelectBench
   app.get("/api/admin/selectbench", adminHandler(async () => ({ runs: await listSelectBenchRuns() })));
