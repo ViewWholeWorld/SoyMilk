@@ -2,7 +2,9 @@
 // to one is refused at connect time too (DNS rebinding after the URL check).
 import assert from "node:assert/strict";
 import http from "node:http";
-import { after, test } from "node:test";
+import { after, mock, test } from "node:test";
+import dns from "node:dns/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { Agent, fetch as undiciFetch } from "undici";
 import { guardedFetch } from "@aihot/backend/lib/http-fetch";
 import { assertPublicUrl, guardedLookup, isBlockedAddress, isInternalAddress } from "@aihot/backend/lib/url";
@@ -14,6 +16,35 @@ const agent = new Agent({ connect: { lookup: guardedLookup as never } });
 after(async () => {
   server.close();
   await agent.close();
+});
+
+test("root-dot restricted names are refused before DNS; public root-dot names and rebinding retain their checks", async () => {
+  let queries = 0;
+  let answers = [{ address: "8.8.8.8", family: 4 }];
+  const resolver = mock.method(dns, "lookup", async () => { queries++; return answers; });
+  syncBuiltinESMExports();
+  const connect = (host: string) => new Promise((resolve, reject) => guardedLookup(host, { all: true }, (error, addresses) => error ? reject(error) : resolve(addresses)));
+  try {
+    for (const host of ["localhost.", "child.localhost.", "metadata.google.internal.", "anything.internal."]) {
+      for (const name of [host, host.toUpperCase()]) {
+        await assert.rejects(assertPublicUrl(`https://${name}/`), /Blocked host/);
+        await assert.rejects(assertPublicUrl(`https://${name}/`, false, true), /Blocked host/);
+        await assert.rejects(connect(name), /Blocked host/);
+      }
+    }
+    assert.equal(queries, 0);
+    assert.equal((await assertPublicUrl("https://example.org./post")).hostname, "example.org.");
+    assert.deepEqual(await connect("example.org."), answers);
+    answers = [{ address: "8.8.8.8", family: 4 }, { address: "127.0.0.1", family: 4 }];
+    await assert.rejects(assertPublicUrl("https://example.org./"), /Blocked private/);
+    await assert.rejects(connect("example.org."), /Blocked private/);
+    answers = [{ address: "2001:db8::1", family: 6 }];
+    await assertPublicUrl("https://example.org./", false, true);
+    await assert.rejects(assertPublicUrl("https://example.org./"), /Blocked private/);
+  } finally {
+    resolver.mock.restore();
+    syncBuiltinESMExports();
+  }
 });
 
 test("internal and reserved addresses are blocked in every spelling", () => {

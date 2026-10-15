@@ -166,6 +166,7 @@ export function isInternalAddress(address: string): boolean {
 }
 
 function blockedHostname(host: string): boolean {
+  host = host.toLowerCase().replace(/\.+$/, "");
   return host === "localhost" || host.endsWith(".localhost") || host.endsWith(".internal") || host === "metadata.google.internal";
 }
 
