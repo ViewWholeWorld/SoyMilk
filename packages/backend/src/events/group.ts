@@ -306,7 +306,7 @@ async function decide(articleId: string, opts: GroupOptions): Promise<GroupResul
     storyId = sameUrl.story_id;
   } else {
     try {
-      cands = await candidateViews(await recallFacts(articleId, reportText(title, summary), RECALL_MIN_COSINE, RECALL_TOP_FACTS, referenced));
+      cands = await candidateViews(await recallFacts(articleId, reportText(title, summary), RECALL_MIN_COSINE, RECALL_TOP_FACTS, referenced, a.revision));
       if (cands.length) {
         const judged = await judgeBatch(articleId, a.revision, query, cands);
         verdicts = judged.verdicts;
@@ -422,7 +422,7 @@ async function decide(articleId: string, opts: GroupOptions): Promise<GroupResul
   // A new fact may be what discussion posts of the last hours were about before any report came.
   if (verdict === "new-story" || verdict === "new-fact-in-story") {
     try {
-      result.rematched = await rematchSignals(articleId, reportText(title, summary));
+      result.rematched = await rematchSignals(articleId, a.revision, reportText(title, summary));
     } catch (error) {
       result.rematchError = String(error).slice(0, 300);
     }
@@ -465,14 +465,14 @@ const signalText = (a: { title: string; body_text: string | null }) => reportTex
  * then and were left. When a report founds a fact, the recent unattached posts close to it are
  * grouped again; each is judged the usual way, against all candidates.
  */
-async function rematchSignals(articleId: string, queryText: string): Promise<number> {
+async function rematchSignals(articleId: string, revision: number, queryText: string): Promise<number> {
   if (!embeddingsAvailable()) return 0;
-  const mine = (await vectorsFor([{ id: articleId, text: queryText }])).get(articleId);
+  const mine = (await vectorsFor([{ id: articleId, text: queryText, revision }])).get(articleId);
   if (!mine) return 0;
-  const posts = await sql<{ id: string; title: string; body_text: string | null }[]>`
-    SELECT a.id, a.title, a.body_text FROM articles a JOIN sources s ON s.id = a.source_id
+  const posts = await sql<{ id: string; revision: number; title: string; body_text: string | null }[]>`
+    SELECT a.id, a.revision, a.title, a.body_text FROM articles a JOIN sources s ON s.id = a.source_id
     WHERE a.discovered_at > now() - make_interval(hours => ${REMATCH_HOURS}) AND ${unattachedSignal}`;
-  const vectors = await vectorsFor(posts.map((p) => ({ id: p.id, text: signalText(p) })));
+  const vectors = await vectorsFor(posts.map((p) => ({ id: p.id, text: signalText(p), revision: p.revision })));
   let close = 0;
   for (const p of posts) {
     const v = vectors.get(p.id);
@@ -509,7 +509,7 @@ async function groupSignal(a: ArticleRow, source: { id: string; signal_group_id:
     return write({ factId: target.fact_id, storyId: target.story_id }, "signal-native", [{ id: target.fact_id, score: 1, relation: "SAME_STORY", confidence: 1 }]);
   }
   if (!embeddingsAvailable()) return { verdict: "signal-unmatched" };
-  const recalled = await recallFacts(a.id, signalText(a), SIGNAL_MIN_COSINE, SIGNAL_TOP_FACTS);
+  const recalled = await recallFacts(a.id, signalText(a), SIGNAL_MIN_COSINE, SIGNAL_TOP_FACTS, [], a.revision);
   if (recalled.length === 0) {
     // Recorded, so a post that found nothing is told apart from one never decided.
     return write(null, "signal-unmatched", []);

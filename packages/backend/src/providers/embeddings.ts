@@ -72,7 +72,7 @@ async function embedBatch(texts: string[], subject: string): Promise<{ vectors: 
 }
 
 /** Returns stored embeddings, computing and storing the missing ones. */
-export async function ensureEmbeddings(kind: "fact" | "article" | "story", items: Array<{ id: string; text: string }>): Promise<Map<string, number[]>> {
+export async function ensureEmbeddings(kind: "fact" | "article" | "story", items: Array<{ id: string; text: string; revision?: number }>): Promise<Map<string, number[]>> {
   const out = new Map<string, number[]>();
   if (items.length === 0) return out;
   const hashes = new Map(items.map((item) => [item.id, sha256(item.text)]));
@@ -104,7 +104,9 @@ export async function ensureEmbeddings(kind: "fact" | "article" | "story", items
   });
   for (let i = 0; i < missing.length; i += 10) {
     const batch = missing.slice(i, i + 10);
-    const { vectors, receiptId } = await embedBatch(batch.map((b) => b.text.slice(0, 2000)), `${kind}:${batch[0]!.id}`);
+    const first = batch[0]!;
+    const subject = `${kind}:${first.id}${first.revision === undefined ? "" : `@${first.revision}`}`;
+    const { vectors, receiptId } = await embedBatch(batch.map((b) => b.text.slice(0, 2000)), subject);
     await sql.begin(async (tx) => {
       for (let j = 0; j < batch.length; j++) {
         const item = batch[j]!;

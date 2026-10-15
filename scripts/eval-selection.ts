@@ -38,6 +38,13 @@ const { values } = parseArgs({
   },
 });
 
+for (const key of ["n", "concurrency"] as const) {
+  if (!/^\d+$/.test(values[key]!) || !Number.isSafeInteger(Number(values[key])) || Number(values[key]) < 1) throw new Error(`--${key} must be a positive integer`);
+}
+if (!/^-?\d+$/.test(values.seed!) || !Number.isSafeInteger(Number(values.seed)) || Number(values.seed) < -2147483648 || Number(values.seed) > 2147483647) {
+  throw new Error("--seed must be a 32-bit integer");
+}
+
 const rows = parseSelectionGold(readFileSync(path.resolve(REPO_ROOT, values.gold!), "utf8"));
 
 // Deterministic stratified sample.
@@ -47,9 +54,6 @@ function rng(seed: number) {
 }
 const rand = rng(Number(values.seed));
 const pool = selectionSplit(rows, values.split!);
-for (const key of ["n", "concurrency"] as const) {
-  if (!/^\d+$/.test(values[key]!) || !Number.isSafeInteger(Number(values[key])) || Number(values[key]) < 1) throw new Error(`--${key} must be a positive integer`);
-}
 const shuffled = pool.map((r) => ({ r, k: rand() })).sort((a, b) => a.k - b.k).map((x) => x.r);
 const sample = shuffled.slice(0, Number(values.n));
 

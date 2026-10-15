@@ -35,10 +35,10 @@ test("CLI rejects invalid input and empty splits before using an unavailable dat
   const dir = mkdtempSync(path.join(tmpdir(), "gold-invalid-"));
   try {
     const file = path.join(dir, "gold.jsonl");
-    for (const [text, split, expected] of [["// header\n\n{", "all", /Gold line 3/], [JSON.stringify(gold), "missing", /has no cases/]] as const) {
+    for (const [text, split, seed, expected] of [["// header\n\n{", "all", "7", /Gold line 3/], [JSON.stringify(gold), "missing", "7", /has no cases/], [JSON.stringify(gold), "all", "1.5", /--seed must be a 32-bit integer/], [JSON.stringify(gold), "all", "2147483648", /--seed must be a 32-bit integer/]] as const) {
       writeFileSync(file, text);
       try {
-        execFileSync(process.execPath, ["scripts/eval-selection.ts", "--gold", file, "--split", split], {
+        execFileSync(process.execPath, ["scripts/eval-selection.ts", "--gold", file, "--split", split, "--seed", seed], {
           env: { ...process.env, DATABASE_URL: "postgres://127.0.0.1:1/unavailable_test", MODEL_CALLS_ENABLED: "false" }, encoding: "utf8", timeout: 10_000, stdio: "pipe",
         });
         assert.fail("invalid gold accepted");
