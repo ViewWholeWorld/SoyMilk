@@ -6,10 +6,8 @@ SoyMilk 是从 [AIHOT](https://github.com/KKKKhazix/AIHOT) Fork 后定制的私�
 
 ## 当前功能
 
-- 开发候选 `3.5.1` 完成模型价格编辑、官方参考映射、费用筛选分页与独立历史补算；尚未部署，使用方法见[模型定价与费用](docs/model-pricing.md)，实现与验收见[定价进度](docs/model-pricing-plan.md)。
-
-- 候选 `3.4.7` 已实现[上游修复计划](docs/archive/upstream-fix-plan-20261014.md)的域名／内联图片校验、摘要和翻译安全规则、归组等待恢复及 SelectBench 证据校验。已通过 PR #7 合并到 `main@a518ad8`，部署状态仍以现场核验为准；隔离验证结果见[测试记录](docs/testing.md)。
-- NAS 于北京时间 2026-10-13 22:49:53 手动发布 `3.4.6`，修复详情页 HTTP 错误漏计、失效游标反复请求和采集等待误报；精选未读筛选、阅读字体、代码复制与按需高亮、信源诊断和建站前空报告跳过继续保留。正式站点冒烟、公开 MCP、Hermes 和 Tailscale 核验通过。后续版本仍需现场核对，详见 [移植计划](docs/archive/upstream-port-plan-20261013.md)和[发布核验](docs/soymilk-operations.md)。
+- NAS 于北京时间 **2026-10-16 00:12:18** 手动升级至 **3.5.1**（`main@14374c8`），上线模型价格编辑、官方参考映射、费用筛选分页与独立历史补算，同时包含 PR #7 的安全、归组恢复及评测校验修复。应用迁移 `0045`—`0047` 和队列 schema 42→43 已完成，参考目录同步成功。内网与 Tailscale 各 30 项冒烟、公开 MCP 和 Hermes 核验通过；使用方法见[模型定价与费用](docs/model-pricing.md)，完整证据见[发布核验](docs/soymilk-operations.md#2026-10-16-模型定价正式上线)。
+- NAS 于北京时间 2026-10-13 22:49:53 手动发布 `3.4.6`，修复详情页 HTTP 错误漏计、失效游标反复请求和采集等待误报；精选未读筛选、阅读字体、代码复制与按需高亮、信源诊断和建站前空报告跳过继续保留。正式站点冒烟、公开 MCP、Hermes 和 Tailscale 核验通过。此条为历史发布记录，详见 [移植计划](docs/archive/upstream-port-plan-20261013.md)和[发布核验](docs/soymilk-operations.md)。
 - 事件综述先讲核心变化，维护者可用 [综述评测工具](docs/story-digest-evaluation.md) 比较同一新闻输入的提示词，不写回事件。
 - `/admin/models` 统一管理 API Key 连接、Codex 网页授权、默认模型及各项能力的模型与 reasoning effort。HTTP 内网和 Tailscale IP 可使用设备代码授权，无需本站 HTTPS 回调。
 - 正式 worker 复用 Codex 连接，模型与文章分析并发上限为 2，每次调用使用独立会话。回执、站内预算、账号管理让路和订阅限流保护继续生效。
