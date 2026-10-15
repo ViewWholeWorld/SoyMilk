@@ -139,7 +139,7 @@ test("budget waits survive more than four retry windows and an independent queue
       const [job] = await boss.fetch<{ articleId: string }>(QUEUES.group, { minPriority: 900001, ignoreStartAfter: true, includeMetadata: true });
       assert.ok(job);
       assert.equal(job.retryCount, 0, "waits are not failed attempts");
-      const result = await processGroupingJob(job.data, job.id);
+      const result = await processGroupingJob(job.data, job.id, job.retryCount);
       assert.ok("state" in result && result.state === "waiting");
       assert.equal((await boss.getJobById(QUEUES.group, job.id))!.state, "completed");
       const queued = await boss.findJobs(QUEUES.group, { key: id, queued: true });
@@ -157,10 +157,10 @@ test("budget waits survive more than four retry windows and an independent queue
     let jobs;
     try {
       assert.equal((await independent.fetch(QUEUES.group, { minPriority: 900001 })).length, 0, "retryAfter is honored");
-      jobs = await independent.fetch<{ articleId: string }>(QUEUES.group, { minPriority: 900001, ignoreStartAfter: true });
+      jobs = await independent.fetch<{ articleId: string }>(QUEUES.group, { minPriority: 900001, ignoreStartAfter: true, includeMetadata: true });
     } finally { await independent.stop(); }
     assert.equal(jobs.length, 1);
-    const result = await processGroupingJob(jobs[0]!.data, jobs[0]!.id);
+    const result = await processGroupingJob(jobs[0]!.data, jobs[0]!.id, jobs[0]!.retryCount);
     assert.ok("storyId" in result && result.storyId === root.storyId);
     await boss.complete(QUEUES.group, jobs[0]!.id);
     assert.equal((await boss.findJobs(QUEUES.group, { key: id, queued: true })).length, 0);
@@ -180,7 +180,7 @@ test("waiting-job completion and successor insertion roll back together; a newer
   assert.equal(job!.retryCount, 1);
   await sql.unsafe(`CREATE FUNCTION test_group_defer_fault() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test successor insert failed'; END $$`);
   await sql.unsafe(`CREATE TRIGGER test_group_defer_fault BEFORE INSERT ON pgboss.job FOR EACH ROW WHEN (NEW.name='events.group') EXECUTE FUNCTION test_group_defer_fault()`);
-  try { await assert.rejects(deferJob(QUEUES.group, job!.id, { articleId: id }, 60), /test successor/); }
+  try { await assert.rejects(deferJob(QUEUES.group, job!.id, { articleId: id }, 60, job!.retryCount), /test successor/); }
   finally {
     await sql.unsafe(`DROP TRIGGER test_group_defer_fault ON pgboss.job`);
     await sql.unsafe(`DROP FUNCTION test_group_defer_fault()`);
@@ -188,7 +188,7 @@ test("waiting-job completion and successor insertion roll back together; a newer
   assert.equal((await boss.getJobById(QUEUES.group, job!.id))!.state, "active");
   const newer = await enqueue(QUEUES.group, { articleId: id, force: true }, { singletonKey: id, priority: 900002 });
   assert.ok(newer, "short policy accepts a successor while active");
-  await deferJob(QUEUES.group, job!.id, { articleId: id }, 3600);
+  await deferJob(QUEUES.group, job!.id, { articleId: id }, 3600, job!.retryCount);
   const queued = await boss.findJobs<{ force?: boolean }>(QUEUES.group, { key: id, queued: true });
   assert.equal(queued.length, 1);
   assert.equal(queued[0]!.id, newer);
@@ -208,18 +208,18 @@ test("resuming a disabled-model wait rechecks a withdrawn source and does not ca
   await sql`UPDATE articles SET source_id=${source} WHERE id=${id}`;
   const boss = await getBoss();
   await enqueue(QUEUES.group, { articleId: id }, { singletonKey: id, priority: 900003 });
-  const [job] = await boss.fetch<{ articleId: string }>(QUEUES.group, { minPriority: 900003 });
+  const [job] = await boss.fetch<{ articleId: string }>(QUEUES.group, { minPriority: 900003, includeMetadata: true });
   const enabled = config.modelCallsEnabled;
   const hits = provider.hits();
   try {
     config.modelCallsEnabled = false;
-    const result = await processGroupingJob(job!.data, job!.id);
+    const result = await processGroupingJob(job!.data, job!.id, job!.retryCount);
     assert.ok("state" in result && result.state === "waiting");
   } finally { config.modelCallsEnabled = enabled; }
   await sql`UPDATE sources SET participation_mode='isolated' WHERE id=${source}`;
   await sql`UPDATE articles SET revision=revision+1 WHERE id=${id}`;
-  const [resumed] = await boss.fetch<{ articleId: string }>(QUEUES.group, { minPriority: 900003, ignoreStartAfter: true });
-  assert.equal((await processGroupingJob(resumed!.data, resumed!.id)).verdict, "skipped");
+  const [resumed] = await boss.fetch<{ articleId: string }>(QUEUES.group, { minPriority: 900003, ignoreStartAfter: true, includeMetadata: true });
+  assert.equal((await processGroupingJob(resumed!.data, resumed!.id, resumed!.retryCount)).verdict, "skipped");
   await boss.complete(QUEUES.group, resumed!.id);
   assert.equal(provider.hits(), hits);
   assert.equal((await sql`SELECT 1 FROM fact_articles WHERE article_id=${id}`).length, 0);

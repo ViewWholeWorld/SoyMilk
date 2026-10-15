@@ -6,7 +6,7 @@ import { settleNonEditorial } from "./content.ts";
 import { deferJob, enqueue, QUEUES, shutdownSignal, work, type JobData } from "./queue.ts";
 import { requestWait } from "../providers/receipts.ts";
 
-export async function processGroupingJob(data: JobData["events.group"], jobId: string) {
+export async function processGroupingJob(data: JobData["events.group"], jobId: string, retryCount: number) {
   const { articleId, signalOnly, force } = data;
   try {
     if (signalOnly && !force && !(await settleNonEditorial(articleId)).group) return { verdict: "skipped" };
@@ -20,7 +20,7 @@ export async function processGroupingJob(data: JobData["events.group"], jobId: s
     // Unknown receipts and genuine failures retain the existing bounded retries/release path.
     if (!wait && !shutdownSignal.signal.aborted) throw error;
     const seconds = wait?.retryAfterSeconds ?? 60;
-    await deferJob(QUEUES.group, jobId, data, seconds);
+    await deferJob(QUEUES.group, jobId, data, seconds, retryCount);
     return { state: "waiting", kind: wait?.kind ?? "shutdown", retryAfterSeconds: seconds };
   }
 }

@@ -126,10 +126,11 @@ export async function retryReleasedReceiptJobs(): Promise<number> {
   });
 }
 
-/** The worker's handler for one queue (jobs/*.ts), called with each job's data. */
-export async function work<Q extends QueueName>(boss: PgBoss, name: Q, options: WorkOptions, handler: (data: JobData[Q], jobId: string) => Promise<unknown>): Promise<void> {
+/** The worker's handler receives the data and the retry count captured with its claim. */
+export async function work<Q extends QueueName>(boss: PgBoss, name: Q, options: WorkOptions, handler: (data: JobData[Q], jobId: string, retryCount: number) => Promise<unknown>): Promise<void> {
   await ensureQueue(name);
-  await boss.work<JobData[Q]>(name, options, async ([job]) => (job ? handler(job.data, job.id) : undefined));
+  await boss.work<JobData[Q], unknown, WorkOptions & { includeMetadata: true }>(name, { ...options, includeMetadata: true },
+    async ([job]) => (job ? handler(job.data, job.id, job.retryCount) : undefined));
 }
 
 /** Commit the delayed successor with completion of the active job. A crash leaves either the
@@ -137,13 +138,14 @@ export async function work<Q extends QueueName>(boss: PgBoss, name: Q, options: 
  * Short policy permits one created job while the same singleton is active. An existing successor
  * already owns recovery; it is not cancelled or overwritten by an older handler.
  */
-export async function deferJob<Q extends QueueName>(name: Q, id: string, data: JobData[Q], seconds: number): Promise<void> {
+export async function deferJob<Q extends QueueName>(name: Q, id: string, data: JobData[Q], seconds: number, retryCount: number): Promise<void> {
   const b = await getBoss();
   await ensureQueue(name);
   await sql.begin(async (tx) => {
-    const [active] = await tx`SELECT id,priority,retry_limit,retry_count FROM pgboss.job WHERE name=${name} AND id=${id} AND state='active' FOR UPDATE`;
-    if (!active) throw new Error("Waiting job is no longer active");
-    await b.complete(name, id, { state: "waiting", retryAfterSeconds: seconds }, { db: queueDb(tx) });
+    const [active] = await tx`SELECT id,priority,retry_limit,retry_count FROM pgboss.job
+      WHERE name=${name} AND id=${id} AND state='active' AND retry_count=${retryCount} FOR UPDATE`;
+    if (!active) throw new Error("Waiting job is no longer active for this attempt");
+    await b.complete(name, { id, retryCount }, { state: "waiting", retryAfterSeconds: seconds }, { db: queueDb(tx) });
     const singletonKey = "articleId" in data ? data.articleId : id;
     // A wait neither spends nor replenishes genuine failures already charged to this work.
     const retryLimit = Math.max(0, active.retry_limit - active.retry_count);
