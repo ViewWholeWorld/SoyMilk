@@ -55,7 +55,7 @@ test("all evidence is validated before runs, cases or audit rows are written", a
   for (const bad of [
     null, { models: {} }, { models: { A: model({}) } }, { models: { A: model([c, c]) } },
     { models: { A: model([{ ...c, caseId: " " }]) } }, { models: { A: model([{ ...c, gold: "maybe" }]) } },
-    { models: { A: model([{ ...c, score: 1.5 }]) } }, { models: { A: model([{ ...c, score: 101 }]) } },
+    ...[-0.01, 100.01, NaN, Infinity, -Infinity, "72.5"].map(score => ({ models: { A: model([{ ...c, score }]) } })),
     { meta: { n: 2147483648 }, models: { A: model() } }, { models: { A: { summary: { n: "1" } } } },
     ...["reject", "either"].map((gold) => ({ models: { A: model(), B: model([{ ...c, gold }]) } })),
     { models: { A: model(), " A ": model([{ ...c, gold: "reject" }]) } },
@@ -73,6 +73,18 @@ test("valid disagreements, partial coverage, summaries and legacy reports remain
   for (const report of [{ A: { summary: { n: 1 } } }, { meta: { n: 1 }, models: { A: { summary: { n: 1 } } } }]) {
     const summary = await importSelectBenchRun(report, "summary", "test-evidence");
     assert.equal((await selectBenchRun(summary.id, {}))!.rows.length, 0);
+  }
+});
+
+test("fractional mean scores round-trip through current and legacy SelectBench reports", async () => {
+  const scores = [0, 1.5, 72.5, 99.99, 100, null];
+  const report = { A: model(scores.map((score, i) => ({ ...c, caseId: `score-${i}`, score }))) };
+  for (const input of [{ models: report }, report]) {
+    const run = await importSelectBenchRun(input, "fractional scores", "test-evidence");
+    const saved = await selectBenchRun(run.id, {});
+    assert.deepEqual(saved!.rows.map(row => row.by_model.A!.score), scores);
+    const stored = await sql`SELECT score::text FROM selectbench_results WHERE run_id=${run.id} ORDER BY case_id`;
+    assert.deepEqual(stored.map(row => row.score), ["0.00", "1.50", "72.50", "99.99", "100.00", null]);
   }
 });
 

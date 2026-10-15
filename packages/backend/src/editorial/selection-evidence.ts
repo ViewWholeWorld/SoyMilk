@@ -46,7 +46,7 @@ export function selectionSplit(rows: GoldRow[], split: string): GoldRow[] {
 
 const Case = z.object({
   caseId: text, title: text, gold: decision, decision: z.enum(["select", "reject"]).nullable(),
-  stratum: z.string().nullable().optional(), score: z.number().int().min(0).max(100).nullable().optional(),
+  stratum: z.string().nullable().optional(), score: z.number().min(0).max(100).nullable().optional(),
   relevance: z.string().nullable().optional(), category: z.string().nullable().optional(),
   reason: z.string().nullable().optional(), receiptId: z.number().int().positive().nullable().optional(),
   error: z.string().nullable().optional(),
