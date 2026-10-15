@@ -142,12 +142,14 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
     if (req.subject?.startsWith("article:")) {
       const groupReview = req.purpose === "group_review";
       const subject = groupReview ? req.subject.split(":fact:", 1)[0]! : req.subject;
+      // Older grouping receipts have no revision: keep guarding those until their outcome resolves.
+      const legacySubject = ["group_article", "group_review", "group_signal"].includes(req.purpose) ? subject.replace(/@[1-9]\d*$/, "") : subject;
       const [unresolved] = await tx<ReceiptRow[]>`
         SELECT r.id,r.subject,r.status,r.response,r.created_at,r.updated_at FROM receipts r
         WHERE r.service=${req.service} AND r.purpose=${req.purpose} AND r.logical_key<>${logicalKey}
-          AND (CASE WHEN ${groupReview} THEN split_part(r.subject,':fact:',1) ELSE r.subject END=${subject}
+          AND (CASE WHEN ${groupReview} THEN split_part(r.subject,':fact:',1) ELSE r.subject END IN (${subject},${legacySubject})
             OR EXISTS(SELECT 1 FROM receipt_consumers c WHERE c.receipt_id=r.id
-              AND CASE WHEN ${groupReview} THEN split_part(c.subject,':fact:',1) ELSE c.subject END=${subject}))
+              AND CASE WHEN ${groupReview} THEN split_part(c.subject,':fact:',1) ELSE c.subject END IN (${subject},${legacySubject})))
           AND r.status IN ('pending','unknown')
         ORDER BY r.id LIMIT 1 FOR UPDATE OF r`;
       if (unresolved) {

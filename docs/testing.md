@@ -4,6 +4,18 @@
 
 测试只写入迁移完成的独立空库，数据库名必须以 `_test` 或 `_ci` 结尾。禁止连接生产库、挂载生产数据卷或复制环境文件及授权凭据。NAS 上用独立检查容器和 `--internal` Docker 网络，仅让检查容器与临时 PostgreSQL 相互连接；不发布数据库端口，不使用正式 Compose 项目运行测试。
 
+## 2026-10-15 PR #7 修订隔离补修
+
+复核 `2c6733a` 后的新意见成立：上一轮只在底层回执测试中手工构造了 `@revision`，实际 `events/group.ts` 的三个模型入口仍发送无修订号 subject，新修订的不同模型输入会被旧修订未决回执误拦。此次新闻归组、合并复核与信号归组都显式传递开始读取文章时捕获的修订号，分别使用 `article:<id>@<revision>`、`article:<id>@<revision>:fact:<candidate>`。候选归一化保留修订号，不更改逻辑请求键、模型选择、提示词或预算。
+
+新增 `events-receipt-revisions.test.ts`，通过真实 `groupArticle`、数据库、`upsertMaterial` 修订及本地模型／向量替身运行九项用例。六项分别覆盖三个入口的旧修订 pending／unknown：同修订重试不发请求，材料与模型输入更新到第二修订后能取得独立结果，后续重试复用答案；请求沿用各自捕获的修订号，旧请求晚到仍能正常结束。另三项验证无修订号的历史 unknown 回执仍会阻断请求，解除旧回执阻断后恢复。历史格式无法可靠区分修订，继续保守等待原回执确认或放行；升级不能借新 subject 重复付费。相同模型输入的不同修订仍复用同一逻辑请求。
+
+修复前使用真实入口，六项均在第二修订调用处复现 `ReceiptBusyError` 或 `ReceiptUnknownError`（取消、跳过 0）；修复后归组与回执相关 **90/90 通过，失败、取消、跳过 0，15.193 秒**。初次准备夹具误用了非 UUID 的 story public_id；随后清理顺序漏删 facts，以及信号结果按 storyId 返回却断言 factId，均已修正。初轮相关套件为 81/90；夹具修正后 90/90，随后类型检查发现门控的 `ReturnType<typeof gate>` 推断为 unknown，改为明确的 `gate<void>`，未修改应用行为、断言含义或超时。失败与修复前复现日志均保留。
+
+最终同一源码快照在新空 `soymilk_pr7_revisions_full_test` 库迁移后，**完整后端 687/687 通过，失败、取消、跳过均为 0，142.122 秒**，比上一轮 678 项增加九项；上一轮偶发的信源等待计数用例本轮通过。完整类型、版本同步、网页生产构建、**网页 44/44**（3.400 秒）及新空站点库的 **30 项冒烟**均通过。425 个应用、行业与测试文件和验收归档逐一 SHA-256 一致。
+
+环境为 Node.js 24.19.0、PostgreSQL 17、`network=none` 与可执行 tmpfs，测试只使用源码快照、依赖副本、虚构凭据和明确登记的本地替身，安全阀关闭，未挂载生产或授权数据。日志在 `/workspace/scratch/soymilk-pr7-revisions-20261015/`，`before.log` 是最早夹具错误，`before-retry.log` 是修复前真实阻断复现；`focused.log` 保留夹具阶段失败，`retry/focused.log` 为 90 项通过，`retry/typecheck.log` 保留测试门控类型错误；`final/backend.log`、`final/typecheck.log`、`final/version.log`、`final/build.log`、`final/web.log`、`final/smoke.log` 和 `source-consistency.log` 为最终证据。临时容器及测试库已清理。候选继续为 `3.4.7`，无新增依赖、迁移、调度或部署配置；按使用者授权提交并推送原 PR #7 分支，尚未合并或部署。
+
 ## 2026-10-15 PR #7 审核补修
 
 拉取 `bugfix/upstream-fixes-20261014@57a88a846b5490df742701ccc0df70171d0b42ff` 后复核两条审核意见：同版本在途回执的保护已存在；`group_review` 仍会因 `article:<id>:fact:<candidate>` 的候选变化漏掉旧回执。本次只在未决回执匹配时去掉 `:fact:` 后缀，同时检查主 subject 和共享消费者；保留逻辑请求键、原 subject、服务／用途及修订边界，不复用另一个候选的已收答案。
