@@ -4,6 +4,21 @@
 
 测试只写入迁移完成的独立空库，数据库名必须以 `_test` 或 `_ci` 结尾。禁止连接生产库、挂载生产数据卷或复制环境文件及授权凭据。NAS 上用独立检查容器和 `--internal` Docker 网络，仅让检查容器与临时 PostgreSQL 相互连接；不发布数据库端口，不使用正式 Compose 项目运行测试。
 
+## 2026-10-16 NAS 3.5.1 验收与正式部署
+
+源码 `main@14374c8aef58d7bd758cfddba777944ae4784d37`，NAS 以 `deploy/nas/Dockerfile` 构建两个唯一 Bookworm 镜像：正式镜像 `57a57ba83fde`，带开发依赖的检查镜像 `3c003005c549`。运行环境为 Node.js 24.21.0、PostgreSQL 17.11、pg-boss 12.35.0。
+
+- 检查镜像内 `npm run typecheck`、网页生产构建和网页 **56/56** 通过；NAS 独立 `--internal` 网络、tmpfs 新空库的 `npm test` 完整后端 **740/740**，失败／取消／跳过均为 0，**307.993 秒**。相对本地本轮 740 项数量相同，相对 PR #7 基线 694 项增加 46 项。
+- 实际精简正式镜像在独立新空库完成迁移、44 个主题、30 项冒烟、真实密码后台登录、四个定价／费用／目录／补算 HTTP 读取接口，以及预览／创建／继续／选中补算视图；结束时 receipts 与 attempts 均为 0。五工具 MCP 合约由独立检查镜像通过；生产镜像未安装开发依赖。
+- 独立旧 3.4.6 镜像建立 schema 42 和 created／active／retry／failed 四种任务，新运行库升级至 43 后逐一比较全部旧字段与微秒时间，结果不变；旧 12.34 运行库在 43 上成功继续并完成任务。队列辅助脚本先修正了默认导入和 Date／JSON 微秒表示差异，每次均重建隔离夹具，最终未放宽业务断言；首次日志一并保留。
+- 正式镜像 516 个源码／配置／测试文件逐一 SHA-256 与提交一致，锁文件完整 JSON 一致。测试安全阀关闭，使用虚构凭据、独立数据目录和本进程绑定的模型替身，无生产数据库／数据卷／授权或外部付费服务；网络核验在回归之外只读执行。临时测试容器和网络在留存日志后已移除。
+
+使用者具体确认后，于北京时间 **00:12:18** 完成正式切换。数据库／附件／旧应用和覆盖已备份，应用迁移 0045—0047 与 queue schema 42→43 成功；停稳前后原 receipts／attempts／队列任务的数量与原始字段 hash 一致。内网及 Tailscale 各 30 项冒烟、五工具 MCP、Hermes 原生客户端、四个后台生产读取函数及匿名 401 鉴权通过；models.dev 正式同步成功且自定义规则不变。模型、预算和保护配置前后一致，未运行真实模型试调用、自动补算或生产写库回归；运行快照见[维护说明](soymilk-operations.md#2026-10-16-模型定价正式上线)。
+
+部署辅助脚本首次经 SSH stdin 执行时，Compose 的交互输入使脚本在 setup 后结束；当时仅完成幂等 setup，尚未启动新版业务进程。改为先保存 NAS 脚本再执行，重跑 setup 并完成队列升级、历史摘要比较和启动。Hermes 辅助客户端首次存在旧 SDK 导入问题，按其现有安装 API 修正后在切换前后均通过；未改 Hermes 配置或授权。最终环境核对先发现 Docker 返回变量顺序不同，逐项确认值一致后改为按键排序比较，保留首次日志。以上辅助问题没有跳过测试或改写生产数据来通过检查。
+
+日志保存在忽略目录 `.data/release-3.5.1-14374c8-20261015/`：NAS `nas/logs/backend-nas.log`、`build-checks.log`、`production-smoke.log`、`production-mcp.log`、`queue-compat.log` 及辅助首次日志；正式切换的 `stop-and-backup.log`、`migrate-and-start.log`、`production-after.json`、`postdeploy.json`、`production-smoke.log`、`tailscale-smoke.log`、`production-mcp.log`、`hermes-after.log`、`catalog-sync.log`、`final-runtime.json` 和源码清单。数据库备份只保留在 NAS 私有备份目录，不下载或提交。后续源码或维护文档修改不自动部署。
+
 ## 2026-10-15 本地续接模型定价候选 3.5.1
 
 本机 `wujingwei/model-pricing@bcf86f0` 最初只有定价基础实现，前一开发环境的后续改动未提交、未推送，因此本地没有这些内容。本轮从可读取的开发记录恢复代码并核对，再直接在当前项目重新验证；前一环境的历史通过数字不作为本轮结果。
@@ -16,7 +31,7 @@
 
 本轮使用 Node.js **24.22.0**、PostgreSQL **16.15**、pg-boss **12.35.0**，通过独立 user/network namespace 仅启用 loopback；PostgreSQL 安装包解压到临时目录，不改系统服务。`soymilk_pricing_focused_test`、`soymilk_pricing_acceptance_test`、`soymilk_pricing_upgrade_test`、`soymilk_pricing_smoke_test` 均为独立新库。环境清空后显式指定虚构凭据、空授权目录和临时数据目录，采集、模型、飞书及 IndexNow 环境安全阀保持关闭，没有加载生产环境文件。各次产品检查均通过，无跳过用例；补丁恢复与验收辅助脚本的问题已在正式检查前修正，未放宽业务断言或预算。
 
-日志保存在忽略目录 `.data/checks/model-pricing-20261015/`：`focused.log`、`backend.log`、`typecheck.log`、`version.log`、`build.log`、`web.log`、`smoke-acceptance.log`、`mcp-acceptance.log`、`admin-http.log`、`upgrade.log`、`old-runtime.log`、`new-runtime.log`、`live-catalog.json` 及最终源码 SHA-256 清单。数据库服务已停止，临时数据库与辅助源码在留存日志后清理。以上为开发验收结束时的快照；随后提交、推送与 PR 状态以仓库记录为准。未进行生产迁移或部署；NAS 目录网络及正式迁移仍按[手动部署](manual-deploy.md)确认。
+日志保存在忽略目录 `.data/checks/model-pricing-20261015/`：`focused.log`、`backend.log`、`typecheck.log`、`version.log`、`build.log`、`web.log`、`smoke-acceptance.log`、`mcp-acceptance.log`、`admin-http.log`、`upgrade.log`、`old-runtime.log`、`new-runtime.log`、`live-catalog.json` 及最终源码 SHA-256 清单。数据库服务已停止，临时数据库与辅助源码在留存日志后清理。以上为开发验收结束时的快照；随后提交、推送与 PR 状态以仓库记录为准。该本地验收阶段未进行生产迁移或部署；2026-10-16 的后续 NAS 验收和正式切换见本页前节。
 
 ## 最近完整基线
 
