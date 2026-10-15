@@ -23,6 +23,22 @@ test("a new prompt hash waits for an older in-flight or unknown article response
   await sql`UPDATE receipts SET status='failed' WHERE logical_key=${logicalKeyFor(req)}`;
 });
 
+test("a changed article identity cannot resend while a same-version receipt is pending", async () => {
+  const subject = `article:${tag()}@1`;
+  const req = { service: `same-version-pending-${tag()}`, purpose: "group_article", subject, identity: { candidates: ["old"] }, requestSummary: { promptVersion: "same" } };
+  const changed = { ...req, identity: { candidates: ["new"] } };
+  const asked = gate(); const release = gate();
+  let calls = 0;
+  const first = paidRequest(req, async () => { calls++; asked.open(); await release.promise; return { response: { relation: "old" } }; });
+  await asked.promise;
+  try {
+    await assert.rejects(paidRequest(changed, async () => { calls++; return { response: { relation: "new" } }; }), ReceiptBusyError);
+  } finally { release.open(); }
+  const received = await first;
+  assert.equal(calls, 1);
+  await sql`UPDATE receipts SET status='failed' WHERE id=${received.receiptId}`;
+});
+
 test("stale recovery waiting on a response transaction preserves its committed answer and attempt", async () => {
   const request = { service: "invariant-recovery-race", purpose: "invariant_test", identity: { race: tag() } };
   const asked = gate();
