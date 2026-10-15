@@ -34,7 +34,7 @@ export function proxyExpiry(nowMs = Date.now(), lifetimeSeconds = LIFETIME_SECON
 export function proxiedImage(url: string | null | undefined, mode: ProxyMode, absolute = false, nowMs = Date.now(), lifetimeSeconds = LIFETIME_SECONDS): string | null {
   if (!url) return null;
   if (isTrackingImage(url)) return null;
-  if (url.startsWith("data:")) return url;
+  if (/^data:/i.test(url)) return url;
   if (!/^https?:\/\//i.test(url)) return null;
   const exp = proxyExpiry(nowMs, lifetimeSeconds);
   const path = `/api/img-proxy?u=${encodeURIComponent(url)}&mode=${mode}&exp=${exp}&sig=${signature(url, mode, exp).slice(0, SIG_HEX)}`;
@@ -76,6 +76,7 @@ export function proxyBodyImages(html: string, absolute = false, lifetimeSeconds 
       if (isTrackingImage(src[1]!, attrs.match(/\bwidth="([^"]+)"/i)?.[1], attrs.match(/\bheight="([^"]+)"/i)?.[1])) return "";
       const decoded = src[1]!.replace(/&amp;/g, "&");
       const proxied = proxiedImage(decoded, "full", absolute, now, lifetimeSeconds);
+      if (!proxied) return "";
       // Width descriptors change an image's natural CSS size. Only use them for a body image with
       // an explicit display width: unknown and small pictures must retain their intrinsic size.
       // RSS keeps its existing single signed full image.
