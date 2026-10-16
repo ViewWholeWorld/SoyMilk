@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useRevalidator } from "react-router";
-import { REASONING_EFFORTS, type AdminCodexAccount, type AdminCodexLogin, type AdminCodexModel, type AdminModelConfiguration, type AdminModelConnection, type ReasoningEffort } from "@aihot/contracts/admin";
+import { REASONING_EFFORTS, type AdminCodexAccount, type AdminCodexLogin, type AdminCodexModel, type AdminModelConfiguration, type AdminModelConnection, type AdminModelSupplier, type ReasoningEffort } from "@aihot/contracts/admin";
 import { useAdminAction } from "./action";
 import { Badge, Button, Card, Field, Input, Select } from "./ui";
 
@@ -12,7 +12,7 @@ const PROVIDERS = [
   { name: "智谱", url: "https://open.bigmodel.cn/api/paas/v4" },
   { name: "自定义 OpenAI 兼容接口", url: "" },
 ];
-type Draft = { id?: string; name: string; type: "api-key" | "codex"; model: string; baseUrl: string; apiKey: string; jsonMode: boolean; vision: boolean; reasoningEffort: ReasoningEffort | null };
+type Draft = { id?: string; name: string; type: "api-key" | "codex"; model: string; baseUrl: string; apiKey: string; jsonMode: boolean; vision: boolean; reasoningEffort: ReasoningEffort | null; supplierId?: string | null };
 const empty = (): Draft => ({ name: "", type: "api-key", model: "", baseUrl: PROVIDERS[0].url, apiKey: "", jsonMode: true, vision: false, reasoningEffort: null });
 
 export function ReasoningEffortField({ value, onChange, model, codex = false, disabled = false }: { value: ReasoningEffort | ""; onChange: (v: ReasoningEffort | "") => void; model?: AdminCodexModel; codex?: boolean; disabled?: boolean }) {
@@ -32,10 +32,13 @@ async function get<T>(url: string): Promise<T> {
   return r.json();
 }
 
-export function ModelConnections({ configuration: c, onCodexModels }: { configuration: AdminModelConfiguration; onCodexModels: (models: AdminCodexModel[]) => void }) {
+export function ModelConnections({ configuration: c, suppliers, onCodexModels }: { configuration: AdminModelConfiguration; suppliers: AdminModelSupplier[]; onCodexModels: (models: AdminCodexModel[]) => void }) {
   const { run, pending } = useAdminAction();
   const revalidator = useRevalidator();
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [supplierName, setSupplierName] = useState("");
+  const [addedSuppliers, setAddedSuppliers] = useState<AdminModelSupplier[]>([]);
+  const supplierOptions = [...new Map([...suppliers, ...addedSuppliers].map(s => [s.id, s])).values()];
   const [active, setActive] = useState(c.active ?? "");
   const [account, setAccount] = useState<AdminCodexAccount | null>(null);
   const [login, setLogin] = useState<AdminCodexLogin | null>(null);
@@ -186,10 +189,22 @@ export function ModelConnections({ configuration: c, onCodexModels }: { configur
           <p className="text-[14px] font-medium">{draft.id ? "编辑连接" : "添加连接"}</p>
           <div className="grid gap-4 sm:grid-cols-2"><Field label="连接名称"><Input aria-label="连接名称" required maxLength={60} value={draft.name} placeholder="例如：日报写作" onChange={(e) => update({ name: e.target.value })} /></Field><Field label="登录方式"><Select aria-label="登录方式" value={draft.type} onChange={(e) => update({ type: e.target.value as Draft["type"], apiKey: "" })}><option value="api-key">API Key</option><option value="codex">Codex / ChatGPT 订阅</option></Select></Field></div>
           {draft.type === "api-key" && <>
-            <Field label="服务商"><Select aria-label="服务商" value={PROVIDERS.find((p) => p.url === draft.baseUrl)?.name ?? PROVIDERS.at(-1)!.name} onChange={(e) => update({ baseUrl: PROVIDERS.find((p) => p.name === e.target.value)!.url })}>{PROVIDERS.map((p) => <option key={p.name}>{p.name}</option>)}</Select></Field>
+            <Field label="接口预设"><Select aria-label="接口预设" value={PROVIDERS.find((p) => p.url === draft.baseUrl)?.name ?? PROVIDERS.at(-1)!.name} onChange={(e) => update({ baseUrl: PROVIDERS.find((p) => p.name === e.target.value)!.url })}>{PROVIDERS.map((p) => <option key={p.name}>{p.name}</option>)}</Select></Field>
             <Field label="接口地址" hint="使用 OpenAI 兼容的 Chat Completions 接口；地址填写到 /v1 等基础路径。"><Input aria-label="接口地址" required type="url" value={draft.baseUrl} placeholder="https://your-provider.example/v1" onChange={(e) => update({ baseUrl: e.target.value })} /></Field>
             <Field label="API Key" hint={draft.id ? "留空保留已保存的密钥；填写新值即可替换。" : "密钥只保存在后端，不会在网页回显。"}><Input aria-label="API Key" required={!draft.id} type="password" autoComplete="new-password" value={draft.apiKey} onChange={(e) => update({ apiKey: e.target.value })} /></Field>
           </>}
+          <Field label="服务供应商" hint="选择实际提供调用服务的平台。中转接口请手动指定；修改归属只影响新请求的统计。">
+            <Select aria-label="服务供应商" value={draft.supplierId === undefined ? "__auto" : draft.supplierId ?? ""} onChange={e => update({ supplierId: e.target.value === "__auto" ? undefined : e.target.value || null })}>
+              {draft.supplierId === undefined && <option value="__auto">采用已确认的官方归属，其余保持未知</option>}
+              <option value="">供应商未知</option>{supplierOptions.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </Select>
+          </Field>
+          <div className="flex items-end gap-2"><Field label="新增供应商"><Input aria-label="新增供应商" maxLength={100} value={supplierName} onChange={e => setSupplierName(e.target.value)} placeholder="例如 YosHub" /></Field>
+            <Button type="button" disabled={!!pending || !supplierName.trim()} onClick={async () => {
+              const supplier = await run<AdminModelSupplier>("POST", "/api/admin/model-suppliers", { name: supplierName }, { revalidate: false, success: "供应商已选择" });
+              if (supplier) { setAddedSuppliers(current => [...current.filter(s => s.id !== supplier.id), supplier]); update({ supplierId: supplier.id }); setSupplierName(""); }
+            }}>新增并选择</Button>
+          </div>
           <Field label="模型名"><Input aria-label="模型名" required list={draft.type === "codex" ? "codex-models" : undefined} value={draft.model} placeholder="填写账号或服务商提供的模型名" onChange={(e) => update({ model: e.target.value, reasoningEffort: null })} /><datalist id="codex-models">{catalog.map((m) => <option key={m.model} value={m.model}>{m.name}</option>)}</datalist></Field>
           <ReasoningEffortField value={draft.reasoningEffort ?? ""} onChange={(v) => update({ reasoningEffort: v || null })} model={catalog.find((m) => m.model === draft.model)} codex={draft.type === "codex"} disabled={!!pending} />
           <div className="flex flex-wrap gap-4 text-[13px]"><label className="flex items-center gap-2"><input type="checkbox" checked={draft.jsonMode} onChange={(e) => update({ jsonMode: e.target.checked })} />JSON 输出</label><label className="flex items-center gap-2"><input type="checkbox" checked={draft.vision} onChange={(e) => update({ vision: e.target.checked })} />支持图片输入</label></div>

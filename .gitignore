@@ -6,6 +6,7 @@ dist/
 .cache/
 .DS_Store
 .data/
+work/
 .docker/
 backups/
 deploy/nas/compose.override.yml

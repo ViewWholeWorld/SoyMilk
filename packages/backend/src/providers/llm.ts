@@ -27,7 +27,7 @@ export interface ModelSpec {
   jsonMode: boolean;
   vision?: boolean;
   reasoningEffort?: ReasoningEffort | null;
-  connection?: { id?: string; name?: string; type: "api-key" | "codex"; baseUrl?: string; apiKey?: string; generation?: string };
+  connection?: { id?: string; name?: string; type: "api-key" | "codex"; baseUrl?: string; apiKey?: string; generation?: string; supplierId?: string | null };
 }
 
 function extraFromEnv(value: string | undefined): Record<string, unknown> | undefined {
@@ -101,7 +101,8 @@ export async function registeredModels(): Promise<Record<string, ModelSpec>> {
     const spec: ModelSpec = { key, service: "llm", model: v.model, baseUrlEnv: "", apiKeyEnv: "", jsonMode: v.jsonMode, vision: v.vision,
       reasoningEffort: v.reasoningEffort,
       extra: v.type === "api-key" && v.reasoningEffort ? { reasoning_effort: v.reasoningEffort } : undefined,
-      connection: { id: v.id, name: v.name, type: v.type, baseUrl: v.baseUrl, apiKey: v.apiKey, generation: v.generation } };
+      connection: { id: v.id, name: v.name, type: v.type, baseUrl: v.baseUrl, apiKey: v.apiKey, generation: v.generation,
+        ...(Object.hasOwn(v, "supplierId") ? { supplierId: v.supplierId } : {}) } };
     models[key] = spec;
     if (c.active === v.id) models.default = { ...spec, key: "default" };
   }
