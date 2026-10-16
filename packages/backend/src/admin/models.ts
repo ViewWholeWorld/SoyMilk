@@ -2,7 +2,7 @@
 // the prompt versions in use, quality / latency / cost of the last days per model, the switch history
 // and the SelectBench runs that compare models on the same batch. A switch is audited and applies to
 // new work only.
-import type { AdminModels, AdminTokenSummary, BeforeJson, ModelBillingKind, ModelEstimateStatus } from "@aihot/contracts/admin";
+import type { AdminModelAssignments, AdminModels, AdminTokenSummary, BeforeJson, ModelBillingKind, ModelEstimateStatus } from "@aihot/contracts/admin";
 import { ACTUAL_CURRENCY, MODEL_COST_FIELDS } from "./model-costs.ts";
 import { sql } from "../db.ts";
 import { CAPABILITIES, invalidateModelCache, modelSources, type Capability, type CapabilityKey } from "../editorial/models.ts";
@@ -46,6 +46,22 @@ function usageTokens(key: string, legacyExpression: string) {
   return sql`CASE WHEN a.normalized_usage IS NOT NULL THEN
     CASE WHEN a.normalized_usage->>'status' = 'invalid' THEN NULL ELSE (a.normalized_usage->>${key})::bigint END
     ELSE CASE WHEN (${legacy}) ~ '^[0-9]{1,16}$' THEN (${legacy})::bigint ELSE NULL END END`;
+}
+
+/** 配置页只读取能力、可选模型与审计，不扫描调用、费用或评测运行。 */
+export async function modelAssignments(): Promise<BeforeJson<AdminModelAssignments>> {
+  const [models, sources, history] = await Promise.all([
+    registeredModels(), modelSources(),
+    sql<BeforeJson<AdminModelAssignments["history"][number]>[]>`
+      SELECT created_at AS at,actor,subject,reason,before,after FROM audit_log
+      WHERE action='models.switch' ORDER BY created_at DESC LIMIT 30`,
+  ]);
+  return {
+    capabilities: (Object.entries(CAPABILITIES) as Array<[CapabilityKey, Capability]>).map(([key, c]) => ({
+      key, label: c.label, env: c.env, defaultModel: c.default, vision: !!c.vision, current: sources[key]!,
+    })),
+    choices: Object.values(models).map(m => ({ key: m.key, service: m.service, vision: !!m.vision })), history,
+  };
 }
 
 export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>> {

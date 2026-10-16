@@ -2,7 +2,7 @@ import { tag } from "./setup.ts";
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
-import { modelCosts } from "@aihot/backend/admin/model-costs";
+import { modelCosts, modelAttempts } from "@aihot/backend/admin/model-costs";
 import { modelsOverview } from "@aihot/backend/admin/models";
 import { saveModelPricing } from "@aihot/backend/admin/model-pricing";
 import { paidRequest } from "@aihot/backend/providers/receipts";
@@ -43,11 +43,10 @@ test("summary selects actual once, adds complete and approximate estimates, and 
   await request(owner, "free", { cost: 0 });
   const costs = await modelCosts({ providerKey: owner.providerKey });
   const total = costs.totals.find(row => row.currency === "USD")!;
-  assert.equal(total.actual_cost, "5.000000"); assert.equal(Number(total.complete_estimate), 1.6);
-  assert.equal(Number(total.approximate_estimate), 2.8); assert.equal(Number(total.partial_estimate), 2);
-  assert.equal(Number(total.combined_cost), 9.4);
-  assert.equal(costs.coverage.live_attempts, 6); assert.equal(costs.coverage.actual_attempts, 2);
-  assert.equal(costs.coverage.priced_attempts, 4); assert.equal(costs.coverage.partial_attempts, 1); assert.equal(costs.coverage.unknown_attempts, 1);
+  assert.equal(Number(total.amount), 9.4);
+  assert.deepEqual(costs.summary, { calls: 6, knownCalls: 4, unknownCalls: 2 });
+  const detail = await modelAttempts({ providerKey: owner.providerKey, status: "partial" });
+  assert.equal(Number(detail.rows[0]!.estimatedCost), 2, "部分金额仍保留于原始明细");
   const overview = await modelsOverview(7);
   const rows = overview.capabilities.find(capability => capability.key === "score")!.usage.filter(row => row.providerKey === owner.providerKey);
   assert.equal(sumModelAmounts(rows.map(row => row.estimateComplete)), "1.6");
@@ -59,14 +58,14 @@ test("USD, CNY, subscription equivalence and provider ownership never merge", as
   const usd = await target("usd"), cny = await target("cny", "CNY"), subscription = await target("subscription", "USD", true);
   await request(usd, "usd"); await request(cny, "cny"); await request(subscription, "subscription");
   await request(usd, "actual-cny", { cost: 6, currency: "CNY" });
-  const us = await modelCosts({ providerKey: usd.providerKey, currency: "USD" });
-  assert.equal(us.coverage.live_attempts, 1); assert.equal(Number(us.totals[0]!.combined_cost), 1.6);
-  const yuan = await modelCosts({ providerKey: usd.providerKey, currency: "CNY" });
-  assert.equal(yuan.coverage.live_attempts, 1); assert.equal(Number(yuan.totals[0]!.actual_cost), 6);
+  const us = await modelAttempts({ providerKey: usd.providerKey, currency: "USD" });
+  assert.equal(us.total, 1); assert.equal(Number(us.rows[0]!.estimatedCost), 1.6);
+  const yuan = await modelAttempts({ providerKey: usd.providerKey, currency: "CNY" });
+  assert.equal(yuan.total, 1); assert.equal(Number(yuan.rows[0]!.actualCost), 6);
   const sub = await modelCosts({ model: subscription.requestedModel, billingKind: "subscription_equivalent" });
-  assert.equal(sub.totals[0]!.billing_kind, "subscription_equivalent"); assert.equal(Number(sub.totals[0]!.combined_cost), 1.6);
-  const api = await modelCosts({ model: subscription.requestedModel, billingKind: "api" });
-  assert.equal(api.coverage.live_attempts, 0);
+  assert.equal(sub.totals[0]!.billingKind, "subscription_equivalent"); assert.equal(Number(sub.totals[0]!.amount), 1.6);
+  const api = await modelAttempts({ model: subscription.requestedModel, billingKind: "api" });
+  assert.equal(api.total, 0);
 });
 
 test("status filters and pagination do not change full-range totals or coverage", async () => {
@@ -74,12 +73,14 @@ test("status filters and pagination do not change full-range totals or coverage"
   const first = await modelCosts({ service: T, limit: 1, page: 1, attemptPage: 1 });
   const second = await modelCosts({ service: T, limit: 1, page: 2, attemptPage: 2 });
   assert.equal(first.rows.length, 1); assert.equal(second.rows.length, 1);
-  assert.notEqual(first.attempts[0]!.id, second.attempts[0]!.id);
-  assert.deepEqual(first.totals, second.totals); assert.deepEqual(first.coverage, second.coverage);
-  const unknown = await modelCosts({ providerKey: owner.providerKey, status: "missing_usage" });
-  assert.equal(unknown.attempts.length, 1); assert.equal(unknown.attempts[0]!.estimate_status, "missing_usage");
-  const complete = await modelCosts({ providerKey: owner.providerKey, status: "complete" });
-  assert.equal(complete.coverage.live_attempts, 1);
+  const detail1 = await modelAttempts({ service: T, limit: 1, page: 1 });
+  const detail2 = await modelAttempts({ service: T, limit: 1, page: 2 });
+  assert.notEqual(detail1.rows[0]!.id, detail2.rows[0]!.id);
+  assert.deepEqual(first.totals, second.totals); assert.deepEqual(first.summary, second.summary);
+  const unknown = await modelAttempts({ providerKey: owner.providerKey, status: "missing_usage" });
+  assert.equal(unknown.rows.length, 1); assert.equal(unknown.rows[0]!.estimateStatus, "missing_usage");
+  const complete = await modelAttempts({ providerKey: owner.providerKey, status: "complete" });
+  assert.equal(complete.total, 1);
 });
 
 test("time bounds use started_at and exclude imports, replays and the upper boundary", async () => {
@@ -89,17 +90,19 @@ test("time bounds use started_at and exclude imports, replays and the upper boun
     ["end", "2026-10-03T00:00:00.000Z", "live"], ["import", "2026-10-02T00:00:00.000Z", "imported"], ["replay", "2026-10-02T00:00:00.000Z", "replay"],
   ]) await request(owner, id!, { time, origin });
   const costs = await modelCosts({ from: "2026-10-02T00:00:00Z", to: "2026-10-03T00:00:00Z", providerKey: owner.providerKey });
-  assert.equal(costs.coverage.live_attempts, 1); assert.equal(Number(costs.totals[0]!.combined_cost), 1.6);
+  assert.equal(costs.summary.calls, 1); assert.equal(Number(costs.totals[0]!.amount), 1.6);
   await assert.rejects(modelCosts({ from: "2026-10-03T00:00:00Z", to: "2026-10-02T00:00:00Z" }), /早于/);
   for (const value of [{ page: 1.5 }, { limit: Infinity }, { days: 0 }]) await assert.rejects(modelCosts(value));
 });
 
 test("legacy and cache-unknown requests remain filterable without pretending they were free", async () => {
   await request(null, "legacy-unknown");
-  const costs = await modelCosts({ service: T, providerKey: "__legacy", status: "legacy" });
-  assert.equal(costs.coverage.live_attempts, 1); assert.equal(costs.coverage.unattributed_attempts, 1);
-  assert.equal(costs.rows[0]!.requested_model, model); assert.equal(costs.rows[0]!.actual_cost, null);
-  assert.equal(costs.attempts[0]!.cache_status, "complete", "explicit legacy cache details remain known");
-  const cache = await modelCosts({ service: T, status: "cache_unknown" });
-  assert.ok(cache.attempts.every(row => row.cache_status !== "complete"));
+  const costs = await modelCosts({ service: T, providerKey: "__legacy", showUnknown: "true" });
+  assert.equal(costs.summary.calls, 1);
+  assert.equal(costs.rows[0]!.requestedModel, model); assert.deepEqual(costs.rows[0]!.amounts, []);
+  const detail = await modelAttempts({ service: T, providerKey: "__legacy", status: "legacy" });
+  assert.equal(detail.rows.length, 1); assert.equal(detail.rows[0]!.supplierId, null);
+  assert.equal(detail.rows[0]!.usage?.prompt_tokens !== undefined, true, "旧缓存详情仍在明细保留");
+  const cache = await modelAttempts({ service: T, status: "cache_unknown" });
+  assert.ok(cache.rows.every(row => !row.normalizedUsage || row.normalizedUsage.cacheStatus !== "complete"));
 });

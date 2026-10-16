@@ -16,6 +16,7 @@ export interface PriceVector {
 }
 
 export interface PricingSnapshot extends PriceVector {
+  supplierId?: string | null;
   configured: boolean;
   providerKey: string;
   providerLabel: string | null;
@@ -137,7 +138,7 @@ export function estimateModelCost(snapshot: PricingSnapshot | null, usage: Recor
   return { amount: formatAmount(amount), currency: snapshot.currency, status, normalized, detail: { reasons, components } };
 }
 
-export interface BillingContext { providerKey: string; providerLabel: string | null; billingKind: BillingKind; requestedModel: string; officialProviderId?: string | null; }
+export interface BillingContext { providerKey: string; providerLabel: string | null; billingKind: BillingKind; requestedModel: string; officialProviderId?: string | null; supplierId?: string | null; }
 
 interface PricingRow {
   provider_key: string; requested_model: string; billing_kind: BillingKind; mode: PricingMode; currency: "USD" | "CNY";

@@ -6,7 +6,10 @@ import { actorOf } from "@aihot/backend/admin/auth";
 
 import { importSelectBenchRun, listSelectBenchRuns, selectBenchRun } from "@aihot/backend/admin/selectbench";
 import { previewModelCostBackfill, createModelCostBackfill, processModelCostBackfill, listModelCostBackfills, modelCostBackfill } from "@aihot/backend/admin/model-cost-backfills";
-import { modelsOverview, switchModel } from "@aihot/backend/admin/models";
+import { modelAssignments, modelsOverview, switchModel } from "@aihot/backend/admin/models";
+import { modelStats, modelStatsOptions } from "@aihot/backend/admin/model-stats";
+import { modelAttempts } from "@aihot/backend/admin/model-costs";
+import { createModelSupplier, listModelSuppliers } from "@aihot/backend/admin/model-suppliers";
 import { listModelPricing, saveModelPricing, restoreModelPricing, listModelPriceCatalog, syncModelPriceCatalog, modelCosts } from "@aihot/backend/admin/model-pricing";
 import { activateConnection, cancelLogin, codexModels, codexStatus, connectCodex, disconnectCodex, loginStatus, modelConfiguration, removeConnection, saveConnection } from "@aihot/backend/admin/model-config";
 import { sha256 } from "@aihot/backend/lib/ids";
@@ -40,6 +43,12 @@ function decodeImage(dataUrl: unknown): Buffer {
 
 export function registerAdmin(app: FastifyInstance) {
   app.get("/api/admin/model-config", adminHandler(async () => modelConfiguration()));
+  app.get("/api/admin/model-assignments", adminHandler(async () => modelAssignments()));
+  app.get("/api/admin/model-suppliers", adminHandler(async () => listModelSuppliers()));
+  app.post("/api/admin/model-suppliers", adminHandler(async (req) => createModelSupplier(req.body)));
+  app.get("/api/admin/model-stats", adminHandler(async (req) => modelStats(q(req))));
+  app.get("/api/admin/model-stats/options", adminHandler(async () => modelStatsOptions()));
+  app.get("/api/admin/model-attempts", adminHandler(async (req) => modelAttempts(q(req))));
   app.post("/api/admin/model-config/connections", adminHandler(async (req, _reply, admin) => saveConnection(req.body, actorOf(admin))));
   app.post("/api/admin/model-config/active", adminHandler(async (req, _reply, admin) => activateConnection(req.body, actorOf(admin))));
   app.delete("/api/admin/model-config/connections/:id", adminHandler(async (req, _reply, admin) => removeConnection(param(req, "id"), actorOf(admin))));

@@ -315,6 +315,13 @@ export interface AdminCodexModel {
 export interface AdminModelConnection {
   id: string; name: string; type: "api-key" | "codex"; model: string; baseUrl?: string;
   keyConfigured: boolean; jsonMode: boolean; vision: boolean; reasoningEffort?: ReasoningEffort | null;
+  supplierId?: string | null; autoSupplier?: boolean;
+}
+export interface AdminModelSupplier { id: string; name: string; }
+export interface AdminModelAssignments {
+  capabilities: Array<Omit<AdminModels["capabilities"][number], "usage">>;
+  choices: AdminModels["choices"];
+  history: AdminModels["history"];
 }
 export interface AdminModelConfiguration {
   active: string | null; connections: AdminModelConnection[]; modelCallsEnabled: boolean; collectEnabled: boolean;
@@ -405,15 +412,31 @@ export interface AdminModelPricingTarget {
   officialProviderId?: string | null; deleted: boolean; historical: boolean; effective: AdminModelPriceSnapshot;
 }
 export interface AdminModelPricing { rules: AdminModelPricingRule[]; targets: AdminModelPricingTarget[]; calculatorVersion: "v1"; }
-export interface AdminModelCosts {
-  days: number; from: Timestamp; to: Timestamp; page: number; attemptPage: number; limit: number; total: number; attemptTotal: number;
-  totals: Array<{ billing_kind: ModelBillingKind | null; currency: string | null; calls: number; actual_cost: string | null; complete_estimate: string | null; approximate_estimate: string | null; partial_estimate: string | null; combined_cost: string | null }>;
-  attempts: Array<{ id: number; receipt_id: number; started_at: Timestamp; provider_key: string | null; provider_label: string | null; requested_model: string | null; billing_kind: ModelBillingKind | null;
-    service: string; purpose: string; status: string; estimate_status: ModelEstimateStatus; cache_status: string; estimated_cost: string | null; estimated_currency: string | null; actual_cost: string | null; actual_currency: string | null; reasons: string[] | null }>;
-  rows: Array<{ provider_key: string | null; provider_label: string | null; requested_model: string | null; billing_kind: ModelBillingKind | null; purpose: string; calls: number;
-    actual_cost: string | null; actual_currency: string | null; complete_estimate: string | null; approximate_estimate: string | null; partial_estimate: string | null;
-    estimated_currency: string | null; partial_calls: number; unknown_calls: number }>;
-  coverage: { live_attempts: number; priced_attempts: number; approximate_attempts: number; partial_attempts: number; unknown_attempts: number; actual_attempts: number; cache_unknown_attempts: number; unattributed_attempts: number };
+export interface AdminUsageMetrics {
+  calls: number; successRate: number | null; p50: number | null; p95: number | null;
+  tokensIn: number | null; tokensOut: number | null; inputPartial: boolean; outputPartial: boolean;
+  cacheHitRate: number | null; cachePartial: boolean;
+}
+export interface AdminModelGroup { supplierId: string | null; supplierName: string | null; requestedModel: string | null; }
+export interface AdminStatsPage { from: Timestamp; to: Timestamp; page: number; limit: number; total: number; }
+export interface AdminModelStats extends AdminStatsPage {
+  summary: AdminUsageMetrics; rows: Array<AdminModelGroup & AdminUsageMetrics>;
+}
+export interface AdminModelStatsOptions {
+  suppliers: AdminModelSupplier[]; connections: Array<{ id: string; name: string }>; purposes: string[]; bootstrap: AdminBootstrapBudget | null;
+}
+export interface AdminReferenceAmount { billingKind: ModelBillingKind | null; currency: string; amount: string; }
+export interface AdminModelCosts extends AdminStatsPage {
+  summary: { calls: number; knownCalls: number; unknownCalls: number };
+  totals: AdminReferenceAmount[];
+  hidden: { groups: number; calls: number };
+  rows: Array<AdminModelGroup & { calls: number; unknownCalls: number; amounts: AdminReferenceAmount[] }>;
+}
+export interface AdminModelAttempts extends AdminStatsPage {
+  rows: Array<AdminModelGroup & { id: number; receiptId: number; startedAt: Timestamp; providerKey: string | null; providerLabel: string | null;
+    billingKind: ModelBillingKind | null; service: string; purpose: string; status: string; error: string | null;
+    usage: Record<string, unknown> | null; normalizedUsage: Record<string, unknown> | null; estimateStatus: ModelEstimateStatus | null;
+    estimatedCost: string | null; estimatedCurrency: string | null; actualCost: string | null; actualCurrency: string | null; reasons: string[] | null }>;
 }
 export interface AdminModelPriceCatalog {
   page: number; limit: number; total: number;

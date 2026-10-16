@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AdminModelPriceSnapshot, AdminModelPricingTarget, AdminModelPricingRule, Timestamp } from "@aihot/contracts/admin";
 import { pricingDraftFor, pricingPayload } from "../app/features/admin/model-pricing-form.ts";
-import { modelCostQuery, backfillDateRange } from "../app/features/admin/model-cost-query.ts";
+import { backfillDateRange } from "../app/features/admin/model-cost-query.ts";
+
+import { modelStatsQuery } from "../app/features/admin/model-stats-query.ts";
 
 const snapshot: AdminModelPriceSnapshot = { providerKey: "connection:fixture", providerLabel: "Fixture", requestedModel: "fixture-model", billingKind: "api", configured: true,
   currency: "CNY", inputPerMtok: "0", outputPerMtok: "2.12345678", cacheReadPerMtok: "0.1", cacheWritePerMtok: null, mode: "custom", revision: 3,
@@ -36,9 +38,9 @@ test("unconfigured prices stay empty while intentionally free prices remain zero
 });
 
 test("Beijing inclusive days become a half-open UTC interval and filters stay isolated from catalog state", () => {
-  const query = modelCostQuery(new URLSearchParams({ days: "30", costFrom: "2026-10-01", costTo: "2026-10-02", costProvider: "connection:fixture", costStatus: "partial", costPage: "2", priceQuery: "irrelevant" }));
+  const query = modelStatsQuery(new URLSearchParams({ range: "custom", from: "2026-10-01", to: "2026-10-02", providerKey: "connection:fixture", status: "partial", page: "2", priceQuery: "irrelevant" }));
   assert.equal(query.get("from"), "2026-09-30T16:00:00.000Z"); assert.equal(query.get("to"), "2026-10-02T16:00:00.000Z");
-  assert.equal(query.get("providerKey"), "connection:fixture"); assert.equal(query.get("status"), "partial");
+  assert.equal(query.get("providerKey"), "connection:fixture"); assert.equal(query.has("status"), false);
   assert.equal(query.get("page"), "2"); assert.equal(query.has("priceQuery"), false);
   assert.deepEqual(backfillDateRange("2026-10-01", "2026-10-01"), { from: "2026-09-30T16:00:00.000Z", to: "2026-10-01T16:00:00.000Z" });
 });

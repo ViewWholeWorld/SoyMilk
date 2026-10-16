@@ -8,6 +8,8 @@ import { REASONING_EFFORTS } from "@aihot/contracts/admin";
 import { config } from "../config.ts";
 import { atomicPrivateJson } from "./chatgpt-auth.ts";
 import { ProviderUnavailableError } from "./receipts.ts";
+import { sql } from "../db.ts";
+import { officialSupplierId } from "./model-supplier.ts";
 
 export const ConnectionInput = z.object({
   id: z.string().uuid().optional(), name: z.string().trim().min(1).max(60),
@@ -15,6 +17,8 @@ export const ConnectionInput = z.object({
   baseUrl: z.string().trim().max(500).optional(), apiKey: z.string().trim().max(4096).optional(),
   jsonMode: z.boolean().default(true), vision: z.boolean().default(false),
   reasoningEffort: z.enum(REASONING_EFFORTS).nullable().optional(),
+  supplierId: z.string().trim().min(1).max(100).nullable().optional(),
+  autoSupplier: z.boolean().optional(),
 }).superRefine((v, ctx) => {
   if (v.type !== "api-key") return;
   try {
@@ -91,6 +95,15 @@ export async function saveModelConnection(input: unknown) {
     const old = c.connections.find((x) => x.id === v.id);
     if (v.id && !old) throw Object.assign(new Error("连接不存在"), { statusCode: 404 });
     const next: ModelConnection = { ...v, id: old?.id ?? randomUUID(), apiKey: v.type === "api-key" ? v.apiKey || old?.apiKey : undefined, generation: old?.generation };
+    // 旧客户端显式指定归属视为手动；两个字段都省略时保留已保存的选择。
+    next.autoSupplier = v.autoSupplier ?? (v.supplierId !== undefined ? false : old?.autoSupplier);
+    next.supplierId = v.autoSupplier === true ? officialSupplierId(v.type, v.baseUrl)
+      : v.supplierId !== undefined ? v.supplierId : old && Object.hasOwn(old, "supplierId")
+      ? old.supplierId : officialSupplierId(v.type, v.baseUrl);
+    if (next.supplierId) {
+      const [supplier] = await sql`SELECT id FROM model_suppliers WHERE id=${next.supplierId}`;
+      if (!supplier) throw Object.assign(new Error("供应商不存在"), { statusCode: 400 });
+    }
     if (next.type === "api-key" && !next.apiKey) throw Object.assign(new Error("请填写 API Key"), { statusCode: 400 });
     // Keep legacy absence too: adding an identity on a name-only edit would bypass its old receipts.
     if (!old || !sameRequestConfiguration(old, next)) next.generation = randomUUID();

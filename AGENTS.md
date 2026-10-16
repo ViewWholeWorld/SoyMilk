@@ -12,6 +12,7 @@
 - 首轮捕获 745 篇的临时预算与自动恢复已部署。实时状态以 `bootstrapBudgetStatus()`、预算实际限额及 `modelsOverview().tokenSummary` 为准；历史快照中的剩余数、用量与镜像标签不代表现在。
 - 条款与隐私页仍为私网试用模板；公开上线前需要使用者本人确认。
 - 模型定价 `3.5.1` 于北京时间 2026-10-16 已部署，应用迁移 `0045`—`0047` 和 pg-boss schema 43 已核验，操作见 `docs/model-pricing.md`。按连接和请求型号保留 USD／CNY 原币种及不可变快照，订阅等价金额单列。历史补算写独立表，`MODEL_COST_BACKFILL_ENABLED=false` 只停用新预览和执行，已有结果与新请求定价继续可用；后续新增迁移仍按手动部署规则确认；本次参考目录已初始化，未自动进行历史补算。
+- `3.5.2` 于北京时间 2026-10-16 17:22:49 从 `develop@965cb6e` 手动部署，应用迁移 `0048`—`0049` 已具体确认并完成，累计 46 个迁移，队列 schema 43 未变。配置页 `/admin/models` 和统计页 `/admin/model-stats` 按标签按需加载，调用与费用共用供应商／请求型号分组。`0048` 新增供应商与 attempt 归属，`0049` 对齐统计时间索引；连接保存自动／手动归属模式，历史不按当前连接回填，显式空归属保持未知。`modelsOverview().tokenSummary` 维护查询仍保留。镜像、回退点与验证见 `docs/soymilk-operations.md`，后续迁移仍按手动部署规则确认。
 
 ## 最常见的任务：改成另一个行业
 
@@ -36,6 +37,7 @@
   npm run build -w @aihot/web && node --test apps/web/tests/*.test.ts
   node scripts/smoke.ts --base http://localhost:3000             # 站点跑起来以后
   ```
+- 新增或变更 HTTP API 时，还须在另一未迁移空库运行 `DATABASE_URL=postgres://127.0.0.1:5432/<名字>_http_test npm run test:http`。同步 `tests/http/routes.ts` 和实际 HTTP 业务用例，覆盖鉴权／CSRF、正常与空结果、输入边界及涉及的筛选、分页、冲突与幂等；需要数据时用合成夹具或脱敏冻结样本。仅验证匿名 401 或返回 200 不算业务验收，外部依赖例外必须登记并报告，具体见 `docs/http-api-testing.md`。
 - `tests/` 里部分测试用的是示例行业的分类、标签和公司，改了 `industry/taxonomy.ts` 后把这些例子换成新行业的对应项。
 - 核对完整后端套件本次日志与之前基线，明确报告失败原因和复核结果，不能把相关测试通过写成全套通过，也不能默认忽略历史失败。测试库与网络必须隔离，不访问生产库、真实模型或外部付费服务，具体见 `docs/testing.md`。
 
