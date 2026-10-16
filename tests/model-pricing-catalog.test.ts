@@ -104,10 +104,10 @@ test("same model on two connections uses separate prices and default switches pr
     await selectModelConnection(b.id); const second = await ask(); ids.push(second.receiptId);
     assert.notEqual(first.receiptId, second.receiptId); assert.equal(provider.hits(), 2);
     const own = async (id: string) => (await modelCosts({ providerKey: `connection:${id}` })).totals[0]!;
-    assert.equal(Number((await own(a.id)).combined_cost), 1.6); assert.equal(Number((await own(b.id)).combined_cost), 3.2);
+    assert.equal(Number((await own(a.id)).amount), 1.6); assert.equal(Number((await own(b.id)).amount), 3.2);
     await saveModelConnection({ ...a, name: "Renamed A", baseUrl: provider.url + "/v1", apiKey: "" });
     await deleteModelConnection(a.id);
-    assert.equal(Number((await own(a.id)).combined_cost), 1.6);
+    assert.equal(Number((await own(a.id)).amount), 1.6);
     assert.equal((await listModelPricing()).targets.find(row => row.providerKey === `connection:${a.id}`)!.deleted, true);
   } finally { await provider.close(); }
 });
@@ -180,7 +180,7 @@ test("CNY reference pricing and later USD prices keep immutable snapshots and se
   assert.equal(calls, 2);
   const totals = (await modelCosts({ providerKey })).totals;
   assert.equal(totals.length, 2); assert.deepEqual(totals.map(row => row.currency).sort(), ["CNY", "USD"]);
-  assert.ok(totals.every(row => Number(row.combined_cost) === 1.6), "USD and CNY must not be added to 3.2");
+  assert.ok(totals.every(row => Number(row.amount) === 1.6), "USD and CNY must not be added to 3.2");
   const restored = await restoreModelPricing({ providerKey, requestedModel, revision: 1, referenceProviderId: T, referenceModelId: "native" }, T);
   assert.equal(restored.currency, "USD");
 });

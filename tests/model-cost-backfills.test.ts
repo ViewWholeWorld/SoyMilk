@@ -69,7 +69,7 @@ test("explicit evidence enables aliases, imported history stays opt-in and repla
   assert.equal(live.total, 1); assert.equal(live.rows[0]!.result.amount, "1.6"); assert.equal(live.rows[0]!.result.currency, "CNY");
   const imported = await previewModelCostBackfill({ ...input, filters: { ...input.filters, includeImported: true } });
   assert.equal(imported.total, 2); assert.equal(imported.summary[0]!.complete, "3.2");
-  assert.equal((await modelCosts({ from, to, purpose: T, service: scope("origins").service, model: "legacy-model" })).coverage.live_attempts, 1);
+  assert.equal((await modelCosts({ from, to, purpose: T, service: scope("origins").service, model: "legacy-model" })).summary.calls, 1);
 });
 
 test("overlapping mapping ranges, missing evidence and unpriced targets reject before creating runs", async () => {
@@ -148,7 +148,7 @@ test("each selected run has its own totals and default live costs never include 
   assert.equal((await modelCostBackfill(one.id))!.summary[0]!.complete, "1.600000000000");
   assert.equal((await modelCostBackfill(two.id))!.summary[0]!.complete, "1.600000000000");
   const after = await modelCosts({ from, to, purpose: T, providerKey: "__legacy" });
-  assert.deepEqual(after.totals, before.totals); assert.deepEqual(after.coverage, before.coverage);
+  assert.deepEqual(after.totals, before.totals); assert.deepEqual(after.summary, before.summary);
 });
 
 test("known ownership can be recomputed explicitly while original complete snapshots stay immutable", async () => {

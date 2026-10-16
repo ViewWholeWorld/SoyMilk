@@ -262,11 +262,11 @@ export async function consumersForRelease(db: Db, id: number): Promise<{ purpose
 }
 
 async function startAttempt(tx: Db, receiptId: number, attempt: number, req: ReceiptRequest): Promise<number> {
-  const pricing = req.billingContext ? await pricingSnapshotFor(tx, req.billingContext) : null;
+  const pricing = req.billingContext ? { ...await pricingSnapshotFor(tx, req.billingContext), supplierId: req.billingContext.supplierId ?? null } : null;
   const [row] = await tx<{ id: number }[]>`
-    INSERT INTO receipt_attempts (receipt_id, attempt, service, model, provider_key, provider_label_snapshot, billing_kind, requested_model, pricing_snapshot, status)
+    INSERT INTO receipt_attempts (receipt_id, attempt, service, model, provider_key, provider_label_snapshot, billing_kind, requested_model, pricing_snapshot, supplier_id, status)
     VALUES (${receiptId}, ${attempt}, ${req.service}, ${req.model ?? null}, ${req.billingContext?.providerKey ?? null}, ${req.billingContext?.providerLabel ?? null},
-            ${req.billingContext?.billingKind ?? null}, ${req.billingContext?.requestedModel ?? null}, ${pricing ? tx.json(pricing as never) : null}, 'pending')
+            ${req.billingContext?.billingKind ?? null}, ${req.billingContext?.requestedModel ?? null}, ${pricing ? tx.json(pricing as never) : null}, ${req.billingContext?.supplierId ?? null}, 'pending')
     RETURNING id`;
   return row!.id;
 }

@@ -6,8 +6,8 @@
 | --- | --- |
 | 部署与接入 | [首次部署](deploy.md)、[Codex 授权](chatgpt-auth.md)、[Hermes](hermes.md) |
 | 内容与配置 | [行业定制](customize.md)、[兴趣信源](soymilk-feeds.md)、[信源机制](sources.md)、[精选校准](selection.md)、[事件归组](grouping.md)、[时间轴](timeline-time.md) |
-| 模型费用 | [定价与补算操作](model-pricing.md)、[设计与验收进度](model-pricing-plan.md) |
-| 持续维护 | [上游审查台账](upstream-review.md)、[综述评测](story-digest-evaluation.md)、[维护变更记录](changelog.md) |
+| 模型费用 | [配置、统计与补算操作](model-pricing.md)、[3.5.2 实施与验收](3.5.2优化内容.md)、[原定价设计](model-pricing-plan.md) |
+| 持续维护 | [上游审查台账](upstream-review.md)、[综述评测](story-digest-evaluation.md)、[空库 HTTP API 验收](http-api-testing.md)、[维护变更记录](changelog.md) |
 
 ## 历史归档
 
