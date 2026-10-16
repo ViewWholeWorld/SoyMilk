@@ -1,4 +1,4 @@
-// Architecture boundaries (docs/architecture.md) that otherwise hold only by convention. Each rule reads
+// Architecture boundaries (docs/开发指南/系统架构.md) that otherwise hold only by convention. Each rule reads
 // the source and names the file that breaks it. A rule changes here and in that document together.
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";

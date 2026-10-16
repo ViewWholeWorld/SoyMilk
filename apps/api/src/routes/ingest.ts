@@ -1,4 +1,4 @@
-// External collection scripts push items here (docs/sources.md). They use the ingest
+// External collection scripts push items here (docs/内容管理/信源接入与管理.md). They use the ingest
 // token (never an admin session) and their own rate limit.
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
