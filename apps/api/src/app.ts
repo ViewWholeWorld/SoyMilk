@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type RouteOptions } from "fastify";
 import { randomUUID } from "node:crypto";
 import { OAUTH_PROBE_PATHS, resolveRedirect } from "@aihot/contracts/http-policy";
 import { sql } from "@aihot/backend/db";
@@ -15,7 +15,7 @@ import { registerAgent } from "./routes/agent.ts";
 import { registerMcp } from "./routes/mcp.ts";
 import { sendProblem } from "./http/respond.ts";
 
-export async function buildApp(): Promise<FastifyInstance> {
+export async function buildApp(options: { onRoute?: (route: RouteOptions) => void } = {}): Promise<FastifyInstance> {
   const app = Fastify({
     logger: { level: process.env.LOG_LEVEL || "info", redact: ["req.headers.authorization", "req.headers.cookie"] },
     // Access logs never record query strings (tokens, actors).
@@ -25,6 +25,8 @@ export async function buildApp(): Promise<FastifyInstance> {
     bodyLimit: 10 * 1024 * 1024,
     routerOptions: { ignoreTrailingSlash: false, maxParamLength: 300 },
   });
+  // 验收脚本在注册时核对路由清单，避免新增接口漏掉 HTTP 用例。
+  if (options.onRoute) app.addHook("onRoute", options.onRoute);
 
   app.addHook("onRequest", async (req) => {
     req.requestId = req.id;

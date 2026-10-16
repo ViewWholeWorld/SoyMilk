@@ -37,6 +37,7 @@
   npm run build -w @aihot/web && node --test apps/web/tests/*.test.ts
   node scripts/smoke.ts --base http://localhost:3000             # 站点跑起来以后
   ```
+- 新增或变更 HTTP API 时，还须在另一未迁移空库运行 `DATABASE_URL=postgres://127.0.0.1:5432/<名字>_http_test npm run test:http`。同步 `tests/http/routes.ts` 和实际 HTTP 业务用例，覆盖鉴权／CSRF、正常与空结果、输入边界及涉及的筛选、分页、冲突与幂等；需要数据时用合成夹具或脱敏冻结样本。仅验证匿名 401 或返回 200 不算业务验收，外部依赖例外必须登记并报告，具体见 `docs/http-api-testing.md`。
 - `tests/` 里部分测试用的是示例行业的分类、标签和公司，改了 `industry/taxonomy.ts` 后把这些例子换成新行业的对应项。
 - 核对完整后端套件本次日志与之前基线，明确报告失败原因和复核结果，不能把相关测试通过写成全套通过，也不能默认忽略历史失败。测试库与网络必须隔离，不访问生产库、真实模型或外部付费服务，具体见 `docs/testing.md`。
 

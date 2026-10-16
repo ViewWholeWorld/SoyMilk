@@ -40,7 +40,7 @@ docker compose up -d --build
 
 ## 开发与文档
 
-先读 [AGENTS.md](AGENTS.md) 和[文档索引](docs/README.md)。不同 feature 分别完成验证和提交，再开始下一项；开发与测试使用关闭安全阀的独立环境，不访问生产数据库、真实模型或外部付费服务。每次改动记录完整套件的实际结果，不能将部分检查通过写成全部通过，测试方法见[隔离回归测试](docs/testing.md)。
+先读 [AGENTS.md](AGENTS.md) 和[文档索引](docs/README.md)。不同 feature 分别完成验证和提交，再开始下一项；开发与测试使用关闭安全阀的独立环境，不访问生产数据库、真实模型或外部付费服务。每次改动记录完整套件的实际结果，不能将部分检查通过写成全部通过，测试方法见[隔离回归测试](docs/testing.md)。新增或变更 API 还须通过 `npm run test:http` 的[空库真实 HTTP 验收](docs/http-api-testing.md)，补齐路由清单、合成数据场景与业务断言。
 
 | 文档 | 内容 |
 | --- | --- |
