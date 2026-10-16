@@ -1,6 +1,6 @@
 # NAS 维护
 
-维护现有站点前先读 [当前维护说明](../../docs/soymilk-operations.md) 和 [手动部署](../../docs/manual-deploy.md)。首次安装的历史操作不代表当前生产开关或新闻数量。2026-10-16 已手动升级至 `3.5.1`，迁移、镜像和回退点见[本轮发布快照](../../docs/soymilk-operations.md#2026-10-16-模型定价正式上线)；后续仍须现场核对。
+维护现有站点前先读 [当前维护说明](../../docs/soymilk-operations.md) 和 [手动部署](../../docs/manual-deploy.md)。首次安装的历史操作不代表当前生产开关或新闻数量。北京时间 2026-10-16 17:22:49 已从 `develop@965cb6e` 手动升级至 `3.5.2`，迁移、镜像和回退点见[本轮发布快照](../../docs/soymilk-operations.md#2026-10-16-模型配置与统计正式上线)；后续仍须现场核对。
 
 `compose.sh` 加载三个既有私有覆盖，以及可选的最后镜像覆盖 `compose.release.yml`。该文件保留原名，供维护者手动固定 setup/API/worker/web 的镜像及仅同步主题的 setup 命令。私有覆盖不进入 Git 或镜像构建上下文；更新时保留生产环境文件、数据卷、worker 复用、并发和预算。
 

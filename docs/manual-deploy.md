@@ -73,7 +73,7 @@ services:
 
 ## 模型配置与统计 3.5.2 的升级检查
 
-源码候选新增 `0048_model_suppliers.sql`，总计 45 个本站迁移。迁移只建立轻量供应商表、五个固定官方记录和 `receipt_attempts.supplier_id` 可空外键，不回填已有请求或改写金额、用量和回执。生产迁移与部署尚未执行，须按上文取得具体授权、排空 worker、备份后再运行 setup。
+本版新增 `0048_model_suppliers.sql` 和 `0049_model_stats_time.sql`，总计 46 个本站迁移。`0048` 建立轻量供应商表、五个固定官方记录和 `receipt_attempts.supplier_id` 可空外键；`0049` 在事务内替换原统计时间部分索引，将仅 `requested_model` 非空的请求纳入，同时兼容旧版条件。迁移不回填已有请求或改写金额、用量和回执。索引替换会持有表锁，须取得具体授权、排空 worker、备份后运行 setup。北京时间 2026-10-16 17:22:49 已具体确认并完成 NAS 升级，见[发布快照](soymilk-operations.md#2026-10-16-模型配置与统计正式上线)；该记录不构成后续生产结构变更授权。
 
 部署时同时切换 API 与网页，保留 worker 复用、账号、并发及预算覆盖。管理员分别核对 `/admin/models` 的两个标签和 `/admin/model-stats` 的两个标签；新接口为 `model-assignments`、`model-suppliers`、`model-stats`、`model-stats/options`、`model-attempts`，费用接口已使用供应商／型号汇总契约，明细独立读取。使用已存在的数据核对即可，不真实试调用、不自动同步目录或执行补算。
 
