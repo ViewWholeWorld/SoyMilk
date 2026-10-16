@@ -36,6 +36,8 @@ const validActual = sql`a.cost_basis='actual' AND a.cost::text ~ '^[0-9]+([.][0-
 const validEstimate = sql`a.estimate_status IN ('complete','approximate') AND a.estimated_cost::text ~ '^[0-9]+([.][0-9]+)?$' AND a.estimated_currency ~ '^[A-Z]{3}$'`;
 const referenceAmount = sql`CASE WHEN ${validActual} THEN a.cost WHEN ${validEstimate} THEN a.estimated_cost END`;
 const referenceCurrency = sql`CASE WHEN ${validActual} THEN a.currency WHEN ${validEstimate} THEN a.estimated_currency END`;
+// 明细保留部分估算等原始币种；金额是否可计入参考合计不影响明细筛选。
+const detailCurrency = sql`CASE WHEN ${validActual} THEN a.currency ELSE a.estimated_currency END`;
 
 export async function modelCosts(input: unknown = {}): Promise<BeforeJson<AdminModelCosts>> {
   const { f, since, until, condition } = modelStatsRange(input);
@@ -77,7 +79,7 @@ export async function modelAttempts(input: unknown = {}): Promise<BeforeJson<Adm
   const { f, since, until, condition: base } = modelStatsRange(advanced);
   const clauses = [base];
   if (advanced.billingKind) clauses.push(advanced.billingKind === "unattributed" ? sql`a.billing_kind IS NULL` : sql`a.billing_kind=${advanced.billingKind}`);
-  if (advanced.currency) clauses.push(sql`${referenceCurrency}=${advanced.currency}`);
+  if (advanced.currency) clauses.push(sql`${detailCurrency}=${advanced.currency}`);
   if (advanced.status === "cache_unknown") clauses.push(sql`${MODEL_CACHE_STATUS}<>'complete'`);
   else if (advanced.status === "legacy") clauses.push(sql`a.provider_key IS NULL`);
   else if (advanced.status) clauses.push(sql`(CASE WHEN ${validActual} THEN 'actual' ELSE coalesce(a.estimate_status,'unpriced') END)=${advanced.status}`);

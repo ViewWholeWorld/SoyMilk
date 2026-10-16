@@ -62,6 +62,30 @@ test("连接省略归属时保留，显式 null 清空，归属编辑不改变�
   await assert.rejects(saveModelConnection({ ...sample, id: first.id, supplierId: "missing-supplier" }), /不存在/);
 });
 
+test("自动未知与手动官方归属保存选择模式，模式编辑不改变请求身份", async () => {
+  const sample = { name: T, type: "api-key" as const, model: T, baseUrl: "https://api.openai.com/v1", apiKey: "test-only" };
+  const connection = await saveModelConnection({ ...sample, autoSupplier: true, supplierId: a.id });
+  assert.equal(connection.supplierId, "openai"); assert.equal(connection.autoSupplier, true);
+  const stored = () => readModelConfig().then(c => c.connections.find(c => c.id === connection.id)!);
+  const generation = (await stored()).generation;
+  for (const supplierId of ["openai", a.id, null]) {
+    const manual = await saveModelConnection({ ...sample, id: connection.id, supplierId, autoSupplier: false });
+    assert.equal(manual.autoSupplier, false); assert.equal(manual.supplierId, supplierId);
+    assert.equal((await stored()).autoSupplier, false); assert.equal((await stored()).generation, generation);
+    const preserved = await saveModelConnection({ ...sample, id: connection.id });
+    assert.equal(preserved.autoSupplier, false); assert.equal(preserved.supplierId, supplierId);
+  }
+  const automatic = await saveModelConnection({ ...sample, id: connection.id, autoSupplier: true, supplierId: null });
+  assert.equal(automatic.supplierId, "openai"); assert.equal((await stored()).generation, generation);
+  const custom = await saveModelConnection({ ...sample, id: connection.id, baseUrl: "https://proxy.example/v1", autoSupplier: true });
+  assert.equal(custom.autoSupplier, true); assert.equal(custom.supplierId, null);
+  assert.equal((await stored()).autoSupplier, true); assert.equal((await stored()).supplierId, null);
+  const restored = await saveModelConnection({ ...sample, id: connection.id, autoSupplier: true, baseUrl: "https://api.deepseek.com/v1" });
+  assert.equal(restored.supplierId, "deepseek");
+  const legacy = await saveModelConnection({ ...sample, id: connection.id, supplierId: null });
+  assert.equal(legacy.autoSupplier, false); assert.equal(legacy.supplierId, null);
+});
+
 test("请求冻结供应商，更换或删除连接不改历史，复用与重试保持原回执行为", async () => {
   const sample = { name: T, type: "api-key" as const, model: T, baseUrl: "https://proxy.example/v1", apiKey: "test-only", supplierId: a.id };
   const connection = await saveModelConnection(sample);

@@ -6,14 +6,14 @@ import { CONNECTION_PROVIDERS, connectionDraftFor, connectionPayload, updateConn
 const connection: AdminModelConnection = { id: "00000000-0000-4000-8000-000000000001", name: "测试连接", type: "api-key", model: "fixture-model",
   baseUrl: "https://api.openai.com/v1", jsonMode: true, vision: false, keyConfigured: true, supplierId: "openai" };
 
-test("编辑已有官方连接后切换预设，提交新供应商且不发送表单状态", () => {
+test("编辑已有官方连接后切换预设，提交新供应商与选择模式", () => {
   const expected = ["openai", "deepseek", "alibaba", "zhipuai", null];
   for (const [index, provider] of CONNECTION_PROVIDERS.entries()) {
     const draft = updateConnectionDraft(connectionDraftFor(connection), { baseUrl: provider.url });
     const payload = connectionPayload(draft);
     assert.equal(payload.supplierId, expected[index]); assert.equal(payload.baseUrl, provider.url);
     assert.equal(payload.id, connection.id); assert.equal(payload.apiKey, "");
-    assert.equal("autoSupplier" in payload, false); assert.equal("keyConfigured" in payload, false);
+    assert.equal(payload.autoSupplier, true); assert.equal("keyConfigured" in payload, false);
   }
   assert.equal(connection.supplierId, "openai"); assert.equal(connection.baseUrl, "https://api.openai.com/v1");
 });
@@ -69,4 +69,20 @@ test("手动选择后可以恢复自动识别，普通名称与模型编辑保�
   const edited = updateConnectionDraft(automatic, { name: "新名称", model: "other-fixture" });
   assert.equal(edited.supplierId, "openai");
   assert.equal(updateConnectionDraft(draft, { name: "新名称" }).supplierId, null);
+});
+
+test("自动识别自定义地址保存后重新编辑，切回官方接口仍自动跟随", () => {
+  const custom = updateConnectionDraft(connectionDraftFor(connection), { baseUrl: "https://proxy.example/v1" });
+  const reopened = connectionDraftFor({ ...connection, ...connectionPayload(custom) });
+  assert.equal(reopened.autoSupplier, true); assert.equal(reopened.supplierId, null);
+  assert.equal(updateConnectionDraft(reopened, { baseUrl: "https://api.deepseek.com/v1" }).supplierId, "deepseek");
+});
+
+test("手动选择同名官方供应商或未知保存后，重新编辑不变成自动识别", () => {
+  for (const supplierId of ["openai", null]) {
+    const manual = updateConnectionDraft(connectionDraftFor(connection), { supplierId, autoSupplier: false });
+    const reopened = connectionDraftFor({ ...connection, ...connectionPayload(manual) });
+    assert.equal(reopened.autoSupplier, false);
+    assert.equal(updateConnectionDraft(reopened, { baseUrl: "https://api.deepseek.com/v1" }).supplierId, supplierId);
+  }
 });

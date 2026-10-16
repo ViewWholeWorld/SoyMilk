@@ -17,8 +17,8 @@ export interface ConnectionDraft {
 export function connectionDraftFor(connection?: AdminModelConnection): ConnectionDraft {
   const type = connection?.type ?? "api-key", baseUrl = connection ? connection.baseUrl ?? "" : CONNECTION_PROVIDERS[0]!.url;
   const official = officialSupplierId(type, baseUrl);
-  // 旧配置没有归属来源标记；只将与原官方入口一致的非空归属视为自动选择。
-  const autoSupplier = connection?.supplierId === undefined || (official !== null && connection.supplierId === official);
+  // 仅旧配置缺少模式时沿用推断；新配置保留自动未知与手动官方归属的区别。
+  const autoSupplier = connection?.autoSupplier ?? (connection?.supplierId === undefined || (official !== null && connection.supplierId === official));
   return { id: connection?.id, name: connection?.name ?? "", type, model: connection?.model ?? "", baseUrl, apiKey: "",
     jsonMode: connection?.jsonMode ?? true, vision: connection?.vision ?? false, reasoningEffort: connection?.reasoningEffort ?? null,
     supplierId: autoSupplier ? official : connection?.supplierId ?? null, autoSupplier };
@@ -29,6 +29,6 @@ export function updateConnectionDraft(draft: ConnectionDraft, changes: Partial<C
   return next.autoSupplier ? { ...next, supplierId: officialSupplierId(next.type, next.baseUrl) } : next;
 }
 
-export function connectionPayload({ autoSupplier, ...payload }: ConnectionDraft) {
-  return payload;
+export function connectionPayload(draft: ConnectionDraft) {
+  return { ...draft };
 }

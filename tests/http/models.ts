@@ -53,8 +53,33 @@ export async function modelWorkflows(h: HttpRuntime, scenario: (name: string, ru
       }
       const saved = (await read("model-config")).connections.find((row: any) => row.id === created.id);
       assert.equal(saved.supplierId, null);
+      assert.equal(saved.autoSupplier, false);
       assert.deepEqual(await counts(), before);
     } finally { await write("DELETE", `model-config/connections/${created.id}`, undefined); }
+  });
+  await scenario("供应商自动与手动模式在保存和重新读取后保留，模式输入按布尔校验", async () => {
+    const save = async (draft: ReturnType<typeof connectionDraftFor>) => write("POST", "model-config/connections", connectionPayload(draft));
+    let saved = await save(updateConnectionDraft(connectionDraftFor(), {
+      name: "HTTP 模式保留", model: "fixture-model", apiKey: "fictional-mode-key", baseUrl: "https://proxy.example/v1",
+    }));
+    const reload = async () => (await read("model-config")).connections.find((row: any) => row.id === saved.id);
+    try {
+      saved = await reload();
+      assert.equal(saved.autoSupplier, true); assert.equal(saved.supplierId, null);
+      saved = await save(updateConnectionDraft(connectionDraftFor(saved), { baseUrl: "https://api.openai.com/v1" }));
+      assert.equal(saved.supplierId, "openai");
+      for (const supplierId of ["openai", null]) {
+        saved = await save(updateConnectionDraft(connectionDraftFor(saved), { supplierId, autoSupplier: false }));
+        saved = await reload();
+        assert.equal(saved.autoSupplier, false); assert.equal(saved.supplierId, supplierId);
+        saved = await save(updateConnectionDraft(connectionDraftFor(saved), { baseUrl: "https://api.deepseek.com/v1" }));
+        assert.equal(saved.supplierId, supplierId);
+        saved = await save(updateConnectionDraft(connectionDraftFor(saved), { baseUrl: "https://api.openai.com/v1" }));
+      }
+      saved = await save(updateConnectionDraft(connectionDraftFor(saved), { autoSupplier: true }));
+      assert.equal(saved.supplierId, "openai"); assert.equal((await reload()).autoSupplier, true);
+      await write("POST", "model-config/connections", { ...saved, autoSupplier: "auto" }, 400);
+    } finally { await write("DELETE", `model-config/connections/${saved.id}`, undefined); }
   });
   await scenario("非空调用统计跨连接聚合、部分用量、成功率和耗时分位数", async () => {
     await attempt("usage", { supplierId: a.id, providerKey: `connection:${connection.id}`, latency: 10, usage: { prompt_tokens: 100, completion_tokens: 10, cached_input_tokens: 80 } });
@@ -97,6 +122,26 @@ export async function modelWorkflows(h: HttpRuntime, scenario: (name: string, ru
     assert.equal(visible.total, 2); assert.equal(visible.rows[0].supplierId, b.id); assert.deepEqual(visible.summary, result.summary);
     const details = await read(`model-attempts?${statsQuery("cost", { status: "partial" })}`);
     assert.equal(details.total, 1); assert.equal(Number(details.rows[0].estimatedCost), .2);
+  });
+  await scenario("部分估算按 USD／CNY 和状态组合筛选并分页，实际金额优先且汇总保持未知", async () => {
+    await attempt("currency", { estimate: "0.2", estimateStatus: "partial" });
+    await attempt("currency", { estimate: "0.3", estimateStatus: "partial", estimateCurrency: "CNY" });
+    await attempt("currency", { cost: "1", currency: "USD", estimate: "2", estimateStatus: "complete", estimateCurrency: "CNY" });
+    await attempt("currency", { cost: "-1", currency: "CNY", estimate: "0.4", estimateStatus: "partial" });
+    await attempt("currency", { estimateStatus: "missing_usage" });
+    const query = (extra: Record<string, string | number> = {}) => statsQuery("currency", { status: "partial", currency: "USD", limit: 1, ...extra });
+    const first = await read(`model-attempts?${query()}`), second = await read(`model-attempts?${query({ page: 2 })}`);
+    assert.equal(first.total, 2); assert.equal(second.total, 2);
+    assert.equal(first.rows.length, 1); assert.equal(second.rows.length, 1);
+    assert.notEqual(first.rows[0].id, second.rows[0].id);
+    assert.ok([...first.rows, ...second.rows].every((row: any) => row.estimatedCurrency === "USD" && row.actualCost === null));
+    assert.equal((await read(`model-attempts?${query({ currency: "CNY" })}`)).total, 1);
+    assert.equal((await read(`model-attempts?${query({ status: "actual" })}`)).total, 1);
+    assert.equal((await read(`model-attempts?${query({ status: "actual", currency: "CNY" })}`)).total, 0);
+    assert.equal((await read(`model-attempts?${query({ status: "missing_usage" })}`)).total, 1);
+    const costs = await read(`model-costs?${statsQuery("currency")}`);
+    assert.deepEqual(costs.summary, { calls: 5, knownCalls: 1, unknownCalls: 4 });
+    assert.deepEqual(costs.totals.map((row: any) => [row.currency, Number(row.amount)]), [["USD", 1]]);
   });
   await scenario("未知归属、旧订阅、时间边界及导入和回放排除", async () => {
     await attempt("range", { time: FROM });

@@ -18,6 +18,7 @@ export const ConnectionInput = z.object({
   jsonMode: z.boolean().default(true), vision: z.boolean().default(false),
   reasoningEffort: z.enum(REASONING_EFFORTS).nullable().optional(),
   supplierId: z.string().trim().min(1).max(100).nullable().optional(),
+  autoSupplier: z.boolean().optional(),
 }).superRefine((v, ctx) => {
   if (v.type !== "api-key") return;
   try {
@@ -94,7 +95,10 @@ export async function saveModelConnection(input: unknown) {
     const old = c.connections.find((x) => x.id === v.id);
     if (v.id && !old) throw Object.assign(new Error("连接不存在"), { statusCode: 404 });
     const next: ModelConnection = { ...v, id: old?.id ?? randomUUID(), apiKey: v.type === "api-key" ? v.apiKey || old?.apiKey : undefined, generation: old?.generation };
-    next.supplierId = v.supplierId !== undefined ? v.supplierId : old && Object.hasOwn(old, "supplierId")
+    // 旧客户端显式指定归属视为手动；两个字段都省略时保留已保存的选择。
+    next.autoSupplier = v.autoSupplier ?? (v.supplierId !== undefined ? false : old?.autoSupplier);
+    next.supplierId = v.autoSupplier === true ? officialSupplierId(v.type, v.baseUrl)
+      : v.supplierId !== undefined ? v.supplierId : old && Object.hasOwn(old, "supplierId")
       ? old.supplierId : officialSupplierId(v.type, v.baseUrl);
     if (next.supplierId) {
       const [supplier] = await sql`SELECT id FROM model_suppliers WHERE id=${next.supplierId}`;

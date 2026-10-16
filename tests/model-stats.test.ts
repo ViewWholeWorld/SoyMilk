@@ -120,6 +120,28 @@ test("全未知费用不返回零总额，有效零金额正常可见，非法�
   assert.equal(zero.rows.length, 1); assert.equal(Number(zero.totals[0]!.amount), 0);
 });
 
+test("请求明细按实际或原始估算币种筛选，部分估算不进入参考合计", async () => {
+  const purpose = "detail-currency";
+  await seed(purpose, { estimate: "0.2", estimateStatus: "partial" });
+  await seed(purpose, { estimate: "0.3", estimateStatus: "partial", estimateCurrency: "CNY" });
+  await seed(purpose, { cost: "1", currency: "USD", estimate: "2", estimateStatus: "complete", estimateCurrency: "CNY" });
+  await seed(purpose, { cost: "-1", currency: "CNY", estimate: "0.4", estimateStatus: "partial" });
+  await seed(purpose, { estimateStatus: "missing_usage" });
+  const filters = { service: T, purpose, status: "partial", currency: "USD", limit: 1 };
+  const first = await modelAttempts(filters), second = await modelAttempts({ ...filters, page: 2 });
+  assert.equal(first.total, 2); assert.equal(second.total, 2);
+  assert.equal(first.rows.length, 1); assert.equal(second.rows.length, 1);
+  assert.notEqual(first.rows[0]!.id, second.rows[0]!.id);
+  assert.ok([...first.rows, ...second.rows].every(row => row.estimatedCurrency === "USD" && row.actualCost === null));
+  assert.equal((await modelAttempts({ ...filters, currency: "CNY" })).total, 1);
+  assert.equal((await modelAttempts({ ...filters, status: "actual" })).total, 1);
+  assert.equal((await modelAttempts({ ...filters, status: "actual", currency: "CNY" })).total, 0);
+  assert.equal((await modelAttempts({ ...filters, status: "missing_usage" })).total, 1);
+  const costs = await modelCosts({ service: T, purpose });
+  assert.deepEqual(costs.summary, { calls: 5, knownCalls: 1, unknownCalls: 4 });
+  assert.deepEqual(costs.totals.map(row => [row.currency, Number(row.amount)]), [["USD", 1]]);
+});
+
 test("历史固定订阅标识可识别，其他缺失归属和显式空归属保持未知", async () => {
   const purpose = "legacy";
   await seed(purpose, { providerKey: "subscription:codex" });

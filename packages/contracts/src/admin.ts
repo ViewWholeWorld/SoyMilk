@@ -315,7 +315,7 @@ export interface AdminCodexModel {
 export interface AdminModelConnection {
   id: string; name: string; type: "api-key" | "codex"; model: string; baseUrl?: string;
   keyConfigured: boolean; jsonMode: boolean; vision: boolean; reasoningEffort?: ReasoningEffort | null;
-  supplierId?: string | null;
+  supplierId?: string | null; autoSupplier?: boolean;
 }
 export interface AdminModelSupplier { id: string; name: string; }
 export interface AdminModelAssignments {
