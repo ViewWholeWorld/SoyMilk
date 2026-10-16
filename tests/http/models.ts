@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { MockAgent, getGlobalDispatcher, setGlobalDispatcher } from "undici";
 import { config } from "@aihot/backend/config";
 import { sql } from "@aihot/backend/db";
+import { connectionDraftFor, connectionPayload, updateConnectionDraft } from "../../apps/web/app/features/admin/model-connection-form.ts";
 import type { HttpRuntime } from "./runtime.ts";
 import { attempt, FROM, TO, SERVICE, statsQuery } from "./fixtures.ts";
 
@@ -28,6 +29,32 @@ export async function modelWorkflows(h: HttpRuntime, scenario: (name: string, ru
     const assignments = await read("model-assignments");
     assert.ok(assignments.capabilities.some((row: any) => row.key === "score"));
     assert.ok(assignments.choices.some((row: any) => row.key === `connection:${connection.id}`));
+  });
+  await scenario("连接表单切换预设与登录方式后保存新归属，手动和未知归属保留", async () => {
+    const counts = async () => ({ ...((await sql`SELECT (SELECT count(*)::int FROM receipts) AS receipts,(SELECT count(*)::int FROM receipt_attempts) AS attempts`)[0]) });
+    const before = await counts();
+    const created = await write("POST", "model-config/connections", connectionPayload(updateConnectionDraft(connectionDraftFor(), {
+      name: "HTTP 官方切换", model: "fixture-model", apiKey: "fictional-switch-key",
+    })));
+    try {
+      assert.equal(created.supplierId, "openai");
+      const deepseek = await write("POST", "model-config/connections", connectionPayload(updateConnectionDraft(connectionDraftFor(created), {
+        baseUrl: "https://api.deepseek.com/v1",
+      })));
+      assert.equal(deepseek.supplierId, "deepseek");
+      const codex = await write("POST", "model-config/connections", connectionPayload(updateConnectionDraft(connectionDraftFor(deepseek), { type: "codex" })));
+      assert.equal(codex.supplierId, "openai");
+      for (const supplierId of [a.id, null]) {
+        const manual = updateConnectionDraft(connectionDraftFor(codex), { supplierId, autoSupplier: false });
+        const saved = await write("POST", "model-config/connections", connectionPayload(updateConnectionDraft(manual, {
+          type: "api-key", baseUrl: "https://api.deepseek.com/v1", apiKey: "fictional-switch-key",
+        })));
+        assert.equal(saved.supplierId, supplierId);
+      }
+      const saved = (await read("model-config")).connections.find((row: any) => row.id === created.id);
+      assert.equal(saved.supplierId, null);
+      assert.deepEqual(await counts(), before);
+    } finally { await write("DELETE", `model-config/connections/${created.id}`, undefined); }
   });
   await scenario("非空调用统计跨连接聚合、部分用量、成功率和耗时分位数", async () => {
     await attempt("usage", { supplierId: a.id, providerKey: `connection:${connection.id}`, latency: 10, usage: { prompt_tokens: 100, completion_tokens: 10, cached_input_tokens: 80 } });
