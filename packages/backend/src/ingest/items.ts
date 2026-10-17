@@ -1,4 +1,4 @@
-// External collection reports (docs/sources.md). Same identity rules and timeline
+// External collection reports (docs/内容管理/信源接入与管理.md). Same identity rules and timeline
 // rule as every other entrance: old or future-dated items and explicit backfill never count as
 // today's news and are never pushed. Unknown sources are created isolated, awaiting an operator.
 import { sql } from "../db.ts";
