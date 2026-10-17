@@ -17,7 +17,7 @@ export function exclusiveAnalysisSteps(step: AnalysisStep, tag?: string) {
     .map(s => ({ purpose: ANALYSIS_PURPOSES[s], attemptTag: analysisTag(tag, s) }));
 }
 export async function analysisHistory(subject: string, tag?: string) {
-  const rows = await sql<Array<{ id: number; purpose: string; logical_key: string; status: string; error: string | null; request: Record<string, unknown> }>>`
+  const rows = await sql<Array<{ id: number; purpose: string; logical_key: string; status: string; error: string | null; request: Record<string, unknown> | null }>>`
     SELECT r.id,r.purpose,r.logical_key,r.status,r.error,r.request FROM receipts r
     WHERE r.purpose=ANY(${Object.values(ANALYSIS_PURPOSES)}::text[])
       AND r.id IN (SELECT id FROM receipts WHERE subject=${subject}

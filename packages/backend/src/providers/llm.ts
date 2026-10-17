@@ -330,7 +330,7 @@ export async function reuseJsonReceipt<S extends z.ZodType>(id: number, schema: 
   opts: { parse?: (content: string) => unknown; materialHash?: string; userHash?: string } = {}): Promise<ChatJsonResult<z.infer<S>> | null> {
   const saved = await storedReceipt(id);
   if (!saved) return null;
-  if (saved.request.promptVersion !== promptVersion) throw new ProviderUnavailableError("configuration", "需要能消费该提示词版本的兼容程序，不能重新付费替代已有响应");
+  if (!saved.request || saved.request.promptVersion !== promptVersion) throw new ProviderUnavailableError("configuration", "需要能消费该提示词版本的兼容程序，不能重新付费替代已有响应");
   if (saved.request.materialHash ? opts.materialHash !== saved.request.materialHash : opts.userHash && opts.userHash !== saved.request.userHash) return null;
   const response = saved.response as { choices?: Array<{ message?: { content?: string } }>; usage?: Record<string, unknown> };
   const content = response.choices?.[0]?.message?.content ?? "";

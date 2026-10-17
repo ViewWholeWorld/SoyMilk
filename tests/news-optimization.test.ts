@@ -268,6 +268,8 @@ test("解析错误里的 contentFilter 文本不能改变本轮合并路径", as
   await assert.rejects(analyzeArticle(id), ModelOutputError);
   const [receipt] = await analysisHistory(`article:${id}@1`);
   assert.match(receipt!.error!, /contentFilter/);
+  // 数据库允许旧回执缺少 request 元数据，恢复仍应固定原路径。
+  await sql`UPDATE receipts SET request=NULL WHERE id=${receipt!.id}`;
   switches(false); fault = "none";
   const hits = provider.hits();
   await assert.rejects(analyzeArticle(id), ProviderUnavailableError);

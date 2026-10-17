@@ -104,15 +104,15 @@ export function receiptAttemptTag(key: string): string {
   return /:[a-f0-9]{64}:([\s\S]*)$/.exec(key)?.[1] ?? "0";
 }
 
-export const rejectedByContentFilter = (row: { status: string; error: string | null; request: Record<string, unknown> }) =>
-  row.status === "failed" && (row.request.providerRejection === "content_filter" ||
+export const rejectedByContentFilter = (row: { status: string; error: string | null; request: Record<string, unknown> | null }) =>
+  row.status === "failed" && (row.request?.providerRejection === "content_filter" ||
     // 兼容升级前由 HTTP 层记录的明确拒绝；解析错误和人工放行不能凭备注触发降级。
-    !Object.hasOwn(row.request, "providerRejection") && /^HTTP 4\d\d: [\s\S]*(?:contentFilter|"1301")/.test(row.error ?? ""));
+    !Object.hasOwn(row.request ?? {}, "providerRejection") && /^HTTP 4\d\d: [\s\S]*(?:contentFilter|"1301")/.test(row.error ?? ""));
 
 /** 本地消费已保存响应；不因模型配置或功能开关改变而重新发送。 */
 export async function storedReceipt(id: number) {
   const row = await sql.begin(async tx => {
-    const [r] = await tx<Array<{ id: number; status: string; response: unknown; model: string; request: Record<string, unknown>; updated_at: Date }>>`
+    const [r] = await tx<Array<{ id: number; status: string; response: unknown; model: string; request: Record<string, unknown> | null; updated_at: Date }>>`
       SELECT id,status,response,model,request,updated_at FROM receipts WHERE id=${id} FOR UPDATE`;
     if (r?.status === "pending" && Date.now() - r.updated_at.getTime() >= PENDING_STALE_MS) {
       await markUnknown(tx, id, "placeholder went stale without a recorded result");
@@ -175,7 +175,7 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
     if (existing) await registerConsumers(tx, existing.id, [existing.subject, req.subject]);
     if (existing?.status === "received" || existing?.status === "completed") return { kind: "reuse" as const, row: existing };
     if (req.subject?.startsWith("article:") && req.exclusiveWith?.length) {
-      const conflicts = await tx<Array<{ logical_key: string; purpose: string; status: string; error: string | null; request: Record<string, unknown> }>>`
+      const conflicts = await tx<Array<{ logical_key: string; purpose: string; status: string; error: string | null; request: Record<string, unknown> | null }>>`
         SELECT r.logical_key,r.purpose,r.status,r.error,r.request FROM receipts r
         WHERE r.purpose=ANY(${req.exclusiveWith.map(c => c.purpose)}::text[])
           AND r.id IN (SELECT id FROM receipts WHERE subject=${req.subject}
@@ -253,7 +253,7 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
     const message = (error instanceof ProviderRejectedError ? error.message : String(error)).slice(0, 2000);
     await sql.begin(async (tx) => {
       await tx`UPDATE receipts SET status = ${status}, error = ${message},
-        request=request || ${tx.json({ providerRejection: error instanceof ProviderRejectedError && error.contentFiltered ? "content_filter" : null })},
+        request=coalesce(request, '{}'::jsonb) || ${tx.json({ providerRejection: error instanceof ProviderRejectedError && error.contentFiltered ? "content_filter" : null })},
         updated_at = now() WHERE id = ${receiptId}`;
       await tx`UPDATE receipt_attempts SET status = ${status}, error = ${message}, latency_ms = ${Date.now() - started}, finished_at = now() WHERE id = ${attemptId}`;
     });
@@ -349,7 +349,7 @@ export async function markStalePendingReceipts(): Promise<number> {
  */
 export async function releaseUnknownReceipt(db: Db, id: number, error: string): Promise<{ subject: string | null; purpose: string } | null> {
   const [released] = await db<{ subject: string | null; purpose: string }[]>`
-    UPDATE receipts SET status = 'failed', error = ${error}, request=request || '{"providerRejection":null}'::jsonb,
+    UPDATE receipts SET status = 'failed', error = ${error}, request=coalesce(request, '{}'::jsonb) || '{"providerRejection":null}'::jsonb,
       updated_at = now() WHERE id = ${id} AND status = 'unknown' RETURNING subject, purpose`;
   if (released) await db`UPDATE receipt_attempts SET status = 'failed', error = ${error} WHERE receipt_id = ${id} AND status = 'unknown'`;
   return released ?? null;
@@ -362,5 +362,5 @@ export async function completeReceipt(db: Db, receiptId: number): Promise<void> 
 /** Marks a received response that could not be used (e.g. unparsable) so a fresh attempt can be made. */
 export async function rejectReceivedResponse(receiptId: number, reason: string): Promise<void> {
   await sql`UPDATE receipts SET status = 'failed', error = ${reason.slice(0, 2000)},
-    request=request || '{"providerRejection":null}'::jsonb, updated_at = now() WHERE id = ${receiptId}`;
+    request=coalesce(request, '{}'::jsonb) || '{"providerRejection":null}'::jsonb, updated_at = now() WHERE id = ${receiptId}`;
 }
