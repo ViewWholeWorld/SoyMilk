@@ -7,6 +7,8 @@ import { completeReceipt } from "../providers/receipts.ts";
 import { digestReports, digestInputsHash } from "./derived-content.ts";
 import { promptText, promptVersion } from "../editorial/prompts.ts";
 import { buildDigestInput, DigestSchema } from "./digest-input.ts";
+import { config } from "../config.ts";
+import { looksZh } from "../editorial/writing.ts";
 
 export const DIGEST_PROMPT_VERSION = promptVersion("story-digest");
 
@@ -42,25 +44,32 @@ export async function composeStoryDigest(storyId: number, opts: { afterCorrectio
   const incremental = proven && !opts.afterCorrection;
   const { user, windowIds } = buildDigestInput(reports, incremental ? story.digest : null, known);
   const contextIds = [...new Set([...(incremental ? last!.context_article_ids! : []), ...windowIds])].sort();
+  const single = reports.length === 1 ? reports[0]! : null;
+  const title = single?.title.trim() ?? "";
+  const summary = single?.summary?.trim() ?? "";
+  // 复用公开投影，不能从原始分析或标题补造事实；过长材料保留原生成路径。
+  const reuse = config.singleReportDigestReuse && !!single && looksZh(title) && looksZh(summary) &&
+    title.length <= 120 && summary.length >= 10 && summary.length <= 2000;
   // 旧标题本身没有独立provenance；即使保留已验证综述，也不将它作为模型依据。
-  const res = await chatJson({
+  const res = reuse ? null : await chatJson({
     model: await modelFor("digest"), purpose: "story_digest", subject: `story:${storyId}@${ids.length}`, promptVersion: DIGEST_PROMPT_VERSION,
     system: SYSTEM, user, schema: DigestSchema, temperature: 0.3, maxTokens: 1200,
   });
+  const data = res?.data ?? { title, digest: summary, latest: title.length <= 60 ? title : "" };
   return sql.begin(async (tx) => {
     const [current] = await tx<{ version: number }[]>`SELECT version FROM stories WHERE id=${storyId} AND merged_into IS NULL FOR UPDATE`;
     // 不持锁等待HTTP；回来后与撤回/合并/其他生成串行，再核对所有当前输入。
     if (!current || current.version !== story.version || digestInputsHash(await digestReports(storyId, tx)) !== inputsHash) {
-      await completeReceipt(tx, res.receiptId);
+      if (res) await completeReceipt(tx, res.receiptId);
       return { updated: false };
     }
     const version = current.version + 1;
     await tx`INSERT INTO story_digests (story_id,version,digest,latest,receipt_id,article_ids,inputs_hash,context_article_ids)
-      VALUES (${storyId},${version},${res.data.digest},${res.data.latest || null},${res.receiptId},${ids},${inputsHash},${contextIds})`;
-    await tx`UPDATE stories SET digest=${res.data.digest},latest=${res.data.latest || null},digest_updated_at=now(),
-      title=CASE WHEN origin='manual' OR ${res.data.title}='' THEN title ELSE ${res.data.title} END,
+      VALUES (${storyId},${version},${data.digest},${data.latest || null},${res?.receiptId ?? null},${ids},${inputsHash},${contextIds})`;
+    await tx`UPDATE stories SET digest=${data.digest},latest=${data.latest || null},digest_updated_at=now(),
+      title=CASE WHEN origin='manual' OR ${data.title}='' THEN title ELSE ${data.title} END,
       version=${version},updated_at=now() WHERE id=${storyId}`;
-    await completeReceipt(tx, res.receiptId);
+    if (res) await completeReceipt(tx, res.receiptId);
     return { updated: true, version };
   });
 }

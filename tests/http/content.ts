@@ -8,6 +8,7 @@ import { sql } from "@aihot/backend/db";
 import type { HttpRuntime } from "./runtime.ts";
 import { attempt, hotFixture, publicationFixture } from "./fixtures.ts";
 import { proxiedImage } from "@aihot/backend/media/imgproxy";
+import { composeStoryDigest } from "@aihot/backend/events/digest";
 
 export async function contentWorkflows(h: HttpRuntime, scenario: (name: string, run: () => Promise<void>) => Promise<void>) {
   const read = async (path: string, status = 200) => (await h.request("GET", path, status, { admin: path.startsWith("/api/admin/"), level: status < 400 ? "business" : "boundary" })).data;
@@ -57,6 +58,11 @@ export async function contentWorkflows(h: HttpRuntime, scenario: (name: string, 
   await scenario("合成文章、事件和刊物经过真实 HTTP 公开出口与缓存契约", async () => {
     publication = await publicationFixture(source.id);
     const id = publication.articleId;
+    const reusedSummary = "HTTP 合成新闻摘要：只对测试地区开放。";
+    await sql`UPDATE publications SET summary=${reusedSummary} WHERE article_id=${id}`;
+    const [before] = await sql`SELECT count(*)::int AS n FROM receipt_attempts`;
+    assert.equal((await composeStoryDigest(publication.storyId)).updated, true);
+    assert.equal((await sql`SELECT count(*)::int AS n FROM receipt_attempts`)[0]!.n, before!.n, "安全阀关闭时单篇复用也不能新增付费 attempt");
     const paths = [
       `/api/site/items/${id}`, `/api/site/items/${id}/original`, `/api/site/items/availability?ids=${id},missing`,
       `/api/site/stories/${publication.publicId}`, `/api/site/stories/${publication.publicId}/followups`,
@@ -70,6 +76,9 @@ export async function contentWorkflows(h: HttpRuntime, scenario: (name: string, 
       assert.ok(result.text.length > 2);
       if ([`/api/site/items/${id}`, "/api/v1/items", "/api/site/pool", "/api/site/topics/http-fixture", `/api/v1/stories/${publication.publicId}`].includes(path)) {
         assert.ok(result.text.includes(id), `${path} 必须返回实际夹具文章`);
+      }
+      if ([`/api/site/stories/${publication.publicId}`, `/api/v1/stories/${publication.publicId}`, `/api/v1/agent/stories/${publication.publicId}`].includes(path)) {
+        assert.ok(result.text.includes(reusedSummary), `${path} 必须读取同一份复用概览`);
       }
     }
     const snapshot = await read("/api/v1/selected/snapshot?fields=minimal&limit=1");
@@ -104,6 +113,8 @@ export async function contentWorkflows(h: HttpRuntime, scenario: (name: string, 
     const id = publication.articleId;
     await write("POST", `/api/admin/content/${id}/override`, { fields: { title: "HTTP 修正标题" }, version: 0, reason: "验收修正" });
     assert.equal((await read(`/api/site/items/${id}`)).title, "HTTP 修正标题");
+    const correctedStory = await h.request("GET", `/api/site/stories/${publication.publicId}`, 200, { level: "business" });
+    assert.ok(!correctedStory.text.includes("只对测试地区开放"), "已缓存的复用概览必须随更正同步失效");
     await write("POST", `/api/admin/content/${id}/override`, { fields: { title: "旧版本" }, version: 0, reason: "验收冲突" }, 409);
     await write("POST", `/api/admin/content/${id}/seo`, { indexed: false, reason: "私网验收" });
     await write("POST", `/api/admin/content/${id}/visibility`, { visibility: "withdrawn", version: 1, reason: "验收撤回" });

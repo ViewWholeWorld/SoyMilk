@@ -24,6 +24,8 @@
 
 ## 运行与检查
 
+- 新闻用量优化候选为 `3.5.3`，尚未部署；新增迁移 `0050` 只加共享回执按文章查询的索引，生产执行仍须具体确认。`NEWS_SINGLE_REPORT_REUSE_ENABLED` 默认 true；`NEWS_COMBINED_UNDERSTAND_ENABLED`、`NEWS_COMBINED_SUMMARIZE_ENABLED` 默认 false。合并请求的已接收／未知回执不随开关消失，禁用后消费或等待，释放后的失败请求需重新启用兼容路径再重试；不回退到不识别这些用途的旧 worker。未执行真实模型质量评测，生产启用与收益仍待验证，见 `docs/系统优化/新闻处理用量优化计划.md`。
+
 - Node.js 24 直接运行 TypeScript，后端没有构建步骤。npm workspaces：`apps/*`、`packages/*`、`industry`。
 - 本机运行和 Docker 见 `docs/运维部署/首次部署指南.md`。
 - NAS 的额外 Compose 覆盖由 `deploy/nas/compose.sh` 统一加载。更新时保留 worker 复用与预算恢复覆盖，先核对运行服务，不能只运行根目录的 Compose 而丢失 NAS 设置。

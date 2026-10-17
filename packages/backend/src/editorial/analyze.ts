@@ -13,8 +13,8 @@ import { CATEGORY_KEYS } from "@aihot/contracts/taxonomy";
 import { CATEGORIES } from "@aihot/industry/taxonomy";
 import { SELECTION } from "@aihot/industry/selection";
 import { sql } from "../db.ts";
-import { chatJson, registeredModels, ModelOutputError, type ContentPart } from "../providers/llm.ts";
-import { completeReceipt, ProviderRejectedError, ReceiptUnknownError } from "../providers/receipts.ts";
+import { chatJson, registeredModels, ModelOutputError, reuseJsonReceipt, type ContentPart } from "../providers/llm.ts";
+import { completeReceipt, ProviderRejectedError, ProviderUnavailableError, ReceiptUnknownError, storedReceipt, rejectedByContentFilter } from "../providers/receipts.ts";
 import { collapseWhitespace } from "../lib/text.ts";
 import { modelFor } from "./models.ts";
 import { buildMaterial, firstImagePart, loadAnalyzeInput, type AnalyzeInputArticle } from "./input.ts";
@@ -27,6 +27,9 @@ import {
 } from "./writing.ts";
 import { CATEGORY_BY_ITEM_TYPE, CATEGORY_GUIDE, CATEGORY_TAGS, ENTITIES, ENTITY_TAGS, ITEM_TYPES, normalizeTags, TOPIC_TAGS } from "./vocabulary.ts";
 import { promptText, promptVersion } from "./prompts.ts";
+import { config } from "../config.ts";
+import { sha256, stableJson } from "../lib/ids.ts";
+import { ANALYSIS_PURPOSES, analysisHistory, analysisTag, compatibleAnalysisModels, exclusiveAnalysisSteps, type AnalysisStep } from "./analysis-route.ts";
 
 export { buildMaterial, loadAnalyzeInput, type AnalyzeInputArticle };
 
@@ -40,6 +43,10 @@ export const PROMPT_VERSIONS = {
 /** Every step's prompt, as stored on each judgement. */
 export const SELECTION_PROMPT_VERSION = [PROMPT_VERSIONS.prefilter, PROMPT_VERSIONS.score].join("+");
 export const ANALYZE_PROMPT_VERSION = Object.values(PROMPT_VERSIONS).join("+");
+export const COMBINED_VERSIONS = {
+  combinedUnderstand: promptVersion("understand-structure", "understand", "structure"),
+  combinedSummarize: promptVersion("summarize-structure", "structure", "summarize-article", "summarize-article-empty", "summarize-short-post", "summarize-short-post-quoted", "summarize-long-post", "summarize-long-post-quoted", "identity-context"),
+};
 
 // ── Scoring ───────────────────────────────────────────────────────────────────────────────
 
@@ -138,6 +145,15 @@ const UnderstandSchema = z.object({
 });
 
 const SummarizeSchema = z.object({ titleZh: z.string(), summaryZh: z.string(), bodyZh: z.string() });
+// 合并输出不能沿用旧结构的静默缺省，否则正常文案会掩盖事实和分类缺失。
+const CombinedStructureSchema = z.object({
+  category: z.enum(CATEGORY_KEYS).nullable(), tags: z.array(z.string()).max(12),
+  subjects: z.array(z.string()).max(6),
+  fact: z.object({ title: z.string().min(1).max(80), subject: z.string().max(80).nullable().optional(),
+    action: z.string().max(80).nullable().optional(), object: z.string().max(160).nullable().optional(), occurredAt: z.string().nullable().optional() }).nullable(),
+});
+const CombinedUnderstandSchema = z.object({ writing: UnderstandSchema, structure: CombinedStructureSchema });
+const CombinedSummarizeSchema = z.object({ writing: SummarizeSchema, structure: CombinedStructureSchema });
 
 const ZH_COUNT = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"];
 
@@ -152,6 +168,7 @@ const STRUCTURE_SYSTEM = promptText("structure", {
 });
 
 export interface AnalysisRun {
+  combined?: "combinedUnderstand" | "combinedSummarize";
   prefilter: { label: "PASS" | "BLOCK" | "UNKNOWN"; reason: string; model: string; receiptId: number; reused: boolean };
   /**
    * The independent score calls and the tier threshold they are held against; absent when the material
@@ -175,7 +192,7 @@ export interface AnalysisRun {
   structure: { model: string; category: string | null; tags: string[]; subjects: string[]; fact: z.infer<typeof FactSchema>; receiptId: number; reused: boolean } | null;
 }
 
-const isContentFilter = (error: unknown) => error instanceof ProviderRejectedError && !error.retryable && /contentFilter|"1301"/.test(error.message);
+const isContentFilter = (error: unknown) => error instanceof ProviderRejectedError && error.contentFiltered;
 
 /** Only a title or a feed summary, and a page to fetch: the article is judged on the page. */
 export function waitsForPage(a: AnalyzeInputArticle): boolean {
@@ -195,6 +212,17 @@ function checkAnalysisRunning() {
 
 const subjectOf = (a: AnalyzeInputArticle) => `article:${a.id}@${a.revision}`;
 const tagged = (attemptTag: string | undefined, step: string) => [attemptTag, step].filter(Boolean).join(":") || undefined;
+
+function materialHash(a: AnalyzeInputArticle) {
+  const { id: _id, revision: _revision, ...material } = a;
+  return sha256(stableJson(material));
+}
+
+async function savedStep<S extends z.ZodType>(a: AnalyzeInputArticle, opts: StepOpts, step: AnalysisStep, schema: S, version: string,
+  user: string | ContentPart[], parse?: (text: string) => unknown) {
+  const saved = (await analysisHistory(subjectOf(a), opts.attemptTag)).find(r => r.step === step);
+  return saved ? reuseJsonReceipt(saved.id, schema, version, { parse, materialHash: materialHash(a), userHash: sha256(typeof user === "string" ? user : JSON.stringify(user)) }) : null;
+}
 
 async function runPrefilter(a: AnalyzeInputArticle, opts: StepOpts): Promise<AnalysisRun["prefilter"]> {
   const model = await modelFor("prefilter");
@@ -283,17 +311,20 @@ export async function runSelectionScores(
 async function runStructure(a: AnalyzeInputArticle, opts: StepOpts): Promise<NonNullable<AnalysisRun["structure"]>> {
   const model = await modelFor("structure");
   checkAnalysisRunning();
-  const res = await chatJson({
+  const user = buildMaterial(a);
+  const res = await savedStep(a, opts, "structure", StructureSchema, PROMPT_VERSIONS.structure, user) ?? await chatJson({
     model,
     purpose: "structure_article",
     subject: subjectOf(a),
     promptVersion: PROMPT_VERSIONS.structure,
     system: STRUCTURE_SYSTEM,
-    user: buildMaterial(a),
+    user,
     schema: StructureSchema,
     temperature: 0.2,
     maxTokens: 800,
     attemptTag: tagged(opts.attemptTag, "structure"),
+    exclusiveWith: exclusiveAnalysisSteps("structure", opts.attemptTag),
+    materialHash: materialHash(a),
   });
   const subjects = [...new Set(res.data.subjects.map((s) => s.trim().toLowerCase()).filter((s) => s in ENTITIES))];
   return { model: res.model, category: res.data.category, tags: normalizeTags(res.data.tags), subjects, fact: res.data.fact, receiptId: res.receiptId, reused: res.reused };
@@ -309,13 +340,15 @@ async function runUnderstand(a: AnalyzeInputArticle, opts: StepOpts): Promise<An
       model, purpose: "understand_article", subject: subjectOf(a), promptVersion: PROMPT_VERSIONS.understand, system: UNDERSTAND_SYSTEM,
       user: image ? [{ type: "text", text }, image] : text, schema: UnderstandSchema, temperature: 0.2, maxTokens: 16_384,
       timeoutMs: 180_000, attemptTag: tagged(opts.attemptTag, "understand"),
+      exclusiveWith: exclusiveAnalysisSteps("understand", opts.attemptTag),
+      materialHash: materialHash(a),
     });
   };
   // A model that is known not to read images gets the text only.
   const image = (await registeredModels())[model]?.vision === false ? null : await firstImagePart(a);
   let res: Awaited<ReturnType<typeof call>>;
   try {
-    res = await call(image);
+    res = await savedStep(a, opts, "understand", UnderstandSchema, PROMPT_VERSIONS.understand, image ? [{ type: "text", text }, image] : text) ?? await call(image);
   } catch (error) {
     if (isContentFilter(error)) return null;
     // The model refused the image (download, format): the text is written without it.
@@ -348,19 +381,22 @@ async function runSummarize(a: AnalyzeInputArticle, opts: StepOpts): Promise<Non
   if (!short && t.text.trim().length < 20) return { kind: "none", model: null, titleZh: looksZh(t.title) ? t.title : "", summaryZh: "", ...plain };
   const model = await modelFor("summarize");
   checkAnalysisRunning();
-  const res = await chatJson({
+  const user = short ? buildShortTweetPrompt(t) : isX ? buildLongTweetPrompt(t) : buildArticlePrompt(t);
+  const res = await savedStep(a, opts, "summarize", SummarizeSchema, PROMPT_VERSIONS.summarize, user, parseTranslateOutput) ?? await chatJson({
     model,
     purpose: "summarize_article",
     subject: subjectOf(a),
     promptVersion: PROMPT_VERSIONS.summarize,
     system: "",
-    user: short ? buildShortTweetPrompt(t) : isX ? buildLongTweetPrompt(t) : buildArticlePrompt(t),
+    user,
     schema: SummarizeSchema,
     json: false,
     parse: parseTranslateOutput,
     temperature: 0.2,
     maxTokens: 2048,
     attemptTag: tagged(opts.attemptTag, "summarize"),
+    exclusiveWith: exclusiveAnalysisSteps("summarize", opts.attemptTag),
+    materialHash: materialHash(a),
   });
   const p = res.data;
   const draft = short
@@ -370,6 +406,69 @@ async function runSummarize(a: AnalyzeInputArticle, opts: StepOpts): Promise<Non
       : { titleZh: p.titleZh || (looksZh(t.title) ? t.title : ""), summaryZh: p.summaryZh };
   const copy = finalizeCopy(t, draft);
   return { kind: "summarize", model: res.model, titleZh: copy.titleZh, summaryZh: copy.summaryZh, reasonZh: null, tags: null, identityGuard: copy.identityGuard, receiptIds: [res.receiptId], reused: res.reused };
+}
+
+type CombinedStep = "combinedUnderstand" | "combinedSummarize";
+const combinedEnabled = (step: CombinedStep) => step === "combinedUnderstand" ? config.combinedUnderstand : config.combinedSummarize;
+const combinedWriter = (step: CombinedStep) => step === "combinedUnderstand" ? "understand" : "summarize";
+const hasModelWriting = (a: AnalyzeInputArticle) => {
+  const t = translateInputOf(a);
+  return isShortTweetInput(t) ? needsShortTweetTranslation(collapseWhitespace(t.mainText || t.title)) : t.text.trim().length >= 20;
+};
+const canCombine = async (step: CombinedStep) => combinedEnabled(step) &&
+  compatibleAnalysisModels(await modelFor("structure"), await modelFor(combinedWriter(step)));
+
+async function runCombined(a: AnalyzeInputArticle, opts: StepOpts, step: CombinedStep, savedId?: number): Promise<Pick<AnalysisRun, "writing" | "structure" | "combined">> {
+  const schema = step === "combinedUnderstand" ? CombinedUnderstandSchema : CombinedSummarizeSchema;
+  const version = COMBINED_VERSIONS[step];
+  // 先读已接收结果；开关、连接分配及供应商暂不可用均不妨碍本地消费。
+  let res = savedId ? await reuseJsonReceipt(savedId, schema, version, { materialHash: materialHash(a) }) : null;
+  if (!res) {
+    if (!(await canCombine(step))) throw new ProviderUnavailableError("configuration", "本轮已选择合并处理；需启用原路径并恢复兼容模型后重试");
+    const model = await modelFor(combinedWriter(step));
+    const t = translateInputOf(a);
+    const short = isShortTweetInput(t);
+    const text = step === "combinedUnderstand" ? understandUser(a) : short ? buildShortTweetPrompt(t)
+      : t.sourceKind === "x_search" ? buildLongTweetPrompt(t) : buildArticlePrompt(t);
+    // 主体正文只出现一次；补充原结构阶段单独读取的来源事实及已有译文。
+    const user = `${text}\n\n【结构补充】来源类型=${a.source.kind}；分级=${a.source.tier}；一手来源=${a.source.firstParty ? "是" : "否"}${a.translationZh ? `\n已有中文译文：${a.translationZh.slice(0, 5000)}` : ""}\n最终输出格式以系统中的 writing／structure JSON 为准。`;
+    const system = promptText(step === "combinedUnderstand" ? "understand-structure" : "summarize-structure", {
+      writingRules: UNDERSTAND_SYSTEM, structureRules: STRUCTURE_SYSTEM,
+    });
+    const call = (image: ContentPart | null) => {
+      checkAnalysisRunning();
+      return chatJson({ model, purpose: ANALYSIS_PURPOSES[step], subject: subjectOf(a), promptVersion: version,
+        system, user: image ? [{ type: "text", text: user }, image] : user, schema, temperature: 0.2,
+        maxTokens: step === "combinedUnderstand" ? 16_384 : 4096, timeoutMs: 180_000,
+        attemptTag: analysisTag(opts.attemptTag, step), exclusiveWith: exclusiveAnalysisSteps(step, opts.attemptTag), materialHash: materialHash(a) });
+    };
+    const image = step === "combinedUnderstand" && (await registeredModels())[model]?.vision !== false ? await firstImagePart(a) : null;
+    try { res = await call(image); }
+    catch (error) {
+      // 与原理解路径一致：明确拒绝图片后仅去图重试，未知结果不降级重发。
+      if (!image || !(error instanceof ProviderRejectedError) || error.retryable || isContentFilter(error)) throw error;
+      res = await call(null);
+    }
+  }
+  const s = res.data.structure;
+  const structure = { model: res.model, category: s.category, tags: normalizeTags(s.tags),
+    subjects: [...new Set(s.subjects.map(v => v.trim().toLowerCase()).filter(v => v in ENTITIES))], fact: s.fact,
+    receiptId: res.receiptId, reused: res.reused };
+  if (step === "combinedUnderstand") {
+    const d = UnderstandSchema.parse(res.data.writing);
+    const copy = finalizeCopy(translateInputOf(a), { titleZh: d.titleZh, summaryZh: d.summaryZh });
+    return { combined: step, structure, writing: { kind: "understand", model: res.model, ...copy,
+      reasonZh: d.editorialJudgment.trim() || null, tags: normalizeTags(d.tags, { fallbackCategory: CATEGORY_BY_ITEM_TYPE[d.itemType] }),
+      itemType: d.itemType, authorRole: d.authorRole, receiptIds: [res.receiptId], reused: res.reused } };
+  }
+  const p = SummarizeSchema.parse(res.data.writing);
+  const t = translateInputOf(a);
+  const main = collapseWhitespace(t.mainText || t.title);
+  const draft = isShortTweetInput(t) ? { titleZh: p.titleZh || (looksZh(main) ? main : ""), summaryZh: p.bodyZh || p.summaryZh }
+    : t.sourceKind === "x_search" ? { titleZh: p.titleZh, summaryZh: p.summaryZh || p.bodyZh }
+    : { titleZh: p.titleZh || (looksZh(t.title) ? t.title : ""), summaryZh: p.summaryZh };
+  return { combined: step, structure, writing: { kind: "summarize", model: res.model, ...finalizeCopy(t, draft),
+    reasonZh: null, tags: null, receiptIds: [res.receiptId], reused: res.reused } };
 }
 
 /**
@@ -385,13 +484,37 @@ export async function runAnalysis(a: AnalyzeInputArticle, opts: StepOpts & { sta
     const scores = await runSelectionScores(a, opts);
     return { prefilter, scores, writing: null, structure: null };
   }
+  const allHistory = await analysisHistory(subjectOf(a), opts.attemptTag);
+  const filtered = allHistory.some(r => ["understand", "combinedUnderstand"].includes(r.step) && rejectedByContentFilter(r));
+  const history = allHistory.filter(r => !rejectedByContentFilter(r));
+  const combined = history.find(r => r.step.startsWith("combined"));
+  const legacy = history.filter(r => !r.step.startsWith("combined"));
+  // 旧未知结果先沿原恢复流程等待，不能换用途或服务绕过；已接收部分结果稍后本地消费。
+  for (const row of history) if (["pending", "unknown"].includes(row.status)) await storedReceipt(row.id);
+  let preparedScores: AnalysisRun["scores"] | undefined;
+  if (combined || (!legacy.length && !filtered && (await canCombine("combinedUnderstand") || await canCombine("combinedSummarize")))) {
+    preparedScores = await runSelectionScores(a, opts);
+    const scores = preparedScores;
+    const sum = scores && !scores.refused && scores.values.length === SCORE_CALLS ? scores.values.reduce((total, v) => total + v, 0) : null;
+    const near = sum !== null && (sum >= scores!.threshold * SCORE_CALLS || sum > UNDERSTAND_FLOOR * SCORE_CALLS);
+    const step = (combined?.step as CombinedStep | undefined) ?? (near ? "combinedUnderstand" : "combinedSummarize");
+    if (combined || (await canCombine(step) && (step === "combinedUnderstand" || hasModelWriting(a)))) {
+      try { return { prefilter, scores, ...await runCombined(a, opts, step, combined?.id) }; }
+      catch (error) {
+        if (!isContentFilter(error) || step !== "combinedUnderstand") throw error;
+        // 只有明确内容过滤拒绝沿旧摘要降级；解析错误、在途和未知结果绝不拆分重发。
+        const structure = await runStructure(a, opts);
+        return { prefilter, scores, structure, writing: await runSummarize(a, opts) };
+      }
+    }
+  }
   // The structure step needs nothing from the scores: it runs beside them.
   const structure = runStructure(a, opts).then((value) => ({ value }), (error: unknown) => ({ error }));
   try {
-    const scores = await runSelectionScores(a, opts);
+    const scores = preparedScores === undefined ? await runSelectionScores(a, opts) : preparedScores;
     const sum = scores && !scores.refused && scores.values.length === SCORE_CALLS ? scores.values.reduce((total, v) => total + v, 0) : null;
     const near = sum !== null && (sum >= scores!.threshold * SCORE_CALLS || sum > UNDERSTAND_FLOOR * SCORE_CALLS);
-    const writing = (near ? await runUnderstand(a, opts) : null) ?? (await runSummarize(a, opts));
+    const writing = (near && !filtered ? await runUnderstand(a, opts) : null) ?? (await runSummarize(a, opts));
     const s = await structure;
     if ("error" in s) throw s.error;
     return { prefilter, scores, writing, structure: s.value };
@@ -462,9 +585,9 @@ export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Pr
   if (waitsForPage(input)) return { analysisId: null, stale: false, needsBody: true, output: null, receiptIds: [], reused: true };
   const run = await runAnalysis(input, opts);
   const out = normalizeAnalysis(run);
-  const receiptIds = [
+  const receiptIds = [...new Set([
     run.prefilter.receiptId, ...(run.scores?.receiptIds ?? []), ...(run.writing?.receiptIds ?? []), ...(run.structure ? [run.structure.receiptId] : []),
-  ];
+  ])];
   const w = run.writing;
   const detail = {
     prefilter: { label: run.prefilter.label, reason: run.prefilter.reason },
@@ -472,6 +595,7 @@ export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Pr
     ...(w ? { writer: w.kind, writerModel: w.model, itemType: w.itemType ?? null, authorRole: w.authorRole ?? null } : {}),
     ...(w?.identityGuard?.outcome === "fallback" ? { identityGuard: w.identityGuard } : {}),
     fact: out.fact,
+    ...(run.combined ? { combinedStep: run.combined } : {}),
   };
   const committed = await sql.begin(async (tx) => {
     const [current] = await tx<{ revision: number }[]>`SELECT revision FROM articles WHERE id = ${articleId} FOR UPDATE`;
@@ -479,7 +603,7 @@ export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Pr
     const [row] = await tx<{ id: number }[]>`
       INSERT INTO analyses (article_id, input_revision, origin, model, prompt_version, receipt_ids, relevance, category, tags,
         subjects, title_zh, summary_zh, reason_zh, score, selected, output)
-      VALUES (${articleId}, ${input.revision}, 'model', ${w?.model ?? run.prefilter.model}, ${ANALYZE_PROMPT_VERSION}, ${receiptIds},
+      VALUES (${articleId}, ${input.revision}, 'model', ${w?.model ?? run.prefilter.model}, ${run.combined ? `${ANALYZE_PROMPT_VERSION}+${COMBINED_VERSIONS[run.combined]}` : ANALYZE_PROMPT_VERSION}, ${receiptIds},
         ${out.relevance}, ${out.category}, ${out.tags}, ${out.subjects}, ${out.titleZh}, ${out.summaryZh}, ${out.reasonZh},
         ${out.score}, ${out.selected}, ${tx.json(detail as never)})
       RETURNING id`;

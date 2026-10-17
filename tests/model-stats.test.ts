@@ -21,10 +21,11 @@ interface Sample {
 async function seed(scope: string, v: Sample = {}) {
   const [r] = await sql`INSERT INTO receipts(logical_key,service,model,purpose,status,request)
     VALUES(${T + (++sequence)},${T},${v.model === undefined ? "shared-model" : v.model},${v.purpose ?? scope},'completed',${sql.json({ promptVersion: String(sequence) })}) RETURNING id`;
+  // 默认样本落在窗口内部，避免插入与查询同毫秒时被半开区间的上界排除。
   const [a] = await sql`INSERT INTO receipt_attempts(receipt_id,attempt,service,model,requested_model,supplier_id,provider_key,status,latency_ms,finished_at,
       usage,normalized_usage,origin,started_at,cost,currency,cost_basis,estimated_cost,estimated_currency,estimate_status,billing_kind,pricing_snapshot)
     VALUES(${r!.id},1,${T},${v.model === undefined ? "shared-model" : v.model},NULL,${v.supplierId ?? null},${v.providerKey ?? null},${v.status ?? "received"},${v.latency ?? null},${v.finished === false ? null : new Date()},
-      ${v.usage ? sql.json(v.usage as never) : null},${v.normalized ? sql.json(v.normalized as never) : null},${v.origin ?? "live"},${new Date(v.time ?? Date.now())},
+      ${v.usage ? sql.json(v.usage as never) : null},${v.normalized ? sql.json(v.normalized as never) : null},${v.origin ?? "live"},${new Date(v.time ?? Date.now() - 1000)},
       ${v.cost ?? null},${v.currency ?? null},'actual',${v.estimate ?? null},${v.estimateCurrency ?? "USD"},${v.estimateStatus ?? null},${v.billingKind === undefined ? "api" : v.billingKind},${v.snapshot ? sql.json(v.snapshot as never) : null}) RETURNING id`;
   return { receiptId: Number(r!.id), attemptId: Number(a!.id) };
 }
