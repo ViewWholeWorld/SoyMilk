@@ -1,7 +1,7 @@
 // The single entrance for new material from every channel (collectors, external reports, imports).
 // It owns identity, revisions and the timeline rule, so no entrance can bypass them.
 import { sql, type Db } from "../db.ts";
-import { newArticleId, sha256 } from "../lib/ids.ts";
+import { newArticleId, sha256, stableJson } from "../lib/ids.ts";
 import { identityKeyForUrl } from "../lib/url.ts";
 import { collapseWhitespace } from "../lib/text.ts";
 import { syncMaterialUrl } from "../publication/publish.ts";
@@ -94,8 +94,32 @@ export function isHistorical(a: { backfill: boolean; published_at: Date | null; 
 }
 
 /** Identity of stored content: the revision changes exactly when this does. */
-export function contentHash(c: { title: string; bodyText?: string | null; excerpt?: string | null }): string {
-  return sha256([collapseWhitespace(c.title), collapseWhitespace(c.bodyText ?? ""), collapseWhitespace(c.excerpt ?? "")].join("\u0001"));
+export function contentHash(c: { title: string; bodyText?: string | null; excerpt?: string | null; media?: MediaItem[]; xPost?: XPostData | null }): string {
+  const text = sha256([collapseWhitespace(c.title), collapseWhitespace(c.bodyText ?? ""), collapseWhitespace(c.excerpt ?? "")].join("\u0001"));
+  const evidence = materialEvidence(c.media ?? [], c.xPost ?? null);
+  return evidence === null ? text : sha256(`${text}\u0001${stableJson(evidence)}`);
+}
+
+/** 图片尺寸、头像和常见签名过期参数属于元数据；资源地址、顺序及引用正文属于事实输入。 */
+function materialEvidence(media: MediaItem[], post: XPostData | null): unknown {
+  const resource = (value: string | null | undefined) => {
+    if (!value) return null;
+    try {
+      const url = new URL(value); url.hash = "";
+      for (const key of [...url.searchParams.keys()]) if (/^(?:expires|signature|key-pair-id|x-amz-.+|x-goog-.+)$/i.test(key)) url.searchParams.delete(key);
+      return url.href;
+    } catch { return value; }
+  };
+  const images = (items: MediaItem[] = []) => items.map(m => ({ kind: m.kind, url: resource(m.url), alt: m.alt ?? null, poster: resource(m.poster) }));
+  return !media.length && !post ? null : {
+    media: images(media), post: post ? {
+      tweetId: post.tweetId, text: collapseWhitespace(post.text), authorName: post.authorName, handle: post.handle,
+      media: images(post.media), quoted: post.quoted ? {
+        text: collapseWhitespace(post.quoted.text), authorName: post.quoted.authorName, handle: post.quoted.handle,
+        url: resource(post.quoted.url), media: images(post.quoted.media),
+      } : null,
+    } : null,
+  };
 }
 
 const LOST = "\uFFFD";
@@ -141,7 +165,7 @@ async function upsertIn(db: Db, m: MaterialInput): Promise<MaterialResult> {
 
   const t = decideTimeline(m.publishedAt, discoveredAt, m.backfill);
   const newId = m.id ?? newArticleId();
-  const hash = contentHash({ title, bodyText: m.bodyText, excerpt: m.excerpt });
+  const hash = contentHash({ title, bodyText: m.bodyText, excerpt: m.excerpt, media: m.media, xPost: m.xPost });
   const [inserted] = await db<{ id: string }[]>`
     INSERT INTO articles (id, source_id, identity_key, url, title, author, language, published_at, published_at_claim,
       discovered_at, source_updated_at, timeline_at, backfill, backfill_reason, revision, content_hash, excerpt,
@@ -160,8 +184,8 @@ async function upsertIn(db: Db, m: MaterialInput): Promise<MaterialResult> {
     return { articleId: newId, created: true, revised: false, backfill: t.backfill };
   }
 
-  const [existing] = await db<{ id: string; source_id: string; url: string; revision: number; content_hash: string | null; backfill: boolean; title: string; body_text: string | null; excerpt: string | null }[]>`
-    SELECT id, source_id, url, revision, content_hash, backfill, title, body_text, excerpt FROM articles WHERE identity_key = ${identityKey} FOR UPDATE`;
+  const [existing] = await db<{ id: string; source_id: string; url: string; revision: number; content_hash: string | null; backfill: boolean; title: string; body_text: string | null; excerpt: string | null; media: MediaItem[]; x_post: XPostData | null }[]>`
+    SELECT id, source_id, url, revision, content_hash, backfill, title, body_text, excerpt, media, x_post FROM articles WHERE identity_key = ${identityKey} FOR UPDATE`;
   await db`INSERT INTO article_discoveries (article_id, source_id, via, discovered_at)
            VALUES (${existing!.id}, ${m.sourceId}, ${m.via}, ${discoveredAt}) ON CONFLICT DO NOTHING`;
   const unchanged: MaterialResult = { articleId: existing!.id, created: false, revised: false, backfill: existing!.backfill };
@@ -178,14 +202,29 @@ async function upsertIn(db: Db, m: MaterialInput): Promise<MaterialResult> {
   // What the row will hold after this report: a listing without body keeps the stored (extracted) body.
   const bodyText = m.bodyText ?? existing!.body_text;
   const excerpt = m.excerpt ?? existing!.excerpt;
-  const next = contentHash({ title, bodyText, excerpt });
+  // 不带正文的列表采集无法证明正文配图已被删除；保留抽取所得图片。
+  const media = m.media?.length === 0 && m.bodyText == null && !m.xPost ? existing!.media : m.media ?? existing!.media;
+  const xPost = m.xPost === undefined ? existing!.x_post : m.xPost;
+  const sameEvidence = stableJson(materialEvidence(media, xPost)) === stableJson(materialEvidence(existing!.media, existing!.x_post));
+  if (sameEvidence && (m.media !== undefined || m.xPost !== undefined)) {
+    // 保留最新可用签名和展示元数据，不为过期签名刷新重复分析。
+    await db`UPDATE articles SET media=${db.json(media as never)},x_post=${xPost ? db.json(xPost as never) : null} WHERE id=${existing!.id}`;
+  }
+  const textHash = contentHash({ title, bodyText, excerpt });
+  const next = contentHash({ title, bodyText, excerpt, media, xPost });
   if (existing!.content_hash === next) return unchanged;
+  if (sameEvidence && existing!.content_hash === textHash) {
+    // 旧版只记录文字 hash；相同事实输入直接升级基线，不批量触发付费重评。
+    await db`UPDATE articles SET content_hash=${next} WHERE id=${existing!.id}`;
+    return unchanged;
+  }
   if (existing!.content_hash === null) {
     // Imported history carries no hash of this form (its collectors normalised differently): the
     // first report here records the baseline instead of a revision, so an import does not send
     // every article a source still lists back to paid analysis. The baseline joins the history, so
     // a later return to it is recognised as a version seen before.
-    await db`UPDATE articles SET content_hash = ${next}, excerpt = coalesce(excerpt, ${m.excerpt ?? null}) WHERE id = ${existing!.id}`;
+    await db`UPDATE articles SET content_hash = ${next}, excerpt = coalesce(excerpt, ${m.excerpt ?? null}),
+      media=${db.json(media as never)},x_post=${xPost ? db.json(xPost as never) : null} WHERE id = ${existing!.id}`;
     await db`INSERT INTO article_revisions (article_id, revision, content_hash, title, body_text)
              VALUES (${existing!.id}, ${existing!.revision}, ${next}, ${title}, ${bodyText}) ON CONFLICT DO NOTHING`;
     return unchanged;
@@ -194,10 +233,11 @@ async function upsertIn(db: Db, m: MaterialInput): Promise<MaterialResult> {
   // renderings, pages that rotate promotions): the current revision was analysed and published once
   // already. Any earlier version counts, however long ago: a rotation with many variants would
   // otherwise start over, and a real edit reverted later is rare and loses nothing.
-  const [seen] = await db`SELECT 1 FROM article_revisions WHERE article_id = ${existing!.id} AND content_hash = ${next} LIMIT 1`;
+  const [seen] = await db`SELECT 1 FROM article_revisions WHERE article_id = ${existing!.id}
+    AND (content_hash = ${next} OR (${sameEvidence} AND content_hash=${textHash})) LIMIT 1`;
   if (seen) return unchanged;
   // Nor is the stored version with other characters lost in transit, or with them restored.
-  if (sameBarringLoss(existing!.title, title) && sameBarringLoss(existing!.body_text, bodyText) && sameBarringLoss(existing!.excerpt, excerpt)) return unchanged;
+  if (sameEvidence && sameBarringLoss(existing!.title, title) && sameBarringLoss(existing!.body_text, bodyText) && sameBarringLoss(existing!.excerpt, excerpt)) return unchanged;
 
   const [row] = await db<{ revision: number }[]>`
     UPDATE articles SET
@@ -205,8 +245,7 @@ async function upsertIn(db: Db, m: MaterialInput): Promise<MaterialResult> {
       source_updated_at = ${m.sourceUpdatedAt ?? null}, excerpt = coalesce(${m.excerpt ?? null}, excerpt),
       body_text = coalesce(${m.bodyText ?? null}, body_text), body_html = coalesce(${m.bodyHtml ?? null}, body_html),
       body_status = CASE WHEN ${m.bodyText ?? null}::text IS NULL THEN body_status ELSE ${m.bodyStatus ?? "ok"} END,
-      media = CASE WHEN ${m.media ? db.json(m.media as never) : null}::jsonb IS NULL THEN media ELSE ${m.media ? db.json(m.media as never) : null}::jsonb END,
-      x_post = coalesce(${m.xPost ? db.json(m.xPost as never) : null}, x_post),
+      media = ${db.json(media as never)}, x_post = ${xPost ? db.json(xPost as never) : null},
       revision = revision + 1, content_hash = ${next}, processing_state = 'new',
       processing_attempts = 0, processing_retry_at = NULL, processing_error = NULL, processing_queued_at = NULL, updated_at = now()
     WHERE id = ${existing!.id}

@@ -11,7 +11,7 @@ import { shutdownSignal } from "../lib/shutdown.ts";
 import { getArticle } from "../providers/socialdata.ts";
 import { onlyXArticleLink, xArticleText } from "../sources/x.ts";
 import { sanitizeBody, trimTrailingChrome } from "./sanitize.ts";
-import { contentHash } from "./materials.ts";
+import { contentHash, type MediaItem, type XPostData } from "./materials.ts";
 import { markdownBody } from "./markdown.ts";
 
 export interface ExtractedBody {
@@ -133,11 +133,11 @@ export async function extractArticleBody(articleId: string, allowJina = process.
   }
   // The body is new content: a new revision, so an analysis of the body-less input counts as stale.
   return sql.begin(async (tx) => {
-    const [row] = await tx<{ title: string; excerpt: string | null; content_hash: string | null }[]>`
-      SELECT title, excerpt, content_hash FROM articles
+    const [row] = await tx<{ title: string; excerpt: string | null; content_hash: string | null; media: MediaItem[]; x_post: XPostData | null }[]>`
+      SELECT title, excerpt, content_hash, media, x_post FROM articles
       WHERE id = ${articleId} AND revision = ${a.revision} AND body_status <> 'ok' FOR UPDATE`;
     if (!row) return "skipped";
-    const hash = contentHash({ title: row.title, bodyText: got.text, excerpt: row.excerpt });
+    const hash = contentHash({ title: row.title, bodyText: got.text, excerpt: row.excerpt, media: row.media.length ? row.media : got.images, xPost: row.x_post });
     if (hash === row.content_hash) {
       await tx`UPDATE articles SET body_status = 'ok', updated_at = now() WHERE id = ${articleId}`;
       return "ok";
@@ -172,8 +172,8 @@ async function extractXArticle(articleId: string, tweetId: string, revision: num
     return markUnconfirmed(articleId, revision);
   }
   return sql.begin(async (tx) => {
-    const [row] = await tx<{ title: string; excerpt: string | null; body_text: string | null; x_post: { text?: string } | null; x_article: { title?: string | null; text?: string } | null }[]>`
-      SELECT title, excerpt, body_text, x_post, x_article FROM articles
+    const [row] = await tx<{ title: string; excerpt: string | null; body_text: string | null; media: MediaItem[]; x_post: XPostData | null; x_article: { title?: string | null; text?: string } | null }[]>`
+      SELECT title, excerpt, body_text, media, x_post, x_article FROM articles
       WHERE id = ${articleId} AND revision = ${revision} AND body_status <> 'ok' FOR UPDATE`;
     if (!row) return "skipped";
     const block = (a: { title?: string | null; text?: string } | null) => (a ? [a.title ? `# ${a.title}` : "", a.text ?? ""].filter(Boolean).join("\n\n") : "");
@@ -189,7 +189,7 @@ async function extractXArticle(articleId: string, tweetId: string, revision: num
       await tx`UPDATE articles SET body_status = 'ok', x_article = ${tx.json(got as never)}, updated_at = now() WHERE id = ${articleId}`;
       return "ok";
     }
-    const hash = contentHash({ title, bodyText, excerpt: row.excerpt });
+    const hash = contentHash({ title, bodyText, excerpt: row.excerpt, media: row.media, xPost: row.x_post });
     const [r] = await tx<{ revision: number }[]>`
       UPDATE articles SET title = ${title}, body_text = ${bodyText}, x_article = ${tx.json(got as never)}, body_status = 'ok',
         revision = revision + 1, content_hash = ${hash}, processing_state = 'new', updated_at = now()
