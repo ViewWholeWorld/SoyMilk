@@ -56,7 +56,7 @@ async function reportTexts(ids: string[]): Promise<Map<string, string>> {
     SELECT a.id, coalesce(p.title, an.title_zh, a.title) AS title, coalesce(p.summary, an.summary_zh, '') AS summary
     FROM articles a JOIN sources s ON s.id=a.source_id
     LEFT JOIN publications p ON p.article_id = a.id
-    LEFT JOIN LATERAL (SELECT title_zh, summary_zh FROM analyses x WHERE x.article_id = a.id ORDER BY input_revision DESC, id DESC LIMIT 1) an ON true
+    LEFT JOIN LATERAL (SELECT title_zh, summary_zh FROM analyses x WHERE x.article_id = a.id AND x.output->>'stale' IS DISTINCT FROM 'true' ORDER BY input_revision DESC, id DESC LIMIT 1) an ON true
     WHERE a.id = ANY(${ids}) AND coalesce(p.visibility,'public')='public' AND s.participation_mode='editorial'`;
   return new Map(rows.map((r) => [r.id, reportText(r.title, r.summary)]));
 }
