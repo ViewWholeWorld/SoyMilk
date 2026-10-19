@@ -146,7 +146,7 @@ export async function deferJob<Q extends QueueName>(name: Q, id: string, data: J
       WHERE name=${name} AND id=${id} AND state='active' AND retry_count=${retryCount} FOR UPDATE`;
     if (!active) throw new Error("Waiting job is no longer active for this attempt");
     await b.complete(name, { id, retryCount }, { state: "waiting", retryAfterSeconds: seconds }, { db: queueDb(tx) });
-    const singletonKey = "articleId" in data ? data.articleId : id;
+    const singletonKey = "articleId" in data ? data.articleId : "storyId" in data ? `story:${data.storyId}` : id;
     // A wait neither spends nor replenishes genuine failures already charged to this work.
     const retryLimit = Math.max(0, active.retry_limit - active.retry_count);
     if (!(await enqueue(name, data, { singletonKey, startAfter: seconds, priority: active.priority, retryLimit }, tx))) {
