@@ -77,10 +77,12 @@ test("P0 固定五领域样本：两次评分与业务结果相同，P2a／P2b �
     const id = await article(sample);
     switches(false);
     const started = performance.now();
+    await sql`UPDATE articles SET processing_attempt_tag='baseline' WHERE id=${id}`;
     const old = await analyzeArticle(id, { attemptTag: "baseline" });
     const baselineMs = performance.now() - started;
     switches(true);
     const nextStarted = performance.now();
+    await sql`UPDATE articles SET processing_attempt_tag='optimized' WHERE id=${id}`;
     const next = await analyzeArticle(id, { attemptTag: "optimized" });
     const optimizedMs = performance.now() - nextStarted;
     assert.deepEqual(next!.output, old!.output, sample.marker);
