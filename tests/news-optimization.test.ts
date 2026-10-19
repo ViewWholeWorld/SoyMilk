@@ -26,7 +26,7 @@ const samples = [
 ];
 type Sample = typeof samples[number];
 const requests: Array<{ step: string; marker: string; body: Record<string, unknown> }> = [];
-let fault: "none" | "missing" | "legacy" | "filter" | "malformedFilter" = "none";
+let fault: "none" | "missing" | "legacy" | "filter" | "malformedFilter" | "unusedBodyMissing" | "summaryMissing" = "none";
 let combinedGate: { asked: ReturnType<typeof gate<void>>; hold: ReturnType<typeof gate<void>> } | null = null;
 const provider = await stub(async (_n, req) => {
   const body = JSON.parse(req.body);
@@ -43,9 +43,11 @@ const provider = await stub(async (_n, req) => {
     titleZh: sample.title, summaryZh: `${sample.text} 测试摘要保留原文的适用范围。`, bodyZh: `${sample.text} 测试摘要保留原文的适用范围。` };
   const structure = { category: sample.category, tags: ["产品更新", sample.topic], subjects: [],
     fact: { title: sample.title, subject: "测试主体", action: "发布", object: "限定范围的测试消息", occurredAt: null } };
+  const combinedWriting = step === "combinedSummarize" && ["unusedBodyMissing", "summaryMissing"].includes(fault)
+    ? Object.fromEntries(Object.entries(writing).filter(([key]) => key !== (fault === "unusedBodyMissing" ? "bodyZh" : "summaryZh"))) : writing;
   if (fault === "filter" && step === "combinedUnderstand") return new Reply(400, { error: { code: "1301", message: "contentFilter" } });
   const content = step === "prefilter" ? { label: "PASS", reason: "固定材料" } : step === "score" ? { attentionScore: sample.score }
-    : combined ? fault === "malformedFilter" ? '{"a":contentFilter}' : { writing, ...(fault === "missing" ? {} : { structure }) }
+    : combined ? fault === "malformedFilter" ? '{"a":contentFilter}' : { writing: combinedWriting, ...(fault === "missing" ? {} : { structure }) }
     : step === "structure" ? structure : step === "understand" ? fault === "legacy" ? {} : writing
     : `title_zh: ${writing.titleZh}\nsummary_zh: ${writing.summaryZh}\nbody_zh: ${writing.bodyZh}`;
   return { id: "fixture", choices: [{ message: { content: typeof content === "string" ? content : JSON.stringify(content) } }],
@@ -123,6 +125,36 @@ test("部分旧结构结果升级后复用，只补原写作，不进入合并�
   const result = await analyzeArticle(id);
   assert.equal(result!.receiptIds.length, 5);
   assert.deepEqual(requests.slice(start).map(r => r.step), ["understand"]);
+});
+
+test("仅开 P2b：普通摘要省略不用的 bodyZh 仍四次请求完成，关闭后零付费复用", async () => {
+  config.combinedUnderstand = false; config.combinedSummarize = true; fault = "unusedBodyMissing";
+  try {
+    const id = await article(samples[2]);
+    const start = requests.length;
+    const first = await analyzeArticle(id);
+    assert.deepEqual(requests.slice(start).map(r => r.step), ["prefilter", "score", "score", "combinedSummarize"]);
+    assert.equal(first!.receiptIds.length, 4);
+    assert.ok(first!.output!.summaryZh?.includes(samples[2]!.text));
+    switches(false);
+    const hits = provider.hits();
+    const again = await analyzeArticle(id);
+    assert.deepEqual(again!.output, first!.output);
+    assert.equal(again!.reused, true);
+    assert.equal(provider.hits(), hits);
+  } finally { fault = "none"; switches(false); }
+});
+
+test("普通摘要缺少 summaryZh 仍拒绝整份合并结果，不拆成新付费请求", async () => {
+  config.combinedUnderstand = false; config.combinedSummarize = true; fault = "summaryMissing";
+  try {
+    const id = await article(samples[2]);
+    const start = requests.length;
+    await assert.rejects(analyzeArticle(id), ModelOutputError);
+    assert.deepEqual(requests.slice(start).map(r => r.step), ["prefilter", "score", "score", "combinedSummarize"]);
+    assert.equal((await sql`SELECT count(*)::int AS n FROM analyses WHERE article_id=${id}`)[0]!.n, 0);
+    assert.equal((await analysisHistory(`article:${id}@1`)).length, 1);
+  } finally { fault = "none"; switches(false); }
 });
 
 test("缺失结构拒绝整份合并结果；关闭后不拆分，启用后沿原回执有限重试", async () => {

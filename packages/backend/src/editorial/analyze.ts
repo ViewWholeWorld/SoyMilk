@@ -153,7 +153,8 @@ const CombinedStructureSchema = z.object({
     action: z.string().max(80).nullable().optional(), object: z.string().max(160).nullable().optional(), occurredAt: z.string().nullable().optional() }).nullable(),
 });
 const CombinedUnderstandSchema = z.object({ writing: UnderstandSchema, structure: CombinedStructureSchema });
-const CombinedSummarizeSchema = z.object({ writing: SummarizeSchema, structure: CombinedStructureSchema });
+// 普通文章不用 bodyZh；模型省略该空字段时仍可消费已付费的合法摘要。
+const CombinedSummarizeSchema = z.object({ writing: SummarizeSchema.extend({ bodyZh: z.string().default("") }), structure: CombinedStructureSchema });
 
 const ZH_COUNT = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"];
 
