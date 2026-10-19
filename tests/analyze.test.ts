@@ -9,7 +9,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { after, before, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
 import { upsertMaterial } from "@aihot/backend/content/materials";
-import { analyzeArticle, SCORE_SYSTEM, tierThreshold } from "@aihot/backend/editorial/analyze";
+import { analyzeArticle, SCORE_SYSTEM, ScoreSchema, tierThreshold } from "@aihot/backend/editorial/analyze";
+import { ModelOutputError } from "@aihot/backend/providers/llm";
 import { queueProcessing } from "@aihot/backend/jobs/content";
 import { QUEUES, stopBoss } from "@aihot/backend/jobs/queue";
 import { compactAnswerFirstSummary, enforceIdentity, parseTranslateOutput, PREFILTER_SYSTEM } from "@aihot/backend/editorial/writing";
@@ -23,7 +24,7 @@ const X_SOURCE = `test-analyze-x-${T}`;
 type Step = "prefilter" | "score" | "understand" | "summarize" | "structure";
 interface Req { step: Step; marker: string; system: string; user: string; body: Record<string, any> }
 const requests: Req[] = [];
-const MARKERS = ["CLEAR", "RESCUE", "LOW", "OFFTOPIC", "BARE", "VAGUE", "THIN", "SENSITIVE", "推文"];
+const MARKERS = ["CLEAR", "RESCUE", "LOW", "OFFTOPIC", "BARE", "VAGUE", "THIN", "SENSITIVE", "INVALID", "推文"];
 const scoreAnswers: Record<string, number[]> = { CLEAR: [78, 72], RESCUE: [56, 50], LOW: [45, 40], THIN: [70, 70], SENSITIVE: [80, 80], 推文: [40, 40], BARE: [30, 34], VAGUE: [60, 62] };
 
 const stepOf = (system: string, user: string): Step =>
@@ -42,7 +43,7 @@ const provider = await stub((_hit, req) => {
   requests.push({ step, marker, system, user, body });
   const answer = (content: unknown) => ({ id: `stub-${requests.length}`, model: "stub", choices: [{ message: { content: typeof content === "string" ? content : JSON.stringify(content) } }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } });
   if (step === "prefilter") return answer({ label: marker === "OFFTOPIC" || marker === "BARE" ? "BLOCK" : marker === "VAGUE" ? "UNKNOWN" : "PASS", reason: "测试" });
-  if (step === "score") return answer({ attentionScore: scoreAnswers[marker]!.shift() });
+  if (step === "score") return answer({ attentionScore: marker === "INVALID" ? null : scoreAnswers[marker]!.shift() });
   if (step === "understand") {
     if (marker === "SENSITIVE") return new Reply(400, { contentFilter: [{ level: 1, role: "user" }], error: { code: "1301", message: "系统检测到输入或生成内容可能包含不安全或敏感内容" } });
     return answer({ itemType: "model_release", authorRole: "principal", tags: ["模型发布", "开源", "Agent", "不存在的标签"], editorialJudgment: `理由 ${marker}`, titleZh: `理解标题 ${marker}`, summaryZh: `理解摘要 ${marker}。第二句补充一个关键数字。` });
@@ -92,6 +93,16 @@ test("every prompt in the pack renders, and the site's name replaces AIHOT's", (
     assert.ok(promptText(name, values).includes(promptText("safety")), name);
     assert.equal(promptVersion(name).split("@")[1], promptVersion(name, "safety").split("@")[1], "safety participates in the content hash");
   }
+});
+
+test("R02：评分仅接受 0—100 整数或规范整数字符串，格式错误进入无效输出保护",async()=>{
+  for(const value of [null,undefined,"",false,true,[],[10],{}," "," 10 ","1e2","0x10","1.0","01",-1,101,1.5,NaN,Infinity]) {
+    assert.equal(ScoreSchema.safeParse({attentionScore:value}).success,false,String(value));
+  }
+  for(const value of [0,1,100,"0","1","100"]) assert.equal(ScoreSchema.parse({attentionScore:value}).attentionScore,Number(value));
+  const id=await article("INVALID");
+  await assert.rejects(analyzeArticle(id),ModelOutputError);
+  assert.equal((await sql`SELECT id FROM analyses WHERE article_id=${id}`).length,0,"无效评分不能提交为真实低分");
 });
 
 test("a selected item: prefilter, two scores, the content understanding and the structure", async () => {

@@ -76,7 +76,11 @@ const scoreCall = (model: string) => SCORE_CALL[model] ?? { temperature: 0.2, ma
 /** The score prompt: the industry's taste (industry/prompts/selection-score.md). */
 export const SCORE_SYSTEM = promptText("selection-score");
 
-export const ScoreSchema = z.object({ attentionScore: z.coerce.number().int().min(0).max(100) });
+// 兼容规范的整数字符串；空值、布尔、数组、空白及指数写法不能伪装成低分。
+export const ScoreSchema = z.object({ attentionScore: z.preprocess(
+  value => typeof value === "string" && /^(?:0|[1-9]\d{0,2})$/.test(value) ? Number(value) : value,
+  z.number().int().min(0).max(100),
+) });
 
 const SCORE_TIME = new Intl.DateTimeFormat("sv-SE", {
   timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
