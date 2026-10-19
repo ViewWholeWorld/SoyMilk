@@ -13,7 +13,7 @@ import { CATEGORY_KEYS } from "@aihot/contracts/taxonomy";
 import { CATEGORIES } from "@aihot/industry/taxonomy";
 import { SELECTION } from "@aihot/industry/selection";
 import { sql } from "../db.ts";
-import { chatJson, registeredModels, ModelOutputError, reuseJsonReceipt, type ContentPart } from "../providers/llm.ts";
+import { chatJson, extractJson, registeredModels, ModelOutputError, reuseJsonReceipt, type ContentPart } from "../providers/llm.ts";
 import { completeReceipt, ProviderRejectedError, ProviderUnavailableError, ReceiptUnknownError, storedReceipt, rejectedByContentFilter } from "../providers/receipts.ts";
 import { collapseWhitespace } from "../lib/text.ts";
 import { modelFor } from "./models.ts";
@@ -153,6 +153,37 @@ const CombinedStructureSchema = z.object({
     action: z.string().max(80).nullable().optional(), object: z.string().max(160).nullable().optional(), occurredAt: z.string().nullable().optional() }).nullable(),
 });
 const CombinedUnderstandSchema = z.object({ writing: UnderstandSchema, structure: CombinedStructureSchema });
+/** 仅兼容 writing／structure 边界的空成员或漏括号；保留全部值并继续严格校验。 */
+export function parseCombinedUnderstandJson(text: string): unknown {
+  try { return extractJson(text); }
+  catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    const body = text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
+    const matches = [...body.matchAll(/,\s*""\s*}\s*,\s*"structure"\s*:/g)];
+    const boundaries = [...body.matchAll(/,\s*"structure"\s*:/g)];
+    if (!/^\{\s*"writing"\s*:\s*\{/.test(body) || matches.length > 1 || boundaries.length !== 1) throw error;
+    const at = (matches[0] ?? boundaries[0])!.index;
+    let quoted = false, escaped = false, depth = 0;
+    for (const char of body.slice(0, at)) {
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') quoted = false;
+      } else if (char === '"') quoted = true;
+      else if (char === "{" || char === "[") depth++;
+      else if (char === "}" || char === "]") depth--;
+    }
+    if (quoted || depth !== 2) throw error;
+    const repaired = extractJson(body.slice(0, at) + (matches.length ? body.slice(at).replace(/^,\s*""/, "") : "}" + body.slice(at)));
+    if (!matches.length) {
+      const value = repaired as { writing?: Record<string, unknown>; structure?: unknown };
+      const fields = ["itemType", "authorRole", "tags", "editorialJudgment", "titleZh", "summaryZh"];
+      if (!value.writing || Object.keys(value.writing).length !== fields.length || fields.some(key => !Object.hasOwn(value.writing!, key)) ||
+        Object.keys(value).length !== 2 || !Object.hasOwn(value, "structure")) throw error;
+    }
+    return repaired;
+  }
+}
 // 普通文章不用 bodyZh；模型省略该空字段时仍可消费已付费的合法摘要。
 const CombinedSummarizeSchema = z.object({ writing: SummarizeSchema.extend({ bodyZh: z.string().default("") }), structure: CombinedStructureSchema });
 
@@ -417,13 +448,14 @@ const hasModelWriting = (a: AnalyzeInputArticle) => {
   return isShortTweetInput(t) ? needsShortTweetTranslation(collapseWhitespace(t.mainText || t.title)) : t.text.trim().length >= 20;
 };
 const canCombine = async (step: CombinedStep) => combinedEnabled(step) &&
-  compatibleAnalysisModels(await modelFor("structure"), await modelFor(combinedWriter(step)));
+  compatibleAnalysisModels(await modelFor("structure"), await modelFor(combinedWriter(step)), step === "combinedUnderstand" ? "understand" : "exact");
 
 async function runCombined(a: AnalyzeInputArticle, opts: StepOpts, step: CombinedStep, savedId?: number): Promise<Pick<AnalysisRun, "writing" | "structure" | "combined">> {
   const schema = step === "combinedUnderstand" ? CombinedUnderstandSchema : CombinedSummarizeSchema;
   const version = COMBINED_VERSIONS[step];
+  const parse = step === "combinedUnderstand" ? parseCombinedUnderstandJson : undefined;
   // 先读已接收结果；开关、连接分配及供应商暂不可用均不妨碍本地消费。
-  let res = savedId ? await reuseJsonReceipt(savedId, schema, version, { materialHash: materialHash(a) }) : null;
+  let res = savedId ? await reuseJsonReceipt(savedId, schema, version, { materialHash: materialHash(a), parse }) : null;
   if (!res) {
     if (!(await canCombine(step))) throw new ProviderUnavailableError("configuration", "本轮已选择合并处理；需启用原路径并恢复兼容模型后重试");
     const model = await modelFor(combinedWriter(step));
@@ -439,7 +471,7 @@ async function runCombined(a: AnalyzeInputArticle, opts: StepOpts, step: Combine
     const call = (image: ContentPart | null) => {
       checkAnalysisRunning();
       return chatJson({ model, purpose: ANALYSIS_PURPOSES[step], subject: subjectOf(a), promptVersion: version,
-        system, user: image ? [{ type: "text", text: user }, image] : user, schema, temperature: 0.2,
+        system, user: image ? [{ type: "text", text: user }, image] : user, schema, parse, temperature: 0.2,
         maxTokens: step === "combinedUnderstand" ? 16_384 : 4096, timeoutMs: 180_000,
         attemptTag: analysisTag(opts.attemptTag, step), exclusiveWith: exclusiveAnalysisSteps(step, opts.attemptTag), materialHash: materialHash(a) });
     };

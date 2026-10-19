@@ -2,6 +2,7 @@
 import { sql } from "../db.ts";
 import { registeredModels } from "../providers/llm.ts";
 import { receiptAttemptTag } from "../providers/receipts.ts";
+import { modelBillingContext } from "../providers/model-billing.ts";
 import { stableJson } from "../lib/ids.ts";
 
 export const ANALYSIS_PURPOSES = {
@@ -30,8 +31,8 @@ export async function analysisHistory(subject: string, tag?: string) {
   });
 }
 
-/** 比较有效配置，允许 default 与 connection 别名指向同一连接。 */
-export async function compatibleAnalysisModels(a: string, b: string) {
+/** a 为结构、b 为写作；P2a 可沿用同账号 Codex 理解配置，P2b 仍要求完整配置一致。 */
+export async function compatibleAnalysisModels(a: string, b: string, policy: "exact" | "understand" = "exact") {
   const models = await registeredModels();
   const identity = (key: string) => {
     const m = models[key];
@@ -41,5 +42,16 @@ export async function compatibleAnalysisModels(a: string, b: string) {
       effort: m.reasoningEffort ?? null, extra: m.extra ?? null, vision: m.vision ?? false, json: m.jsonMode });
   };
   const first = identity(a);
-  return first !== null && first === identity(b);
+  if (first !== null && first === identity(b)) return true;
+  const structure = models[a], writer = models[b];
+  if (policy !== "understand" || !structure || !writer ||
+    structure.connection?.type !== "codex" || writer.connection?.type !== "codex" ||
+    structure.reasoningEffort !== "low" || ![null, "medium"].includes(writer.reasoningEffort ?? null)) return false;
+  // Codex 保存连接共用 withCodexServer 的全局账号，回执仍冻结实际账号和理解连接代际。
+  // 只忽略两条保存连接的 ID／代际及上述强度差异，其他请求能力与供应商归属必须相同。
+  const codexIdentity = (m: typeof structure) => stableJson({ service: m.service, model: m.model,
+    baseUrlEnv: m.baseUrlEnv, apiKeyEnv: m.apiKeyEnv, baseUrl: m.connection?.baseUrl ?? null,
+    extra: m.extra ?? null, vision: m.vision ?? false, json: m.jsonMode,
+    supplierId: modelBillingContext(m).supplierId });
+  return codexIdentity(structure) === codexIdentity(writer);
 }

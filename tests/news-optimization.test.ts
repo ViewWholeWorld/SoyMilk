@@ -5,7 +5,7 @@ import { after, before, test } from "node:test";
 import { sql, closeDb } from "@aihot/backend/db";
 import { config } from "@aihot/backend/config";
 import { upsertMaterial } from "@aihot/backend/content/materials";
-import { analyzeArticle } from "@aihot/backend/editorial/analyze";
+import { analyzeArticle, parseCombinedUnderstandJson } from "@aihot/backend/editorial/analyze";
 import { analysisHistory, compatibleAnalysisModels, exclusiveAnalysisSteps } from "@aihot/backend/editorial/analysis-route";
 import { ModelOutputError } from "@aihot/backend/providers/llm";
 import { paidRequest, ProviderUnavailableError, ReceiptBusyError, ReceiptUnknownError } from "@aihot/backend/providers/receipts";
@@ -26,7 +26,7 @@ const samples = [
 ];
 type Sample = typeof samples[number];
 const requests: Array<{ step: string; marker: string; body: Record<string, unknown> }> = [];
-let fault: "none" | "missing" | "legacy" | "filter" | "malformedFilter" | "unusedBodyMissing" | "summaryMissing" = "none";
+let fault: "none" | "missing" | "legacy" | "filter" | "malformedFilter" | "unusedBodyMissing" | "summaryMissing" | "emptyMember" | "missingWriterClose" | "invalidStructureWithEmptyMember" = "none";
 let combinedGate: { asked: ReturnType<typeof gate<void>>; hold: ReturnType<typeof gate<void>> } | null = null;
 const provider = await stub(async (_n, req) => {
   const body = JSON.parse(req.body);
@@ -47,10 +47,16 @@ const provider = await stub(async (_n, req) => {
     ? Object.fromEntries(Object.entries(writing).filter(([key]) => key !== (fault === "unusedBodyMissing" ? "bodyZh" : "summaryZh"))) : writing;
   if (fault === "filter" && step === "combinedUnderstand") return new Reply(400, { error: { code: "1301", message: "contentFilter" } });
   const content = step === "prefilter" ? { label: "PASS", reason: "固定材料" } : step === "score" ? { attentionScore: sample.score }
-    : combined ? fault === "malformedFilter" ? '{"a":contentFilter}' : { writing: combinedWriting, ...(fault === "missing" ? {} : { structure }) }
+    : combined ? fault === "malformedFilter" ? '{"a":contentFilter}' : { writing: combinedWriting, ...(fault === "missing" ? {} : { structure: fault === "invalidStructureWithEmptyMember" ? { ...structure, category: "invalid" } : structure }) }
     : step === "structure" ? structure : step === "understand" ? fault === "legacy" ? {} : writing
     : `title_zh: ${writing.titleZh}\nsummary_zh: ${writing.summaryZh}\nbody_zh: ${writing.bodyZh}`;
-  return { id: "fixture", choices: [{ message: { content: typeof content === "string" ? content : JSON.stringify(content) } }],
+  let rendered = typeof content === "string" ? content : JSON.stringify(content);
+  if (step === "combinedUnderstand" && ["emptyMember", "invalidStructureWithEmptyMember"].includes(fault)) rendered = rendered.replace('},"structure":', ',""},"structure":');
+  if (step === "combinedUnderstand" && fault === "missingWriterClose") {
+    const { bodyZh: _unused, ...sixFields } = writing;
+    rendered = JSON.stringify({ writing: sixFields, structure }).replace('},"structure":', ',"structure":');
+  }
+  return { id: "fixture", choices: [{ message: { content: rendered } }],
     usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } };
 });
 await useModelStubs({ LLM: provider.url, DEEPSEEK: provider.url });
@@ -125,6 +131,53 @@ test("部分旧结构结果升级后复用，只补原写作，不进入合并�
   const result = await analyzeArticle(id);
   assert.equal(result!.receiptIds.length, 5);
   assert.deepEqual(requests.slice(start).map(r => r.step), ["understand"]);
+});
+
+test("P2a 写作边界空成员或缺结束括号时四次请求完成，关闭后零新增请求消费", async () => {
+  try {
+    for (const mode of ["emptyMember", "missingWriterClose"] as const) {
+      switches(true); fault = mode;
+      const id = await article(), start = requests.length;
+      const first = await analyzeArticle(id);
+      assert.deepEqual(requests.slice(start).map(r => r.step), ["prefilter", "score", "score", "combinedUnderstand"]);
+      assert.equal(first!.receiptIds.length, 4);
+      assert.ok(first!.output!.summaryZh?.includes(samples[0]!.text));
+      const [receipt] = await analysisHistory(`article:${id}@1`);
+      assert.equal(receipt!.status, "completed");
+      switches(false); const hits = provider.hits();
+      assert.deepEqual((await analyzeArticle(id))!.output, first!.output);
+      assert.equal(provider.hits(), hits);
+    }
+  } finally { fault = "none"; switches(false); }
+});
+
+test("空成员兼容后仍拒绝错误分类，不能拆成新付费请求", async () => {
+  switches(true); fault = "invalidStructureWithEmptyMember";
+  try {
+    const id = await article(), start = requests.length;
+    await assert.rejects(analyzeArticle(id), ModelOutputError);
+    assert.deepEqual(requests.slice(start).map(r => r.step), ["prefilter", "score", "score", "combinedUnderstand"]);
+    assert.equal((await sql`SELECT count(*)::int AS n FROM analyses WHERE article_id=${id}`)[0]!.n, 0);
+    switches(false); const hits = provider.hits();
+    await assert.rejects(analyzeArticle(id), ProviderUnavailableError);
+    assert.equal(provider.hits(), hits);
+  } finally { fault = "none"; switches(false); }
+});
+
+test("P2a 解析保留正文中的 JSON 字面文本，拒绝其他位置和非空的无名成员", () => {
+  const data = { writing: { summaryZh: '原文示例 ,""},"structure": 并非输出边界', titleZh: "完整文案" }, structure: { fact: null } };
+  assert.deepEqual(parseCombinedUnderstandJson(JSON.stringify(data)), data);
+  const legal = '{"writing":{"titleZh":"保留文字"},"structure":{"fact":null}}';
+  assert.deepEqual(parseCombinedUnderstandJson(legal.replace('},"structure":', ',""},"structure":')), JSON.parse(legal));
+  const complete = JSON.stringify({ writing: { itemType: "industry_event", authorRole: "relayer", tags: [], editorialJudgment: "", titleZh: "保留文字", summaryZh: "全部事实保留" }, structure: { fact: null } });
+  assert.deepEqual(parseCombinedUnderstandJson(complete.replace('},"structure":', ',"structure":')), JSON.parse(complete));
+  const nested = JSON.stringify({ writing: { structure: { fact: null } } });
+  assert.deepEqual(parseCombinedUnderstandJson(nested), JSON.parse(nested), "合法嵌套不提升为顶层字段，交给 schema 拒绝");
+  for (const text of [legal.replace('},"structure":', ',"非空"},"structure":'),
+    legal.replace('},"structure":', ',"structure":'),
+    '{"writing":{"nested":{"title":"原文",""}},"structure":{}}',
+    '{"writing":{"titleZh":"文案"},"structure":{},""}',
+    '{"writing":{"titleZh":"文案","",""},"structure":{}}']) assert.throws(() => parseCombinedUnderstandJson(text), SyntaxError);
 });
 
 test("仅开 P2b：普通摘要省略不用的 bodyZh 仍四次请求完成，关闭后零付费复用", async () => {
