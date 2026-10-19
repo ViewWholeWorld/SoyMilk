@@ -2,7 +2,7 @@
 // proxied to the api process, so one port serves the whole site; a reverse proxy in front may also send
 // them to the api directly.
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -44,7 +44,7 @@ class BadRequest extends Error {}
 
 /** Hashed build assets are immutable; anything else from the client build gets a short cache. */
 async function serveStatic(pathname: string, res: import("node:http").ServerResponse): Promise<boolean> {
-  if (pathname.includes("..") || pathname.endsWith("/")) return false;
+  if (pathname.endsWith("/")) return false;
   let decoded: string;
   try {
     decoded = decodeURIComponent(pathname);
@@ -52,9 +52,16 @@ async function serveStatic(pathname: string, res: import("node:http").ServerResp
     throw new BadRequest("malformed percent-encoding");
   }
   const file = path.join(CLIENT_DIR, decoded);
-  if (!file.startsWith(CLIENT_DIR)) return false;
+  const outside = (root: string, target: string) => {
+    const relative = path.relative(root, target);
+    return relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
+  };
+  if (decoded.includes("\0") || outside(CLIENT_DIR, file)) throw new BadRequest("static path outside root");
   const info = await stat(file).catch(() => null);
   if (!info?.isFile()) return false;
+  // 同时约束符号链接的实际目标，禁止构建目录链接到外部文件。
+  const [root, target] = await Promise.all([realpath(CLIENT_DIR), realpath(file)]);
+  if (outside(root, target)) throw new BadRequest("static link outside root");
   const immutable = pathname.startsWith("/assets/");
   res.writeHead(200, {
     "Content-Type": TYPES[path.extname(file)] ?? "application/octet-stream",
