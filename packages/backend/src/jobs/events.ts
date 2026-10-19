@@ -28,5 +28,18 @@ export async function processGroupingJob(data: JobData["events.group"], jobId: s
 export async function registerEventJobs(boss: PgBoss) {
   // Serial on purpose: two reports of the same new fact must not both create it.
   await work(boss, QUEUES.group, { localConcurrency: 1, pollingIntervalSeconds: 0.5 }, processGroupingJob);
-  await work(boss, QUEUES.digest, { localConcurrency: 3, pollingIntervalSeconds: 5 }, ({ storyId, afterCorrection }) => composeStoryDigest(storyId, { afterCorrection }));
+  await work(boss, QUEUES.digest, { localConcurrency: 3, pollingIntervalSeconds: 5 }, processDigestJob);
+}
+
+/** 预算、账号忙碌和关机只延迟同一综述；未知回执仍走独立的释放流程。 */
+export async function processDigestJob(data: JobData["events.digest"], jobId: string, retryCount: number) {
+  try {
+    return await composeStoryDigest(data.storyId, { afterCorrection: data.afterCorrection });
+  } catch (error) {
+    const wait = requestWait(error);
+    if (!wait && !shutdownSignal.signal.aborted) throw error;
+    const seconds = wait?.retryAfterSeconds ?? 60;
+    await deferJob(QUEUES.digest, jobId, data, seconds, retryCount);
+    return { state: "waiting", kind: wait?.kind ?? "shutdown", retryAfterSeconds: seconds };
+  }
 }
