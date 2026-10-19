@@ -126,6 +126,9 @@ export async function deleteModelConnection(id: string) {
     const c = await readModelConfig();
     if (c.active === id) throw Object.assign(new Error("请先切换默认连接，再删除此连接"), { statusCode: 409 });
     const before = c.connections.find((x) => x.id === id);
+    const references = await sql<{ key: string }[]>`
+      SELECT key FROM settings WHERE key LIKE 'models.%' AND value->>'model'=${`connection:${id}`} ORDER BY key`;
+    if (references.length) throw Object.assign(new Error(`此连接仍被能力 ${references.map(r => r.key.slice(7)).join("、")} 使用，请先在“模型与能力”中更换后再删除`), { statusCode: 409 });
     c.connections = c.connections.filter((x) => x.id !== id);
     await atomicPrivateJson(file(), c);
     return before ? publicConnection(before) : null;
