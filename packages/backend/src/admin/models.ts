@@ -9,6 +9,7 @@ import { CAPABILITIES, invalidateModelCache, modelSources, type Capability, type
 import { registeredModels } from "../providers/llm.ts";
 import { audit } from "../audit.ts";
 import { bootstrapBudgetStatus } from "../operations/bootstrap-budget.ts";
+import { privateLease } from "../providers/model-config.ts";
 
 interface UsageRow {
   purpose: string;
@@ -155,22 +156,25 @@ export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>>
 
 /** Switches a capability to another registered model (or back to the environment/default when null). */
 export async function switchModel(capability: string, model: string | null, reason: string, actor: string) {
-  const c = (CAPABILITIES as Record<string, Capability>)[capability];
-  if (!c) throw Object.assign(new Error("unknown capability"), { statusCode: 400 });
-  if (!reason.trim()) throw Object.assign(new Error("a reason is required"), { statusCode: 400 });
-  if (model !== null) {
-    const spec = (await registeredModels())[model];
-    if (!spec) throw Object.assign(new Error("unknown model"), { statusCode: 400 });
-    if (c.vision && !spec.vision) throw Object.assign(new Error("this capability needs a vision model"), { statusCode: 400 });
-  }
-  const before = (await modelSources())[capability];
-  if (model === null) await sql`DELETE FROM settings WHERE key = ${`models.${capability}`}`;
-  else {
-    await sql`INSERT INTO settings (key, value, updated_by) VALUES (${`models.${capability}`}, ${sql.json({ model })}, ${actor})
+  // 与连接删除共用跨进程锁，核对模型存在与保存引用之间不能插入删除。
+  return privateLease("connections", async () => {
+    const c = (CAPABILITIES as Record<string, Capability>)[capability];
+    if (!c) throw Object.assign(new Error("unknown capability"), { statusCode: 400 });
+    if (!reason.trim()) throw Object.assign(new Error("a reason is required"), { statusCode: 400 });
+    if (model !== null) {
+      const spec = (await registeredModels())[model];
+      if (!spec) throw Object.assign(new Error("unknown model"), { statusCode: 400 });
+      if (c.vision && !spec.vision) throw Object.assign(new Error("this capability needs a vision model"), { statusCode: 400 });
+    }
+    const before = (await modelSources())[capability];
+    if (model === null) await sql`DELETE FROM settings WHERE key = ${`models.${capability}`}`;
+    else {
+      await sql`INSERT INTO settings (key, value, updated_by) VALUES (${`models.${capability}`}, ${sql.json({ model })}, ${actor})
               ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()`;
-  }
-  invalidateModelCache();
-  const after = (await modelSources())[capability];
-  await audit(actor, "models.switch", `capability:${capability}`, reason, before ?? null, after ?? null);
-  return { capability, before, after };
+    }
+    invalidateModelCache();
+    const after = (await modelSources())[capability];
+    await audit(actor, "models.switch", `capability:${capability}`, reason, before ?? null, after ?? null);
+    return { capability, before, after };
+  });
 }

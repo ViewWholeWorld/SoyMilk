@@ -169,6 +169,7 @@ export function ModelConnections({ configuration: c, suppliers, onCodexModels }:
         </div>}
       </Card>
       <Card title="模型连接" right={<Button size="sm" onClick={() => setDraft(connectionDraftFor())}>添加 API Key 连接</Button>}>
+        <p className="mb-3 text-[12px] text-ink-3">删除前请先更换引用此连接的能力；仍被引用时会列出能力名称并阻止删除。</p>
         <Field label="默认连接" hint="使用 default 的能力会跟随此设置；单独指定的能力保持自己的选择。">
           <div className="flex gap-2"><Select aria-label="默认连接" value={active} onChange={(e) => setActive(e.target.value)}><option value="">原有配置</option>{c.connections.map((x) => <option key={x.id} value={x.id}>{x.name} · {x.model}</option>)}</Select><Button disabled={!!pending || active === (c.active ?? "")} onClick={() => run("POST", `${ROOT}/active`, { id: active || null }, { success: "默认连接已保存" })}>应用</Button></div>
         </Field>
