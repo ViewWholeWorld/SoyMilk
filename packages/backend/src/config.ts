@@ -56,6 +56,9 @@ export const config = {
   // Model calls are live unless explicitly disabled (tests, replays).
   modelCallsEnabled: bool("MODEL_CALLS_ENABLED", true),
   modelCostBackfillEnabled: bool("MODEL_COST_BACKFILL_ENABLED", true),
+  singleReportDigestReuse: bool("NEWS_SINGLE_REPORT_REUSE_ENABLED", true),
+  combinedUnderstand: bool("NEWS_COMBINED_UNDERSTAND_ENABLED", false),
+  combinedSummarize: bool("NEWS_COMBINED_SUMMARIZE_ENABLED", false),
   devAdmin: env.DEV_AUTH_ROLE === "admin" ? { displayName: env.DEV_AUTH_DISPLAY_NAME || "Dev Admin" } : null,
   /** The admin password (at least 12 characters). Feishu sign-in below is optional. */
   adminPassword: env.ADMIN_PASSWORD || null,

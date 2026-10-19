@@ -52,10 +52,12 @@ export class ReceiptUnknownError extends Error {
 export class ProviderRejectedError extends Error {
   readonly status: number | null;
   readonly retryable: boolean;
-  constructor(message: string, status: number | null, retryable: boolean) {
+  readonly contentFiltered: boolean;
+  constructor(message: string, status: number | null, retryable: boolean, contentFiltered = false) {
     super(message);
     this.status = status;
     this.retryable = retryable;
+    this.contentFiltered = contentFiltered && !retryable;
   }
 }
 
@@ -78,6 +80,8 @@ export interface ReceiptRequest {
   requestSummary?: Record<string, unknown>;
   /** Distinguishes an explicit re-run (e.g. admin "re-evaluate") from recovery of the same request. */
   attemptTag?: string;
+  /** 同一文章处理轮次的互斥路径；检查与付费占位在同一事务内完成。 */
+  exclusiveWith?: Array<{ purpose: string; attemptTag: string }>;
   /** Non-secret model ownership used for immutable cost snapshots. */
   billingContext?: BillingContext;
 }
@@ -93,6 +97,32 @@ const PENDING_STALE_MS = 10 * 60 * 1000;
 export function logicalKeyFor(req: ReceiptRequest): string {
   const identity = sha256(stableJson(req.identity));
   return [req.service, req.purpose, req.model ?? "-", identity, req.attemptTag ?? "0"].join(":");
+}
+
+/** 旧回执未单独保存轮次；逻辑键的身份摘要之后是完整 attemptTag。 */
+export function receiptAttemptTag(key: string): string {
+  return /:[a-f0-9]{64}:([\s\S]*)$/.exec(key)?.[1] ?? "0";
+}
+
+export const rejectedByContentFilter = (row: { status: string; error: string | null; request: Record<string, unknown> | null }) =>
+  row.status === "failed" && (row.request?.providerRejection === "content_filter" ||
+    // 兼容升级前由 HTTP 层记录的明确拒绝；解析错误和人工放行不能凭备注触发降级。
+    !Object.hasOwn(row.request ?? {}, "providerRejection") && /^HTTP 4\d\d: [\s\S]*(?:contentFilter|"1301")/.test(row.error ?? ""));
+
+/** 本地消费已保存响应；不因模型配置或功能开关改变而重新发送。 */
+export async function storedReceipt(id: number) {
+  const row = await sql.begin(async tx => {
+    const [r] = await tx<Array<{ id: number; status: string; response: unknown; model: string; request: Record<string, unknown> | null; updated_at: Date }>>`
+      SELECT id,status,response,model,request,updated_at FROM receipts WHERE id=${id} FOR UPDATE`;
+    if (r?.status === "pending" && Date.now() - r.updated_at.getTime() >= PENDING_STALE_MS) {
+      await markUnknown(tx, id, "placeholder went stale without a recorded result");
+      r.status = "unknown";
+    }
+    return r;
+  });
+  if (row?.status === "pending") throw new ReceiptBusyError(`Receipt ${id} is in flight`);
+  if (row?.status === "unknown") throw new ReceiptUnknownError(id, `Receipt ${id} has an unknown outcome`);
+  return row && ["received", "completed"].includes(row.status) ? row : null;
 }
 
 interface ReceiptRow {
@@ -134,12 +164,28 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
   const logicalKey = logicalKeyFor(req);
 
   const claimed = await sql.begin(async (tx) => {
+    // 不持锁等待网络；同一文章不同用途／服务的路径选择必须先于付费占位串行。
+    if (req.subject?.startsWith("article:") && req.exclusiveWith?.length) {
+      await tx`SELECT pg_advisory_xact_lock(hashtext(${"analysis-path:" + req.subject}))`;
+    }
     // Serialise budget checks per service so concurrent workers cannot overshoot.
     await tx`SELECT pg_advisory_xact_lock(hashtext(${"budget:" + req.service}))`;
     const [existing] = await tx<ReceiptRow[]>`
       SELECT id, subject, status, response, created_at, updated_at FROM receipts WHERE logical_key = ${logicalKey} FOR UPDATE`;
     if (existing) await registerConsumers(tx, existing.id, [existing.subject, req.subject]);
     if (existing?.status === "received" || existing?.status === "completed") return { kind: "reuse" as const, row: existing };
+    if (req.subject?.startsWith("article:") && req.exclusiveWith?.length) {
+      const conflicts = await tx<Array<{ logical_key: string; purpose: string; status: string; error: string | null; request: Record<string, unknown> | null }>>`
+        SELECT r.logical_key,r.purpose,r.status,r.error,r.request FROM receipts r
+        WHERE r.purpose=ANY(${req.exclusiveWith.map(c => c.purpose)}::text[])
+          AND r.id IN (SELECT id FROM receipts WHERE subject=${req.subject}
+            UNION SELECT receipt_id FROM receipt_consumers WHERE subject=${req.subject})
+        FOR UPDATE OF r`;
+      if (conflicts.some(r => !rejectedByContentFilter(r) && req.exclusiveWith!.some(c => c.purpose === r.purpose &&
+        (c.attemptTag === receiptAttemptTag(r.logical_key) || ["pending", "unknown"].includes(r.status))))) {
+        throw new ReceiptBusyError("文章处理路径已经改变，请恢复本轮已有回执");
+      }
+    }
     // A changed identity cannot bypass an unresolved paid call for the same article input.
     // Review candidates share the article's unresolved-call guard, but keep distinct logical keys.
     // Consumers also cover responses shared by articles. Different revisions have distinct subjects.
@@ -206,7 +252,9 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
     // "unknown": the request may have reached the provider (timeout, reset): do not re-send automatically.
     const message = (error instanceof ProviderRejectedError ? error.message : String(error)).slice(0, 2000);
     await sql.begin(async (tx) => {
-      await tx`UPDATE receipts SET status = ${status}, error = ${message}, updated_at = now() WHERE id = ${receiptId}`;
+      await tx`UPDATE receipts SET status = ${status}, error = ${message},
+        request=coalesce(request, '{}'::jsonb) || ${tx.json({ providerRejection: error instanceof ProviderRejectedError && error.contentFiltered ? "content_filter" : null })},
+        updated_at = now() WHERE id = ${receiptId}`;
       await tx`UPDATE receipt_attempts SET status = ${status}, error = ${message}, latency_ms = ${Date.now() - started}, finished_at = now() WHERE id = ${attemptId}`;
     });
     if (status === "unknown") throw new ReceiptUnknownError(receiptId, error instanceof Error ? error.message : String(error), { cause: error });
@@ -301,7 +349,8 @@ export async function markStalePendingReceipts(): Promise<number> {
  */
 export async function releaseUnknownReceipt(db: Db, id: number, error: string): Promise<{ subject: string | null; purpose: string } | null> {
   const [released] = await db<{ subject: string | null; purpose: string }[]>`
-    UPDATE receipts SET status = 'failed', error = ${error}, updated_at = now() WHERE id = ${id} AND status = 'unknown' RETURNING subject, purpose`;
+    UPDATE receipts SET status = 'failed', error = ${error}, request=coalesce(request, '{}'::jsonb) || '{"providerRejection":null}'::jsonb,
+      updated_at = now() WHERE id = ${id} AND status = 'unknown' RETURNING subject, purpose`;
   if (released) await db`UPDATE receipt_attempts SET status = 'failed', error = ${error} WHERE receipt_id = ${id} AND status = 'unknown'`;
   return released ?? null;
 }
@@ -312,5 +361,6 @@ export async function completeReceipt(db: Db, receiptId: number): Promise<void> 
 
 /** Marks a received response that could not be used (e.g. unparsable) so a fresh attempt can be made. */
 export async function rejectReceivedResponse(receiptId: number, reason: string): Promise<void> {
-  await sql`UPDATE receipts SET status = 'failed', error = ${reason.slice(0, 2000)}, updated_at = now() WHERE id = ${receiptId}`;
+  await sql`UPDATE receipts SET status = 'failed', error = ${reason.slice(0, 2000)},
+    request=coalesce(request, '{}'::jsonb) || '{"providerRejection":null}'::jsonb, updated_at = now() WHERE id = ${receiptId}`;
 }
