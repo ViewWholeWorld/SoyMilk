@@ -7,7 +7,7 @@ import { tag } from "./setup.ts";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
-import { upsertMaterial } from "@aihot/backend/content/materials";
+import { contentHash, upsertMaterial } from "@aihot/backend/content/materials";
 import { identityKeyForUrl } from "@aihot/backend/lib/url";
 
 const SOURCE = `test-materials-${tag()}`;
@@ -21,6 +21,31 @@ after(() => closeDb());
 const state = async (id: string) =>
   (await sql<{ revision: number; title: string; content_hash: string | null; processing_state: string }[]>`
     SELECT revision, title, content_hash, processing_state FROM articles WHERE id = ${id}`)[0]!;
+
+test("R04：图片和引用事实修正推进 revision；重复及签名元数据刷新不重评",async()=>{
+  const m={sourceId:SOURCE,url:`https://example.test/media-${tag()}`,identityKey:`test-media:${tag()}`,title:"图片引用回归",bodyText:"固定正文",via:"fetch" as const};
+  const quote=(text:string)=>({tweetId:`${tag()}`,authorName:"作者",handle:"author",text:"主帖",quoted:{authorName:"引用作者",handle:"quoted",text,url:"https://x.com/quoted/status/123"}});
+  const post=quote("旧引用");
+  const first=await upsertMaterial({...m,media:[{kind:"image",url:"https://example.test/old.png"}],xPost:post});
+  const next={...m,media:[{kind:"image" as const,url:"https://example.test/new.png?X-Amz-Signature=one&X-Amz-Expires=60"}],xPost:{...post,quoted:{...post.quoted,text:"更正后的引用"}}};
+  assert.equal((await upsertMaterial(next)).revised,true);
+  assert.equal((await upsertMaterial(next)).revised,false);
+  const refreshed={...next,media:[{...next.media[0]!,width:800,url:"https://example.test/new.png?X-Amz-Signature=two&X-Amz-Expires=120"}]};
+  assert.equal((await upsertMaterial(refreshed)).revised,false);
+  const [row]=await sql`SELECT revision,media,x_post FROM articles WHERE id=${first.articleId}`;
+  assert.equal(row!.revision,2);assert.equal(row!.media[0].url,refreshed.media[0]!.url);assert.equal(row!.x_post.quoted.text,"更正后的引用");
+  assert.equal((await upsertMaterial({...m})).revised,false,"缺省媒体和引用保留当前输入");
+  assert.equal((await upsertMaterial({...m,media:[],xPost:null})).revised,true,"显式移除事实输入也形成新修订");
+});
+
+test("R04：旧文字 hash 基线不批量重评，第一次实际媒体更换仍被识别",async()=>{
+  const m={sourceId:SOURCE,url:`https://example.test/legacy-media-${tag()}`,title:"旧 hash",bodyText:"旧正文",via:"fetch" as const,media:[{kind:"image" as const,url:"https://example.test/one.png"}]};
+  const a=await upsertMaterial(m),oldHash=contentHash({title:m.title,bodyText:m.bodyText});
+  await sql`UPDATE articles SET content_hash=${oldHash} WHERE id=${a.articleId}`;
+  assert.equal((await upsertMaterial(m)).revised,false);
+  assert.equal((await upsertMaterial({...m,bodyText:undefined,media:[]})).revised,false,"不含正文的列表不能清除正文配图");
+  assert.equal((await upsertMaterial({...m,media:[{kind:"image",url:"https://example.test/two.png"}]})).revised,true);
+});
 
 /** An article as a history import writes it: imported content, no hash, no history row, analysed. */
 async function imported(url: string) {

@@ -30,6 +30,16 @@ export async function modelWorkflows(h: HttpRuntime, scenario: (name: string, ru
     assert.ok(assignments.capabilities.some((row: any) => row.key === "score"));
     assert.ok(assignments.choices.some((row: any) => row.key === `connection:${connection.id}`));
   });
+  await scenario("R06：非默认连接被能力引用时删除返回 409，解除引用后删除成功", async () => {
+    const c = await write("POST", "model-config/connections", { name: "HTTP 引用保护", type: "api-key", model: "reference-model", baseUrl: "http://127.0.0.1:1/v1", apiKey: "fictional-reference-key" });
+    await write("POST", "models/score", { model: `connection:${c.id}`, reason: "HTTP 引用验收" });
+    const rejected = await write("DELETE", `model-config/connections/${c.id}`, undefined, 409);
+    assert.ok(JSON.stringify(rejected).includes("score"));
+    assert.ok((await read("model-config")).connections.some((row: any) => row.id === c.id));
+    assert.equal((await read("model-assignments")).capabilities.find((row: any) => row.key === "score").current.model, `connection:${c.id}`);
+    await write("POST", "models/score", { model: null, reason: "HTTP 解除引用" });
+    assert.equal((await write("DELETE", `model-config/connections/${c.id}`, undefined)).deleted, true);
+  });
   await scenario("连接表单切换预设与登录方式后保存新归属，手动和未知归属保留", async () => {
     const counts = async () => ({ ...((await sql`SELECT (SELECT count(*)::int FROM receipts) AS receipts,(SELECT count(*)::int FROM receipt_attempts) AS attempts`)[0]) });
     const before = await counts();

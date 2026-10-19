@@ -11,6 +11,7 @@ import { config } from "@aihot/backend/config";
 import { closeDb, sql } from "@aihot/backend/db";
 import { forwardFeedbackToFeishu } from "@aihot/backend/notify/feishu";
 import { forwardPendingFeedback, submitFeedback } from "@aihot/backend/operations/feedback";
+import { eraseFeedback, feedbackScreenshot } from "@aihot/backend/admin/feedback";
 
 const T = tag();
 config.dataDir = mkdtempSync(path.join(tmpdir(), "aihot-feedback-"));
@@ -102,4 +103,24 @@ test("imported feedback that was never forwarded is not sent now", async () => {
   await forwardPendingFeedback();
   assert.equal((await state(row!.id)).forwarded, false);
   assert.equal(sentFor(row!.id), undefined);
+});
+
+test("R01：并发上传相同字节使用独立文件，删除或转发不影响另一条",async()=>{
+  process.env.FEISHU_INTERNAL_ENABLED="false";
+  const input={content:"相同截图合成反馈",screenshot:{mime:"image/png",data:PNG},userAgent:"fixture"};
+  const [a,b]=await Promise.all([submitFeedback({...input,ip:"192.0.2.61"}),submitFeedback({...input,ip:"192.0.2.62"})]);
+  const fa=await feedbackScreenshot(a.id),fb=await feedbackScreenshot(b.id);
+  assert.ok(fa&&fb&&fa!==fb); assert.ok(existsSync(fa)&&existsSync(fb));
+  await eraseFeedback(a.id,"本地删除","test"); assert.ok(!existsSync(fa));assert.ok(existsSync(fb));
+  process.env.FEISHU_INTERNAL_ENABLED="true";assert.equal(await forwardFeedbackToFeishu(b.id),"sent");assert.ok(!existsSync(fb));
+});
+
+test("R01：旧版共享截图保留到最后一个引用，删除和转发可并发",async()=>{
+  const first=await submit();
+  const [row]=await sql`SELECT screenshot_key FROM feedback WHERE id=${first.id}`;
+  const [second]=await sql`INSERT INTO feedback(content,source_hash,screenshot_key,forward_error) VALUES('旧版共享截图','fixture-shared',${row!.screenshot_key},'pending') RETURNING id`;
+  await eraseFeedback(first.id,"删除第一个引用","test");assert.ok(existsSync(first.file));
+  const [third]=await sql`INSERT INTO feedback(content,source_hash,screenshot_key,forward_error) VALUES('旧版共享截图并发','fixture-shared-2',${row!.screenshot_key},'pending') RETURNING id`;
+  await Promise.all([eraseFeedback(Number(second!.id),"删除共享引用","test"),forwardFeedbackToFeishu(Number(third!.id))]);
+  assert.ok(!existsSync(first.file));assert.equal((await state(Number(third!.id))).screenshot_key,`feishu:img_${T}`);
 });

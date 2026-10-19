@@ -76,7 +76,11 @@ const scoreCall = (model: string) => SCORE_CALL[model] ?? { temperature: 0.2, ma
 /** The score prompt: the industry's taste (industry/prompts/selection-score.md). */
 export const SCORE_SYSTEM = promptText("selection-score");
 
-export const ScoreSchema = z.object({ attentionScore: z.coerce.number().int().min(0).max(100) });
+// 兼容规范的整数字符串；空值、布尔、数组、空白及指数写法不能伪装成低分。
+export const ScoreSchema = z.object({ attentionScore: z.preprocess(
+  value => typeof value === "string" && /^(?:0|[1-9]\d{0,2})$/.test(value) ? Number(value) : value,
+  z.number().int().min(0).max(100),
+) });
 
 const SCORE_TIME = new Intl.DateTimeFormat("sv-SE", {
   timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
@@ -614,6 +618,9 @@ export interface AnalyzeResult {
 export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Promise<AnalyzeResult | null> {
   const input = await loadAnalyzeInput(articleId);
   if (!input) return null;
+  if (input.processingAttemptTag !== (opts.attemptTag ?? null)) {
+    return { analysisId: null, stale: true, output: null, receiptIds: [], reused: true };
+  }
   // Its page first; extraction queues the analysis again (normally the queue already routed it there).
   if (waitsForPage(input)) return { analysisId: null, stale: false, needsBody: true, output: null, receiptIds: [], reused: true };
   const run = await runAnalysis(input, opts);
@@ -631,14 +638,15 @@ export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Pr
     ...(run.combined ? { combinedStep: run.combined } : {}),
   };
   const committed = await sql.begin(async (tx) => {
-    const [current] = await tx<{ revision: number }[]>`SELECT revision FROM articles WHERE id = ${articleId} FOR UPDATE`;
-    const stale = !current || current.revision !== input.revision;
+    const [current] = await tx<{ revision: number; processing_attempt_tag: string | null }[]>`
+      SELECT revision, processing_attempt_tag FROM articles WHERE id = ${articleId} FOR UPDATE`;
+    const stale = !current || current.revision !== input.revision || current.processing_attempt_tag !== (opts.attemptTag ?? null);
     const [row] = await tx<{ id: number }[]>`
       INSERT INTO analyses (article_id, input_revision, origin, model, prompt_version, receipt_ids, relevance, category, tags,
         subjects, title_zh, summary_zh, reason_zh, score, selected, output)
       VALUES (${articleId}, ${input.revision}, 'model', ${w?.model ?? run.prefilter.model}, ${run.combined ? `${ANALYZE_PROMPT_VERSION}+${COMBINED_VERSIONS[run.combined]}` : ANALYZE_PROMPT_VERSION}, ${receiptIds},
         ${out.relevance}, ${out.category}, ${out.tags}, ${out.subjects}, ${out.titleZh}, ${out.summaryZh}, ${out.reasonZh},
-        ${out.score}, ${out.selected}, ${tx.json(detail as never)})
+        ${out.score}, ${out.selected}, ${tx.json({ ...detail, attemptTag: opts.attemptTag ?? null, stale } as never)})
       RETURNING id`;
     for (const id of receiptIds) await completeReceipt(tx, id);
     if (!stale) {

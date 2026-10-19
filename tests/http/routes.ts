@@ -39,6 +39,7 @@ export const adminReads = [
 ];
 export const adminWrites: [string, string][] = [
   ["POST", "model-suppliers"], ["POST", "model-config/connections"], ["POST", "model-config/active"],
+  // 删除还须业务验收默认连接及能力引用冲突，见 models.ts。
   ["DELETE", "model-config/connections/:id"], ["POST", "model-config/codex/login"],
   ["POST", "model-config/codex/login/:id/cancel"], ["POST", "model-config/codex/logout"], ["POST", "model-config/codex/models"],
   ["POST", "sources"], ["POST", "sources/preview"], ["PATCH", "sources/:id"], ["POST", "sources/:id/preview"], ["POST", "sources/:id/fetch"],

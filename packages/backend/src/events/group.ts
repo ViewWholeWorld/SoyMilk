@@ -275,7 +275,7 @@ async function decide(articleId: string, opts: GroupOptions): Promise<GroupResul
   }
 
   const [an] = await sql<{ id: number; relevance: string | null; title_zh: string | null; summary_zh: string | null; output: Record<string, any> | null }[]>`
-    SELECT id, relevance, title_zh, summary_zh, output FROM analyses WHERE article_id = ${articleId} ORDER BY input_revision DESC, id DESC LIMIT 1`;
+    SELECT id, relevance, title_zh, summary_zh, output FROM analyses WHERE article_id = ${articleId} AND output->>'stale' IS DISTINCT FROM 'true' ORDER BY input_revision DESC, id DESC LIMIT 1`;
   // 人工更正优先；旧analysis的事件框架不能把被改掉的主张重新带回来。
   const corrected = !!publication && (publication.title !== an?.title_zh || publication.summary !== an?.summary_zh);
   const frame = (corrected ? null : an?.output?.fact ?? null) as Record<string, any> | null;
@@ -366,7 +366,7 @@ async function decide(articleId: string, opts: GroupOptions): Promise<GroupResul
     await lockStoryMembership(tx);
     const [current] = await tx<{ revision: number; mode: string; title: string | null; summary: string | null; visibility: string; analysis_id: number | null }[]>`
       SELECT a.revision,s.participation_mode AS mode,p.title,p.summary,coalesce(o.visibility,p.visibility,'public') AS visibility,
-        (SELECT id FROM analyses WHERE article_id=a.id ORDER BY input_revision DESC,id DESC LIMIT 1) AS analysis_id
+        (SELECT id FROM analyses WHERE article_id=a.id AND output->>'stale' IS DISTINCT FROM 'true' ORDER BY input_revision DESC,id DESC LIMIT 1) AS analysis_id
       FROM articles a JOIN sources s ON s.id=a.source_id LEFT JOIN publications p ON p.article_id=a.id
       LEFT JOIN editorial_overrides o ON o.article_id=a.id WHERE a.id=${articleId}`;
     // 与撤回共用article锁，来源隔离/合并共用成员锁；晚到模型不得创建旧文字副本。

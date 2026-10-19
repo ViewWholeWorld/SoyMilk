@@ -95,7 +95,7 @@ export async function resumeSourceArticles(sourceId: string, db: Db): Promise<vo
       UPDATE articles a SET processing_state = 'new', processing_attempts = 0, processing_error = NULL,
         processing_retry_at = NULL, processing_queued_at = NULL
       WHERE a.source_id = ${sourceId} AND a.processing_state = 'skipped'
-        AND NOT EXISTS (SELECT 1 FROM analyses n WHERE n.article_id = a.id AND n.input_revision = a.revision)
+        AND NOT EXISTS (SELECT 1 FROM analyses n WHERE n.article_id = a.id AND n.input_revision = a.revision AND n.output->>'stale' IS DISTINCT FROM 'true')
       RETURNING a.id, a.discovered_at
     ) SELECT id FROM resumed ORDER BY discovered_at DESC, id LIMIT 500`;
   for (const row of rows) await queueProcessing(row.id, { db });
@@ -143,16 +143,17 @@ async function processRevision(articleId: string, row: NonNullable<Awaited<Retur
     const result = await analyzeArticle(articleId, { attemptTag: opts.attemptTag });
     if (!result) return { state: "missing" };
     // Only a title or a feed summary: the article page first; extraction queues the analysis again.
+    if (result.stale) return { state: "stale" };
     if (result.needsBody || !result.output) {
       await queueProcessing(articleId, { step: "extract" });
       return { state: "fetching-body" };
     }
-    if (result.stale) return { state: "stale" }; // the newer revision has its own job
     await publishArticle(articleId);
     // History is archived but founds no event (isHistorical).
     if (result.output.relevance === "pass" && !row.historical) await enqueue(QUEUES.group, { articleId }, { singletonKey: articleId, priority: PRIORITY.live });
     await sql`UPDATE articles SET processing_attempts = 0, processing_retry_at = NULL, processing_queued_at = NULL
-              WHERE id = ${articleId} AND revision = ${row.revision}`;
+              WHERE id = ${articleId} AND revision = ${row.revision}
+                AND processing_attempt_tag IS NOT DISTINCT FROM ${opts.attemptTag ?? null}`;
     return { state: result.output.relevance };
   } catch (error) {
     if (error instanceof AnalysisInterruptedError || shutdownSignal.signal.aborted) throw error;
@@ -190,34 +191,37 @@ export async function stopOnUnknownReceipt(articleId: string, revision: number, 
 }
 
 /** Waits and retries for passing trouble; marks "failed" for refusals and exhausted retries. */
-async function afterFailure(articleId: string, revision: number, error: unknown): Promise<{ state: string; retryAt?: Date }> {
+async function afterFailure(articleId: string, revision: number, attemptTag: string | null, error: unknown): Promise<{ state: string; retryAt?: Date }> {
   // Let pg-boss retry this job after restart, reusing settled receipts. A deploy is not an article
   // failure and must neither consume processing_attempts nor turn an incomplete chain terminal.
   if (error instanceof AnalysisInterruptedError || shutdownSignal.signal.aborted) throw error;
-  const message = String(error instanceof Error ? error.message : error).slice(0, 500);
-  const waiting = requestWait(error);
-  if (waiting) {
-    // Not the article's fault: the same request is in flight, or the budget window is full.
-    const seconds = waiting.retryAfterSeconds;
-    const retryAt = new Date(Date.now() + seconds * 1000);
-    await sql`UPDATE articles SET processing_state = 'new', processing_error = ${message}, processing_retry_at = ${retryAt}, processing_queued_at = NULL
-              WHERE id = ${articleId} AND revision = ${revision}`;
-    return { state: "waiting", retryAt };
-  }
-  const [a] = await sql<{ processing_attempts: number }[]>`SELECT processing_attempts FROM articles WHERE id = ${articleId} AND revision = ${revision}`;
-  if (!a) return { state: "stale" };
-  const attempts = a.processing_attempts + 1;
-  const refused = error instanceof ProviderRejectedError && !error.retryable;
-  const exhausted = attempts > RETRY_MINUTES.length || (error instanceof ModelOutputError && attempts >= MAX_OUTPUT_FAILURES);
-  if (refused || exhausted) {
-    await sql`UPDATE articles SET processing_state = 'failed', processing_error = ${message}, processing_attempts = ${attempts},
+  return sql.begin(async tx => {
+    // 锁住当前轮次后再读失败计数，避免旧任务在人工重评后写回等待或失败状态。
+    const [current] = await tx<{ processing_attempts: number }[]>`
+      SELECT processing_attempts FROM articles WHERE id=${articleId} AND revision=${revision}
+        AND processing_attempt_tag IS NOT DISTINCT FROM ${attemptTag} FOR UPDATE`;
+    if (!current) return { state: "stale" };
+    const message = String(error instanceof Error ? error.message : error).slice(0, 500);
+    const waiting = requestWait(error);
+    if (waiting) {
+      const retryAt = new Date(Date.now() + waiting.retryAfterSeconds * 1000);
+      await tx`UPDATE articles SET processing_state = 'new', processing_error = ${message}, processing_retry_at = ${retryAt}, processing_queued_at = NULL
+                WHERE id = ${articleId} AND revision = ${revision}`;
+      return { state: "waiting", retryAt };
+    }
+    const attempts = current.processing_attempts + 1;
+    const refused = error instanceof ProviderRejectedError && !error.retryable;
+    const exhausted = attempts > RETRY_MINUTES.length || (error instanceof ModelOutputError && attempts >= MAX_OUTPUT_FAILURES);
+    if (refused || exhausted) {
+      await tx`UPDATE articles SET processing_state = 'failed', processing_error = ${message}, processing_attempts = ${attempts},
                 processing_retry_at = NULL, processing_queued_at = NULL WHERE id = ${articleId} AND revision = ${revision}`;
-    return { state: "failed" };
-  }
-  const retryAt = new Date(Date.now() + RETRY_MINUTES[attempts - 1]! * 60_000);
-  await sql`UPDATE articles SET processing_state = 'new', processing_error = ${message}, processing_attempts = ${attempts},
+      return { state: "failed" };
+    }
+    const retryAt = new Date(Date.now() + RETRY_MINUTES[attempts - 1]! * 60_000);
+    await tx`UPDATE articles SET processing_state = 'new', processing_error = ${message}, processing_attempts = ${attempts},
               processing_retry_at = ${retryAt}, processing_queued_at = NULL WHERE id = ${articleId} AND revision = ${revision}`;
-  return { state: "retrying", retryAt };
+    return { state: "retrying", retryAt };
+  });
 }
 
 export async function registerContentJobs(boss: PgBoss, concurrency = Number(process.env.ANALYZE_CONCURRENCY || 6)) {
@@ -227,7 +231,7 @@ export async function registerContentJobs(boss: PgBoss, concurrency = Number(pro
     try {
       return await processRevision(articleId, row, { attemptTag });
     } catch (error) {
-      return afterFailure(articleId, row.revision, error);
+      return afterFailure(articleId, row.revision, attemptTag ?? null, error);
     }
   });
 }

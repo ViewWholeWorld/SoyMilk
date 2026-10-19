@@ -9,6 +9,7 @@ import type { HttpRuntime } from "./runtime.ts";
 import { attempt, hotFixture, publicationFixture } from "./fixtures.ts";
 import { proxiedImage } from "@aihot/backend/media/imgproxy";
 import { composeStoryDigest } from "@aihot/backend/events/digest";
+import { publishArticle } from "@aihot/backend/publication/publish";
 
 export async function contentWorkflows(h: HttpRuntime, scenario: (name: string, run: () => Promise<void>) => Promise<void>) {
   const read = async (path: string, status = 200) => (await h.request("GET", path, status, { admin: path.startsWith("/api/admin/"), level: status < 400 ? "business" : "boundary" })).data;
@@ -127,6 +128,11 @@ export async function contentWorkflows(h: HttpRuntime, scenario: (name: string, 
     const first = await write("POST", `/api/admin/content/${id}/rerun`, { step: "analyze" }, 200, headers);
     const second = await write("POST", `/api/admin/content/${id}/rerun`, { step: "analyze" }, 200, headers);
     assert.deepEqual(second, first); assert.ok(first.jobId);
+    await sql`INSERT INTO analyses(article_id,input_revision,origin,relevance,title_zh,summary_zh,selected,score,output)
+      SELECT id,revision,'rule','pass','迟到标题','不应公开的迟到摘要',true,90,'{"stale":true,"attemptTag":null}'::jsonb FROM articles WHERE id=${id}`;
+    await publishArticle(id);
+    const current = await read(`/api/site/items/${id}`);
+    assert.equal(current.title, "HTTP 修正标题"); assert.notEqual(current.summary, "不应公开的迟到摘要", "R07：公开 HTTP 读取必须排除迟到分析");
     const targetPublicId = randomUUID();
     const [target] = await sql`INSERT INTO stories(public_id,title) VALUES(${targetPublicId},'HTTP 目标事件') RETURNING id`;
     await write("POST", "/api/admin/stories/merge", { from: publication.storyId, into: Number(target!.id), reason: "验收合并" });

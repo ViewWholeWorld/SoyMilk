@@ -6,7 +6,7 @@ import { after, afterEach, before, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
 import { upsertMaterial } from "@aihot/backend/content/materials";
 import { rerun } from "@aihot/backend/admin/content";
-import { processArticle, queueProcessing, registerContentJobs, sweepUnprocessed } from "@aihot/backend/jobs/content";
+import { processArticle, queueProcessing, registerContentJobs, stopOnUnknownReceipt, sweepUnprocessed } from "@aihot/backend/jobs/content";
 import { enqueue, getBoss, QUEUES, stopBoss } from "@aihot/backend/jobs/queue";
 import { recoverStaleWork, releaseReceipt } from "@aihot/backend/operations/recover";
 import { ReceiptUnknownError } from "@aihot/backend/providers/receipts";
@@ -201,4 +201,63 @@ test("a late refusal for an old revision preserves the new revision's completed 
   assert.equal(current!.processing_attempts, 0);
   assert.equal(current!.processing_error, null);
   assert.equal(current!.processing_retry_at, null);
+});
+
+test("R07：同一正文的旧 worker 轮次迟到失败不能重置人工重评", async () => {
+  const id = await article("round-race"), asked = gate(), release = gate();
+  const failed = gate(), resumeFailure = gate(), originalBegin = sql.begin;
+  let paused = false;
+  (sql as any).begin = (...args: any[]) => {
+    if (!paused && typeof args[0] === "function" && String(args[0]).includes("SELECT processing_attempts FROM articles")) {
+      paused = true; failed.open();
+      return resumeFailure.promise.then(() => (originalBegin as any)(...args));
+    }
+    return (originalBegin as any)(...args);
+  };
+  heldFailure = { input: "round-race", asked, release };
+  const jobId = await queueProcessing(id); await asked.promise;
+  try {
+    heldFailure = null; original = true;
+    const command = await rerun(id, "analyze", `round-race-${T}`, "test");
+    await sql`UPDATE pgboss.job SET start_after='2100-01-01' WHERE id=${command!.jobId}`;
+    release.open(); await failed.promise;
+    const attemptTag = `admin:round-race-${T}`;
+    assert.equal((await processArticle(id, { attemptTag })).state, "block");
+    // 新任务还在排队；旧轮次完成不能清除其状态和标识。
+    await sql`UPDATE articles SET processing_queued_at='2100-01-01' WHERE id=${id}`;
+    const [before] = await sql`SELECT processing_state,processing_attempts,processing_error,processing_retry_at,processing_queued_at,processing_attempt_tag FROM articles WHERE id=${id}`;
+    resumeFailure.open();
+    await waitFor(async () => (await sql`SELECT state FROM pgboss.job WHERE id=${jobId}`)[0]?.state === "completed");
+    const [after] = await sql`SELECT processing_state,processing_attempts,processing_error,processing_retry_at,processing_queued_at,processing_attempt_tag FROM articles WHERE id=${id}`;
+    assert.deepEqual(after, before); assert.ok(command!.jobId);
+  } finally { heldFailure = null; release.open(); resumeFailure.open(); (sql as any).begin = originalBegin; }
+});
+
+test("R07：旧轮次预算等待和未知回执均不改变新轮次状态", async () => {
+  const id = await article("budget-round"), waiting = gate(), resume = gate(), originalBegin = sql.begin;
+  const [budget] = await sql`SELECT per_minute FROM budgets WHERE service='dashscope'`;
+  let paused = false;
+  (sql as any).begin = (...args: any[]) => {
+    if (!paused && typeof args[0] === "function" && String(args[0]).includes("SELECT processing_attempts FROM articles")) {
+      paused = true; waiting.open(); return resume.promise.then(() => (originalBegin as any)(...args));
+    }
+    return (originalBegin as any)(...args);
+  };
+  try {
+    await sql`UPDATE budgets SET per_minute=0 WHERE service='dashscope'`;
+    const jobId = await queueProcessing(id); await waiting.promise;
+    await sql`UPDATE budgets SET per_minute=${budget!.per_minute} WHERE service='dashscope'`;
+    const command = await rerun(id,"analyze",`budget-round-${T}`,"test");
+    await sql`UPDATE pgboss.job SET start_after='2100-01-01' WHERE id=${command!.jobId}`;
+    original=true; assert.equal((await processArticle(id,{attemptTag:`admin:budget-round-${T}`})).state,"block");
+    const snapshot = () => sql`SELECT processing_state,processing_attempts,processing_error,processing_retry_at,processing_queued_at,processing_attempt_tag FROM articles WHERE id=${id}`;
+    const before = await snapshot(); resume.open();
+    await waitFor(async () => (await sql`SELECT state FROM pgboss.job WHERE id=${jobId}`)[0]?.state==="completed");
+    assert.deepEqual(await snapshot(),before);
+    assert.equal((await stopOnUnknownReceipt(id,1,null,new ReceiptUnknownError(0,"合成旧未知回执"))).state,"stale");
+    assert.deepEqual(await snapshot(),before);
+  } finally {
+    resume.open(); (sql as any).begin=originalBegin;
+    await sql`UPDATE budgets SET per_minute=${budget!.per_minute} WHERE service='dashscope'`;
+  }
 });
