@@ -2,11 +2,12 @@
 // feedback chat, operations alert chat, image upload). Content groups use custom bot webhooks.
 // Alerts and feedback never go to content groups, and content never goes to internal chats.
 // Everything outward is off unless explicitly enabled (development and parallel runs stay silent).
-import { readFile, unlink } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { beijingDate, beijingTime } from "@aihot/contracts/time";
 import { config, credential } from "../config.ts";
 import { sql } from "../db.ts";
+import { removeUnusedScreenshot, screenshotPath } from "../operations/feedback-screenshots.ts";
 
 const API = "https://open.feishu.cn/open-apis";
 
@@ -133,22 +134,23 @@ async function screenshotFor(fb: { id: number; screenshot_key: string | null; cr
   if (key === "gone:upload") return { imageKey: null, note: "（截图未能上传，已删除）" };
   if (key === "gone:missing") return { imageKey: null, note: "（截图文件已不存在）" };
   if (!key?.startsWith("local:")) return { imageKey: null, note: null };
-  const file = path.join(config.dataDir, "feedback-screenshots", key.slice("local:".length));
+  const file = screenshotPath(key);
+  if (!file) return { imageKey: null, note: "（截图路径无效）" };
   const data = await readFile(file).catch(() => null);
   if (!data) {
-    await sql`UPDATE feedback SET screenshot_key = 'gone:missing' WHERE id = ${fb.id}`;
+    await sql`UPDATE feedback SET screenshot_key = 'gone:missing' WHERE id = ${fb.id} AND screenshot_key=${key}`;
     return { imageKey: null, note: "（截图文件已不存在）" };
   }
   try {
     const imageKey = await uploadImage(data, path.basename(file));
-    await sql`UPDATE feedback SET screenshot_key = ${`feishu:${imageKey}`} WHERE id = ${fb.id}`;
-    await unlink(file).catch(() => {});
+    await sql`UPDATE feedback SET screenshot_key = ${`feishu:${imageKey}`} WHERE id = ${fb.id} AND screenshot_key=${key}`;
+    await removeUnusedScreenshot(key);
     return { imageKey, note: null };
   } catch (error) {
     // The forwarding sweep tries again; after a day the text goes without it.
     if (Date.now() - fb.created_at.getTime() < SCREENSHOT_GIVE_UP_MS) throw error;
-    await sql`UPDATE feedback SET screenshot_key = 'gone:upload' WHERE id = ${fb.id}`;
-    await unlink(file).catch(() => {});
+    await sql`UPDATE feedback SET screenshot_key = 'gone:upload' WHERE id = ${fb.id} AND screenshot_key=${key}`;
+    await removeUnusedScreenshot(key);
     return { imageKey: null, note: "（截图未能上传，已删除）" };
   }
 }
