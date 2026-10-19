@@ -5,7 +5,7 @@ import type { z } from "zod";
 import type { ReasoningEffort } from "@aihot/contracts/admin";
 import { config, credential } from "../config.ts";
 import { sha256 } from "../lib/ids.ts";
-import { completeReceipt, paidRequest, ProviderRejectedError, ProviderUnavailableError, rejectReceivedResponse, requestWait } from "./receipts.ts";
+import { completeReceipt, paidRequest, ProviderRejectedError, ProviderUnavailableError, rejectReceivedResponse, requestWait, storedReceipt } from "./receipts.ts";
 import { sql } from "../db.ts";
 import { chatGPTAccess } from "./chatgpt-auth.ts";
 import { chatGPTBody, requestChatGPT } from "./chatgpt.ts";
@@ -122,6 +122,8 @@ export interface ChatJsonOptions<S extends z.ZodType> {
   temperature?: number;
   maxTokens?: number;
   attemptTag?: string;
+  exclusiveWith?: Array<{ purpose: string; attemptTag: string }>;
+  materialHash?: string;
   timeoutMs?: number;
   /** false: the model answers in its own text format (no JSON mode); `parse` turns it into the schema's input. */
   json?: boolean;
@@ -144,7 +146,7 @@ export class ModelOutputError extends Error {
   }
 }
 
-function extractJson(text: string): unknown {
+export function extractJson(text: string): unknown {
   let t = text.trim();
   const fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(t);
   if (fence) t = fence[1]!;
@@ -249,8 +251,9 @@ async function executeChatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>, sp
       purpose: opts.purpose,
       subject: opts.subject,
       identity: { model: spec.model, promptVersion: opts.promptVersion, system: sha256(opts.system), user: sha256(userText), temperature, maxTokens, extra: spec.extra ?? null, ...(spec.reasoningEffort ? { reasoningEffort: spec.reasoningEffort } : {}), ...(access ? { transport: "chatgpt-responses-v1", registrationHash: sha256(access.registration) } : {}), ...(spec.connection ? { connection: spec.connection.generation } : {}), ...(codex ? { transport: "codex-app-server", account: codex.generation } : {}) },
-      requestSummary: { promptVersion: opts.promptVersion, systemHash: sha256(opts.system), userHash: sha256(userText), userChars: userText.length, temperature, maxTokens, reasoningEffort: spec.reasoningEffort ?? null },
+      requestSummary: { promptVersion: opts.promptVersion, systemHash: sha256(opts.system), userHash: sha256(userText), userChars: userText.length, temperature, maxTokens, reasoningEffort: spec.reasoningEffort ?? null, modelKey: opts.model, ...(opts.materialHash ? { materialHash: opts.materialHash } : {}) },
       attemptTag: opts.attemptTag,
+      exclusiveWith: opts.exclusiveWith,
       billingContext,
     },
     async () => {
@@ -285,7 +288,8 @@ async function executeChatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>, sp
       const text = await res.text();
       if (res.status < 200 || res.status >= 300) {
         const retryable = res.status === 429 || res.status >= 500;
-        throw new ProviderRejectedError(spec.connection ? `模型接口返回 HTTP ${res.status}` : `HTTP ${res.status}: ${text.slice(0, 500)}`, res.status, retryable);
+        throw new ProviderRejectedError(spec.connection ? `模型接口返回 HTTP ${res.status}` : `HTTP ${res.status}: ${text.slice(0, 500)}`,
+          res.status, retryable, !retryable && /contentFilter|"1301"/.test(text));
       }
       let json: Record<string, unknown>;
       try {
@@ -319,4 +323,22 @@ async function executeChatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>, sp
 
 export async function markReceiptsCompleted(ids: number[]): Promise<void> {
   for (const id of ids) await completeReceipt(sql, id);
+}
+
+/** 合并流程关闭后仍能消费已付费结果；不读取当前连接或发起网络请求。 */
+export async function reuseJsonReceipt<S extends z.ZodType>(id: number, schema: S, promptVersion: string,
+  opts: { parse?: (content: string) => unknown; materialHash?: string; userHash?: string } = {}): Promise<ChatJsonResult<z.infer<S>> | null> {
+  const saved = await storedReceipt(id);
+  if (!saved) return null;
+  if (!saved.request || saved.request.promptVersion !== promptVersion) throw new ProviderUnavailableError("configuration", "需要能消费该提示词版本的兼容程序，不能重新付费替代已有响应");
+  if (saved.request.materialHash ? opts.materialHash !== saved.request.materialHash : opts.userHash && opts.userHash !== saved.request.userHash) return null;
+  const response = saved.response as { choices?: Array<{ message?: { content?: string } }>; usage?: Record<string, unknown> };
+  const content = response.choices?.[0]?.message?.content ?? "";
+  try {
+    return { data: schema.parse(opts.parse ? opts.parse(content) : extractJson(content)), receiptId: id, reused: true,
+      model: typeof saved.request.modelKey === "string" ? saved.request.modelKey : saved.model, usage: response.usage ?? null };
+  } catch (error) {
+    await rejectReceivedResponse(id, `unusable output: ${String(error).slice(0, 500)}`);
+    throw new ModelOutputError(`已保存响应 ${id} 无法解析`, id);
+  }
 }

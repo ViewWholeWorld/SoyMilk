@@ -12,6 +12,10 @@ import { composeStoryDigest } from "@aihot/backend/events/digest";
 import { mergeStoryInto } from "@aihot/backend/events/merge";
 import { groupArticle } from "@aihot/backend/events/group";
 import { loadStoryDetail } from "@aihot/backend/publication/stories";
+import { config } from "@aihot/backend/config";
+
+// 本文件专门复现模型在途竞态；确定性单篇路径由 single-report-digest 覆盖。
+config.singleReportDigestReuse = false;
 
 const prompts: string[] = [];
 const safe = { title: "安全的新事件标题", digest: "只依据当前可公开报道重建的安全事件综述。", latest: "安全的最新进展" };
