@@ -12,6 +12,8 @@ import { isApiOwned, resolveRedirect } from "@aihot/contracts/http-policy";
 const PORT = Number(process.env.WEB_PORT || process.env.PORT || 3000);
 const HOST = process.env.WEB_HOST || "127.0.0.1";
 const API = new URL(process.env.API_BASE_URL || "http://127.0.0.1:3001");
+const configuredProxyTimeout = Number(process.env.API_PROXY_TIMEOUT_MS ?? 180_000);
+const PROXY_TIMEOUT_MS = Number.isFinite(configuredProxyTimeout) && configuredProxyTimeout > 0 ? configuredProxyTimeout : 180_000;
 /**
  * Whether a reverse proxy in front (Caddy, nginx) records the visitor in X-Forwarded-For. Without one
  * the header is never believed: a visitor could name any address and slip past the api's per-visitor
@@ -146,14 +148,42 @@ async function handle(req: import("node:http").IncomingMessage, res: import("nod
     const forwarded = String(req.headers["x-forwarded-for"] ?? "").split(",").map((v) => v.trim()).filter(Boolean);
     const client = TRUST_PROXY && forwarded.length ? forwarded[forwarded.length - 1]! : (req.socket.remoteAddress ?? "");
     const headers = { ...req.headers, "x-forwarded-for": client, "x-real-ip": client };
+    let response: import("node:http").IncomingMessage | undefined;
+    const cleanup = () => {
+      clearTimeout(deadline);
+      req.off("aborted", cancel);
+      res.off("close", cancel);
+      res.off("finish", cleanup);
+    };
+    const cancel = () => {
+      cleanup();
+      req.unpipe(upstream);
+      upstream.destroy();
+      response?.destroy();
+    };
+    const unavailable = (status: number, message: string) => {
+      cancel();
+      if (res.destroyed) return;
+      if (res.headersSent) return res.destroy();
+      res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+      res.end(message);
+    };
     const upstream = httpRequest({ hostname: API.hostname, port: API.port, path: raw, method: req.method, headers }, (up) => {
+      response = up;
+      if (res.destroyed) return cancel();
+      // SSE 仅限制等待响应头的时间；建立后由客户端取消终止，允许正常长连接。
+      if (String(up.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase() === "text/event-stream") clearTimeout(deadline);
+      up.on("error", () => unavailable(502, "api unavailable"));
       res.writeHead(up.statusCode ?? 502, up.headers);
       up.pipe(res);
     });
-    upstream.on("error", () => {
-      res.statusCode = 502;
-      res.end("api unavailable");
-    });
+    const deadline = setTimeout(() => unavailable(504, "api timeout"), PROXY_TIMEOUT_MS);
+    deadline.unref();
+    upstream.on("error", () => unavailable(502, "api unavailable"));
+    req.once("aborted", cancel);
+    res.once("close", cancel);
+    res.once("finish", cleanup);
+    if (req.aborted || res.destroyed) return cancel();
     return req.pipe(upstream);
   }
 
