@@ -1,4 +1,4 @@
-// In-doubt work. A stopped process leaves "pending" receipts and deliveries: they become
+// In-doubt work. A stopped process leaves "pending" receipts: they become
 // "unknown" and are never re-sent on their own. An unknown receipt is released once automatically after
 // half an hour without checking the provider's bill, so a lost answer costs at most one repeat; one that
 // turns unknown again waits for the admin, who checks the bill and releases it with a note. A released
@@ -7,7 +7,6 @@ import { audit, Conflict } from "../audit.ts";
 import { sql } from "../db.ts";
 import { receiptArticleSubject, resumeAfterRelease } from "../jobs/content.ts";
 import { retryReleasedReceiptJobs } from "../jobs/queue.ts";
-import { markStaleDeliveries } from "../notify/deliver.ts";
 import { consumersForRelease, markStalePendingReceipts, releaseUnknownReceipt } from "../providers/receipts.ts";
 
 const AUTO_RELEASE_AFTER_MS = 30 * 60_000;
@@ -48,7 +47,7 @@ export async function releaseReceipt(id: number, input: { billed: boolean; note:
 
 /**
  * Unknown receipts older than half an hour, released without checking the provider's bill. A request
- * released this way once and unknown again stays for the admin (the daily ops digest lists it).
+ * released this way once and unknown again stays for the admin (visible on the admin runs page).
  */
 export async function autoReleaseUnknownReceipts(now = Date.now()) {
   const rows = await sql<{ id: number }[]>`
@@ -68,5 +67,5 @@ export async function autoReleaseUnknownReceipts(now = Date.now()) {
 
 /** ops.recover, every 10 minutes and before the alerts look. */
 export async function recoverStaleWork() {
-  return { receipts: await markStalePendingReceipts(), released: await autoReleaseUnknownReceipts(), jobs: await retryReleasedReceiptJobs(), deliveries: await markStaleDeliveries() };
+  return { receipts: await markStalePendingReceipts(), released: await autoReleaseUnknownReceipts(), jobs: await retryReleasedReceiptJobs() };
 }

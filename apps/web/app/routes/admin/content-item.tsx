@@ -242,21 +242,6 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
                 {story?.story_id && <Button size="sm" onClick={() => setDialog("merge")}>把这个事件并入…</Button>}
               </div>
             </Step>
-            <Step title="投递" last meta={`${c.deliveries.length} 条`} tone={c.deliveries.some((d) => d.status === "unknown") ? "bad" : c.deliveries.length ? "accent" : "muted"}>
-              {c.deliveries.length ? (
-                <ul className="space-y-1">
-                  {c.deliveries.map((d, i) => (
-                    <li key={i} className="flex flex-wrap gap-2">
-                      <span>{d.target_key}</span>
-                      <Badge tone={d.status === "sent" ? "ok" : d.status === "unknown" ? "bad" : "muted"}>{d.status}</Badge>
-                      <span className="num text-ink-4">{bj(d.created_at)}{d.sent_at ? ` → ${bj(d.sent_at)}` : ""}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <span className="text-ink-4">没有推送记录</span>
-              )}
-            </Step>
           </ol>
         </Card>
 
@@ -294,7 +279,7 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
         description={
           p?.indexable
             ? "详情页改回 noindex 并移出站点地图；即使是精选，也不再自动收录，直到重新标记。"
-            : "详情页默认 noindex，精选内容自动收录。标记后（仅在公开状态下）改为 index、进入站点地图，并在下一次 IndexNow 提交。适合有独立价值、摘要与正文完整的内容。"
+            : "详情页默认 noindex，精选内容自动收录。标记后（仅在公开状态下）改为 index、进入站点地图。适合有独立价值、摘要与正文完整的内容。"
         }
         confirmLabel={p?.indexable ? "取消收录" : "标记收录"}
         busy={pending === "seo"}

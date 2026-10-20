@@ -2,9 +2,14 @@
 // title/summary prompts for everything else, the output parsing and the deterministic guards. The
 // wording lives in the industry pack (industry/prompts/); a failed guard falls back without a repair call.
 import { IDENTITY_CONTEXT_ALIASES, IDENTITY_LEXICON, PUBLISHER_DOMAINS } from "@aihot/industry/taxonomy";
-import { onlyXArticleLink } from "../sources/x.ts";
 import type { AnalyzeInputArticle } from "./input.ts";
 import { promptText } from "./prompts.ts";
+
+// 历史 X 长文只有链接而缺少正文时，仍保持无法确认内容的边界。
+function onlyXArticleLink(text: string | null | undefined): boolean {
+  const links = /https?:\/\/(?:www\.)?(?:x|twitter)\.com\/i\/article\/\d+/gi;
+  return links.test(text ?? "") && (text ?? "").replace(links, "").trim().length < 30;
+}
 
 export const PREFILTER_SYSTEM = promptText("prefilter");
 export const UNDERSTAND_SYSTEM = promptText("understand");

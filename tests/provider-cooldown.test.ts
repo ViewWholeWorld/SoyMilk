@@ -185,7 +185,7 @@ catch(error) { if (!(error instanceof BudgetExceededError)) throw error; console
 finally { await closeDb(); }`;
   const { stdout } = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", source, JSON.stringify(childRequest)], {
     cwd: process.cwd(), env: { PATH: process.env.PATH, DATABASE_URL: config.databaseUrl, AIHOT_CREDENTIALS_DIR: "/nonexistent-test-credentials",
-      AIHOT_DATA_DIR: config.dataDir, COLLECT_ENABLED: "false", MODEL_CALLS_ENABLED: "false", FEISHU_CONTENT_PUSH_ENABLED: "false", INDEXNOW_SUBMIT_ENABLED: "false" }, timeout: 15_000,
+      AIHOT_DATA_DIR: config.dataDir, COLLECT_ENABLED: "false", MODEL_CALLS_ENABLED: "false", INDEXNOW_SUBMIT_ENABLED: "false" }, timeout: 15_000,
   });
   assert.equal(stdout.trim(), "persistent-wait");
 });

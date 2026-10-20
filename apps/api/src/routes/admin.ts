@@ -1,6 +1,5 @@
 // /api/admin/*: queries are GET, creation POST, edits PATCH, business commands POST.
 // Every route goes through adminHandler (session + CSRF); manual changes are audited in the modules.
-import { readFile } from "node:fs/promises";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { actorOf } from "@aihot/backend/admin/auth";
 
@@ -15,16 +14,14 @@ import { activateConnection, cancelLogin, codexModels, codexStatus, connectCodex
 import { sha256 } from "@aihot/backend/lib/ids";
 
 import { contentChain, overrideFields, rerun, searchContent, setSeoIndexed, setVisibility } from "@aihot/backend/admin/content";
-import { banSource, eraseFeedback, feedbackScreenshot, listFeedback, unbanSource, updateFeedback } from "@aihot/backend/admin/feedback";
 import { requeueFailedArticles, runsOverview } from "@aihot/backend/admin/runs";
 import { dismissFollowUp, restoreFollowUp } from "@aihot/backend/operations/alerts";
-import { replaceContactQr, setTargetEnabled, settingsOverview, updateBudget } from "@aihot/backend/admin/settings";
+import { settingsOverview, updateBudget } from "@aihot/backend/admin/settings";
 import { createSource, fetchNow, listSources, previewSource, previewStoredSource, sourceDetail, updateSource } from "@aihot/backend/admin/sources";
 import { navCounts } from "@aihot/backend/admin/navigation";
 import { audit, listAudit } from "@aihot/backend/audit";
 import { detachFromFact, mergeStories } from "@aihot/backend/events/corrections";
 import { releaseReceipt } from "@aihot/backend/operations/recover";
-import { resolveDelivery } from "@aihot/backend/notify/deliver";
 import { sendProblem } from "../http/respond.ts";
 import { adminHandler } from "./admin-auth.ts";
 
@@ -35,12 +32,6 @@ const param = (req: FastifyRequest, name: string) => (req.params as Record<strin
 const notFound = (req: FastifyRequest, reply: FastifyReply) => sendProblem(req, reply, { status: 404, code: "not_found", detail: "Not found." });
 const orNotFound = <T>(req: FastifyRequest, reply: FastifyReply, value: T | null) => (value === null || value === undefined ? notFound(req, reply) : value);
 const page = (req: FastifyRequest) => Math.max(1, Number(q(req).page) || 1);
-
-function decodeImage(dataUrl: unknown): Buffer {
-  const m = /^data:image\/(png|jpeg|webp);base64,(.+)$/s.exec(String(dataUrl ?? ""));
-  if (!m) throw Object.assign(new Error("image must be a PNG, JPEG or WebP data URL"), { statusCode: 400 });
-  return Buffer.from(m[2]!, "base64");
-}
 
 export function registerAdmin(app: FastifyInstance) {
   app.get("/api/admin/model-config", adminHandler(async () => modelConfiguration()));
@@ -91,45 +82,15 @@ export function registerAdmin(app: FastifyInstance) {
     return mergeStories(Number(b.from), Number(b.into), b.reason, actorOf(admin));
   }));
 
-  // Feedback
-  app.get("/api/admin/feedback", adminHandler(async (req) => listFeedback({ status: q(req).status, q: q(req).q, page: page(req) })));
-  app.patch("/api/admin/feedback/:id", adminHandler(async (req, reply, admin) => orNotFound(req, reply, await updateFeedback(Number(param(req, "id")), body(req) as never, actorOf(admin)))));
-  app.post("/api/admin/feedback/:id/erase", adminHandler(async (req, reply, admin) => orNotFound(req, reply, await eraseFeedback(Number(param(req, "id")), String(body(req).reason ?? ""), actorOf(admin)))));
-  app.get("/api/admin/feedback/:id/screenshot", adminHandler(async (req, reply) => {
-    const file = await feedbackScreenshot(Number(param(req, "id")));
-    const data = file ? await readFile(file).catch(() => null) : null;
-    if (!data) return notFound(req, reply);
-    const ext = file!.split(".").pop();
-    return reply.type(ext === "jpeg" || ext === "jpg" ? "image/jpeg" : `image/${ext}`).send(data);
-  }));
-  app.post("/api/admin/feedback-bans", adminHandler(async (req, reply, admin) => {
-    const b = body<{ sourceHash: string; reason: string }>(req);
-    await banSource(b.sourceHash, b.reason, actorOf(admin));
-    return reply.code(204).send();
-  }));
-  app.delete("/api/admin/feedback-bans/:hash", adminHandler(async (req, reply, admin) => {
-    await unbanSource(param(req, "hash"), actorOf(admin));
-    return reply.code(204).send();
-  }));
-
   // Runs (F20)
   app.get("/api/admin/runs", adminHandler(async () => runsOverview()));
   app.post("/api/admin/followups/:key/dismiss", adminHandler(async (req,_reply,admin) => dismissFollowUp(param(req,'key'),body<{reason:string}>(req).reason,actorOf(admin))));
   app.post("/api/admin/followups/:key/restore", adminHandler(async (req,reply,admin) => orNotFound(req,reply,await restoreFollowUp(param(req,'key'),body<{reason:string}>(req).reason,actorOf(admin)))));
   app.post("/api/admin/receipts/:id/release", adminHandler(async (req, reply, admin) => orNotFound(req, reply, await releaseReceipt(Number(param(req, "id")), body(req) as never, actorOf(admin)))));
-  app.post("/api/admin/deliveries/:id/resolve", adminHandler(async (req, reply, admin) => orNotFound(req, reply, await resolveDelivery(Number(param(req, "id")), body(req) as never, actorOf(admin)))));
   app.post("/api/admin/processing/requeue", adminHandler(async (req, _reply, admin) => requeueFailedArticles(body(req) as never, actorOf(admin))));
 
   // Settings
   app.get("/api/admin/settings", adminHandler(async () => settingsOverview()));
-  app.post("/api/admin/settings/contact-qr", adminHandler(async (req, _reply, admin) => {
-    const b = body<{ slot: "wechatQr" | "feishuQr"; image: string }>(req);
-    return replaceContactQr({ slot: b.slot, data: decodeImage(b.image) }, actorOf(admin));
-  }));
-  app.post("/api/admin/notify-targets/:key", adminHandler(async (req, reply, admin) => {
-    const b = body<{ enabled: boolean; reason: string }>(req);
-    return orNotFound(req, reply, await setTargetEnabled(param(req, "key"), !!b.enabled, b.reason, actorOf(admin)));
-  }));
   app.put("/api/admin/budgets/:service", adminHandler(async (req, _reply, admin) => updateBudget(param(req, "service"), body(req) as never, actorOf(admin))));
 
 

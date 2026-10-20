@@ -47,7 +47,7 @@ export interface RedirectRule {
 export const REDIRECTS: RedirectRule[] = [
   {
     match: "regex",
-    path: "^/(all|about|agent|changelog|feedback|starred|more|privacy|terms)/+$",
+    path: "^/(all|about|agent|changelog|starred|more|privacy|terms)/+$",
     status: 301,
     location: "/$1",
     keepQuery: true,
@@ -108,7 +108,7 @@ export const OAUTH_PROBE_PATHS = [
 /**
  * Paths served by the api process; everything else is the web process. The web server proxies these to
  * the api (a reverse proxy in front may also route them straight to it). Patterns are anchored so page
- * paths such as /feedback never fall into /feed.
+ * 路径按完整边界匹配，避免前缀相近的页面落入订阅缓存规则。
  */
 export const API_OWNED_PATTERNS: RegExp[] = [
   /^\/api\//,

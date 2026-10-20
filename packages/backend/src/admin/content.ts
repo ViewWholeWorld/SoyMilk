@@ -1,6 +1,6 @@
 // Content diagnostics and corrections (F19). Find any item by id, URL or title and see its whole
 // chain: source → discoveries → revisions → model receipts → decisions → publication and sync
-// ledger → grouping → deliveries. Visibility changes and manual corrections go through editorial
+// ledger → grouping. Visibility changes and manual corrections go through editorial
 // overrides with a version check, are re-projected to every public exit, and are audited.
 import { z } from "zod";
 import type { AdminContentChain, AdminContentRow, AdminPublication, BeforeJson } from "@aihot/contracts/admin";
@@ -41,7 +41,7 @@ export async function contentChain(id: string): Promise<Chain | null> {
            s.name AS source_name, s.kind AS source_kind, s.tier, s.participation_mode, s.site_fulltext, s.syndicate_fulltext
     FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = ${id}`;
   if (!article) return null;
-  const [discoveries, revisions, analyses, publication, override, ledger, membership, decisions, deliveries, history] = await Promise.all([
+  const [discoveries, revisions, analyses, publication, override, ledger, membership, decisions, history] = await Promise.all([
     sql<Chain["discoveries"]>`SELECT source_id, via, discovered_at FROM article_discoveries WHERE article_id = ${id} ORDER BY discovered_at`,
     sql<Chain["revisions"]>`SELECT revision, title, content_hash, created_at FROM article_revisions WHERE article_id = ${id} ORDER BY revision DESC LIMIT 10`,
     sql<Chain["analyses"]>`
@@ -57,10 +57,9 @@ export async function contentChain(id: string): Promise<Chain | null> {
       SELECT fa.fact_id, fa.role, fa.manual, f.public_id AS fact_public_id, f.title AS fact_title, st.id AS story_id, st.public_id AS story_public_id, st.title AS story_title
       FROM fact_articles fa JOIN facts f ON f.id = fa.fact_id LEFT JOIN stories st ON st.id = f.story_id WHERE fa.article_id = ${id}`,
     sql<Chain["decisions"]>`SELECT verdict, fact_id, story_id, receipt_id, candidates, created_at FROM grouping_decisions WHERE article_id = ${id} ORDER BY created_at DESC LIMIT 5`,
-    sql<Chain["deliveries"]>`SELECT target_key, dedupe_key, status, attempts, response, created_at, sent_at FROM deliveries WHERE subject_id = ${id} ORDER BY created_at DESC`,
     auditHistory(`content:${id}`),
   ]);
-  return { article, discoveries, revisions, analyses, publication: publication[0] ?? null, override: override[0] ?? null, ledger, membership, decisions, deliveries, history };
+  return { article, discoveries, revisions, analyses, publication: publication[0] ?? null, override: override[0] ?? null, ledger, membership, decisions, history };
 }
 
 /** Whether the current hot ranking shows the article: as an event's representative or among its reports. */
@@ -110,7 +109,7 @@ export async function setVisibility(id: string, input: { visibility: "public" | 
   return published;
 }
 
-/** Marks a detail page for search indexing (sitemap, IndexNow, robots) or removes the mark. */
+/** Marks a detail page for search indexing (sitemap, robots) or removes the mark. */
 export async function setSeoIndexed(id: string, input: { indexed: boolean; reason: string }, actor: string) {
   z.object({ indexed: z.boolean(), reason: z.string().trim().min(1) }).parse(input);
   return sql.begin(async (tx) => {

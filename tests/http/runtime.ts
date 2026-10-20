@@ -15,7 +15,7 @@ export interface Hit { route: string; status: number; level: CoverageLevel; scen
 export async function startHttp() {
   testDatabaseUrl(process.env.DATABASE_URL);
   assert.equal(process.env.SOYMILK_HTTP_TEST_RUN, "1", "请使用 npm run test:http 启动空库验收");
-  for (const key of ["COLLECT_ENABLED", "MODEL_CALLS_ENABLED", "FEISHU_CONTENT_PUSH_ENABLED", "FEISHU_INTERNAL_ENABLED", "FEISHU_LOGIN_ENABLED", "INDEXNOW_SUBMIT_ENABLED"]) {
+  for (const key of ["COLLECT_ENABLED", "MODEL_CALLS_ENABLED"]) {
     assert.equal(process.env[key], "false", `${key} 必须关闭`);
   }
   const routes = new Set<string>();

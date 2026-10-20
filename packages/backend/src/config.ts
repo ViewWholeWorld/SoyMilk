@@ -43,24 +43,18 @@ export const config = {
   selectedVisibleAfterSeconds: int("SELECTED_VISIBLE_AFTER_SECONDS", 180),
   egressProxyUrl: env.EGRESS_PROXY_URL || null,
   allowPrivateNetworkFetch: bool("ALLOW_PRIVATE_NETWORK_FETCH", false),
-  feishuContentPushEnabled: bool("FEISHU_CONTENT_PUSH_ENABLED", false),
-  indexNowSubmitEnabled: bool("INDEXNOW_SUBMIT_ENABLED", false),
-  /** IndexNow key (32 hex characters); without one nothing is submitted and no key file is served. */
-  indexNowKey: /^[0-9a-f]{32}$/.test(env.INDEXNOW_KEY ?? "") ? env.INDEXNOW_KEY! : null,
   imgProxyRequireSig: bool("IMG_PROXY_REQUIRE_SIG", true),
   /** Optional directory of per-group dotenv files (models.env, collectors.env, …); normally everything is in .env. */
   credentialsDir: env.AIHOT_CREDENTIALS_DIR || null,
   dataDir: str("AIHOT_DATA_DIR", path.join(REPO_ROOT, ".data")),
-  // Name of this deployment in alerts ("production" sends them without a prefix).
+  // 当前运行环境。
   environmentName: str("AIHOT_ENVIRONMENT", isProduction ? "production" : "development"),
   // Model calls are live unless explicitly disabled (tests, replays).
   modelCallsEnabled: bool("MODEL_CALLS_ENABLED", true),
   modelCostBackfillEnabled: bool("MODEL_COST_BACKFILL_ENABLED", true),
   devAdmin: env.DEV_AUTH_ROLE === "admin" ? { displayName: env.DEV_AUTH_DISPLAY_NAME || "Dev Admin" } : null,
-  /** The admin password (at least 12 characters). Feishu sign-in below is optional. */
+  /** 管理员密码，至少 12 位。 */
   adminPassword: env.ADMIN_PASSWORD || null,
-  adminUnionIds: (env.ADMIN_FEISHU_UNION_IDS || "").split(",").map((v) => v.trim()).filter(Boolean),
-  adminEmails: (env.ADMIN_EMAILS || "").split(",").map((v) => v.trim().toLowerCase()).filter(Boolean),
 };
 
 export type CredentialGroup = "models" | "collectors" | "integrations" | "auth";

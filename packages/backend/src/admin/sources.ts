@@ -14,10 +14,9 @@ import { sourcePermissionsReduced, type SourceFacts } from "../publication/rules
 import { normalizeUrl } from "../lib/url.ts";
 import { fetchJsonList } from "../sources/json-list.ts";
 import { fetchRss } from "../sources/rss.ts";
-import { assertSupportedConfig } from "../sources/config-keys.ts";
+import { assertSupportedConfig, UnsupportedConfig } from "../sources/config-keys.ts";
 import type { SourceRow } from "../sources/types.ts";
 import { fetchWebList } from "../sources/web-list.ts";
-import { fetchXSearch } from "../sources/x.ts";
 
 
 export interface SourceListFilters {
@@ -50,8 +49,8 @@ export async function listSources(f: SourceListFilters): Promise<BeforeJson<Admi
     ORDER BY s.enabled DESC, CASE s.health WHEN 'failing' THEN 0 WHEN 'degraded' THEN 1 ELSE 2 END, s.name, s.id
     LIMIT 100 OFFSET ${(page - 1) * 100}`;
   const [totals] = await sql<{ total: number; enabled: number; failing: number; degraded: number }[]>`
-    SELECT count(*)::int AS total, count(*) FILTER (WHERE enabled)::int AS enabled,
-           count(*) FILTER (WHERE health = 'failing')::int AS failing, count(*) FILTER (WHERE health = 'degraded')::int AS degraded
+    SELECT count(*)::int AS total, count(*) FILTER (WHERE enabled AND kind IN ('rss','web_list','json_list','external'))::int AS enabled,
+           count(*) FILTER (WHERE kind IN ('rss','web_list','json_list') AND health = 'failing')::int AS failing, count(*) FILTER (WHERE kind IN ('rss','web_list','json_list') AND health = 'degraded')::int AS degraded
     FROM sources`;
   return { page, rows, totals };
 }
@@ -86,7 +85,6 @@ export async function previewSource(draft: Pick<SourceRow, "id" | "kind" | "conf
   if (source.kind === "rss") candidates = (await fetchRss(source, { force: true })).candidates;
   else if (source.kind === "web_list") candidates = await fetchWebList(source, { preview: true });
   else if (source.kind === "json_list") candidates = await fetchJsonList(source);
-  else if (source.kind === "x_search") candidates = (await fetchXSearch(source)).candidates;
   else throw new Error(`preview is not available for ${source.kind} sources`);
   return {
     ms: Date.now() - started,
@@ -123,6 +121,7 @@ export async function updateSource(id: string, input: { patch: unknown; version:
     const [before] = await tx`SELECT * FROM sources WHERE id = ${id} FOR UPDATE`;
     if (!before) return null;
     if (new Date(before.updated_at as Date).toISOString() !== input.version) throw new Conflict("信源已被其他操作修改，请刷新后再改");
+    if (patch.enabled === true && ["x_search", "mp_account"].includes(String(before.kind))) throw new UnsupportedConfig("此信源采集类型已下线，历史内容仍可阅读");
     if (patch.config) {
       assertSupportedConfig(before.kind as SourceRow["kind"], patch.config);
       // A changed address must not be one another source already collects from. (Sources that share a
@@ -169,7 +168,7 @@ const CreateSchema = z
   .object({
     id: z.string().regex(/^[a-z0-9][a-z0-9-]{2,79}$/),
     name: z.string().min(1).max(200),
-    kind: z.enum(["rss", "web_list", "json_list", "x_search", "mp_account", "external"]),
+    kind: z.enum(["rss", "web_list", "json_list", "external"]),
     config: z.record(z.string(), z.unknown()),
     tier: z.enum(["T1", "T1_5", "T2", "EXCLUDE_MP"]).default("T2"),
     participation_mode: z.enum(["editorial", "hot_signal", "isolated"]).default("editorial"),
@@ -184,15 +183,6 @@ const CreateSchema = z
 /** The address a source collects from, used to find duplicates before creating one. */
 export function sourceIdentity(kind: string, config: Record<string, unknown>): string | null {
   const raw = (config.feedUrl ?? config.url ?? config.listUrl ?? config.endpoint ?? null) as string | null;
-  if (kind === "x_search") {
-    const m = /from:([A-Za-z0-9_]{1,15})/.exec(String(config.query ?? ""));
-    return m ? `x:${m[1]!.toLowerCase()}` : null;
-  }
-  // A WeChat account is one account whichever id names it .
-  if (kind === "mp_account") {
-    const id = String(config.ghid ?? config.wxid ?? "").trim().toLowerCase();
-    return id ? `mp:${id}` : null;
-  }
   if (!raw) return null;
   try {
     return normalizeUrl(String(raw).replace(/^https:\/\/r\.jina\.ai\//, "")) ?? String(raw);
@@ -229,10 +219,8 @@ export async function createSource(input: unknown, actor: string): Promise<Befor
 export async function fetchNow(id: string, actor: string) {
   const [s] = await sql<{ id: string; kind: string }[]>`SELECT id, kind FROM sources WHERE id = ${id}`;
   if (!s) return null;
-  const jobId =
-    s.kind === "mp_account"
-      ? await enqueue(QUEUES.mpCheck, { sourceId: id, reason: "manual" }, { singletonKey: `mp:${id}` })
-      : await enqueue(QUEUES.fetchSource, { sourceId: id, force: true }, { singletonKey: `manual:${id}` });
+  if (!["rss", "web_list", "json_list"].includes(s.kind)) throw new UnsupportedConfig("此信源类型不支持主动采集");
+  const jobId = await enqueue(QUEUES.fetchSource, { sourceId: id, force: true }, { singletonKey: `manual:${id}` });
   await audit(actor, "source.fetch", `source:${id}`, null, null, { jobId });
   return { jobId };
 }

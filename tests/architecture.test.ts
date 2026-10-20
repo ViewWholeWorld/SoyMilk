@@ -55,10 +55,9 @@ test("packages never import the apps, and nothing below the admin imports it", (
   assert.deepEqual(found, [], "admin/ is the top layer: move what others need to the module that owns it");
 });
 
-// Public routes read through the public read faces; the rest are the reader's own writes (feedback,
-// analytics) and the image proxy. Admin, intake and ingest routes may call any backend use case.
+// Public routes read through the public read faces; the rest are the image proxy and shared HTTP helpers. Admin, intake and ingest routes may call any backend use case.
 const PRIVATE_ROUTES = new Set(["admin.ts", "admin-auth.ts", "intake.ts", "ingest.ts"]);
-const PUBLIC_READS = [/^publication\//, /^site\//, /^analytics\//, /^lib\//, /^config\.ts$/, /^operations\/feedback\.ts$/, /^media\//, /^jobs\/queue\.ts$/];
+const PUBLIC_READS = [/^publication\//, /^site\//, /^analytics\//, /^lib\//, /^config\.ts$/, /^media\//, /^jobs\/queue\.ts$/];
 
 function publicImports(files: Source[], paths: Paths = path, root = ROOT): string[] {
   const routes = files.filter(({ file }) => !PRIVATE_ROUTES.has(path.posix.basename(rulePath(file))));
@@ -74,11 +73,10 @@ test("public routes read content only through the public read layer", () => {
 });
 
 // Tables whose rules must not be rewritten elsewhere: the public projection and its sync ledger, paid
-// receipts, content pushes, grouping, and the audit trail. Other modules read them freely.
+// receipts, grouping, and the audit trail. Other modules read them freely.
 const OWNERS: Record<string, string> = {
   publications: "publication/", selected_ledger: "publication/", selected_state: "publication/", pool_search: "publication/",
   receipts: "providers/receipts.ts", receipt_attempts: "providers/receipts.ts", receipt_consumers: "providers/receipts.ts",
-  deliveries: "notify/",
   facts: "events/", fact_articles: "events/", stories: "events/", story_signals: "events/", story_aliases: "events/", story_links: "events/",
   story_digests: "events/", grouping_decisions: "events/", grouping_overrides: "events/", regroup_pending: "events/",
   audit_log: "audit.ts",

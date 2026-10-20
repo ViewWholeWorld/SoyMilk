@@ -15,19 +15,9 @@ export function headers() {
   return { "Cache-Control": "public, max-age=0, s-maxage=300, stale-while-revalidate=600" };
 }
 
-interface ContactSettings {
-  wechatQr: string | null;
-  feishuQr: string | null;
-  /** The maker's X avatar through the image proxy, when the site follows that account. */
-  makerAvatar?: string | null;
-}
-
 export async function loader({ request }: { request: Request }) {
-  const [contact, stats] = await Promise.all([
-    apiGet<ContactSettings>("/api/site/contact", { signal: request.signal }).catch((): ContactSettings => ({ wechatQr: null, feishuQr: null, makerAvatar: null })),
-    apiGet<SiteStats>("/api/site/stats", { signal: request.signal }).catch(() => null),
-  ]);
-  return { contact, stats };
+  const stats = await apiGet<SiteStats>("/api/site/stats", { signal: request.signal }).catch(() => null);
+  return { stats };
 }
 
 export function meta() {
@@ -55,10 +45,8 @@ function Figure({ n, unit }: { n: number; unit: string }) {
 }
 
 const KIND_ORDER: Array<[string, string]> = [
-  ["x_search", "X"],
   ["rss", "RSS"],
   ["web_list", "网页"],
-  ["mp_account", "公众号"],
   ["json_list", "接口"],
 ];
 
@@ -115,69 +103,6 @@ function stagesOf(stats: SiteStats | null): Stage[] {
   ];
 }
 
-/** The maker's round avatar before the greeting; it steps aside if the image fails. */
-function MakerFace({ src }: { src: string }) {
-  const [failed, setFailed] = useState(false);
-  if (failed) return null;
-  return <img src={src} alt={`${ABOUT.maker?.name ?? ""}的头像`} width={48} height={48} onError={() => setFailed(true)} className="size-11 shrink-0 rounded-full bg-bg-sunk object-cover ring-1 ring-line xl:size-12" />;
-}
-
-function QrCard({ src, kind, title, note }: { src: string; kind: string; title: string; note: string }) {
-  return (
-    <figure className="card flex items-center gap-5 p-5">
-      <img src={src} alt={`${kind}二维码`} width={112} height={112} loading="lazy" className="size-[104px] shrink-0 rounded-tile border border-line bg-white object-contain p-1.5 sm:size-[112px]" />
-      <figcaption className="min-w-0">
-        <div className="text-[12px] text-ink-4">{kind}</div>
-        <div className="mt-1 text-[16px] font-semibold leading-snug text-ink">{title}</div>
-        <p className="mt-2 text-[13px] leading-[1.7] text-ink-3">{note}</p>
-      </figcaption>
-    </figure>
-  );
-}
-
-/** The optional maker block (ABOUT.maker): a greeting on the left, the contact codes that are set on the right. */
-function Maker({ maker, contact }: { maker: NonNullable<typeof ABOUT.maker>; contact: ContactSettings }) {
-  const codes = [
-    contact.wechatQr && maker.wechat ? <QrCard key="wechat" src={contact.wechatQr} kind="微信公众号" title={maker.wechat.title} note={maker.wechat.note} /> : null,
-    contact.feishuQr && maker.feishu ? <QrCard key="feishu" src={contact.feishuQr} kind="飞书群" title={maker.feishu.title} note={maker.feishu.note} /> : null,
-  ].filter(Boolean);
-  return (
-    <section aria-labelledby="maker" className="mt-20 grid gap-10 xl:mt-28 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:gap-16">
-      <div>
-        <Kicker>做这个站的人</Kicker>
-        <h2 id="maker" className="mt-4 flex items-center gap-3.5 text-[26px] font-black leading-[1.3] tracking-[-0.02em] text-ink xl:gap-4 xl:text-[34px]">
-          {contact.makerAvatar && <MakerFace src={contact.makerAvatar} />}
-          <span>
-            嗨，我是 <span className="whitespace-nowrap text-accent">{maker.name}</span>
-          </span>
-        </h2>
-        <div className="mt-5 space-y-4 text-[15.5px] leading-[1.9] text-ink-2 xl:text-[16.5px]">
-          {maker.greeting.map((line) => (
-            <p key={line}>{line}</p>
-          ))}
-          <p className="text-ink-3">
-            它一直在改，改了什么都写在
-            <Link to="/changelog" className="text-accent hover:underline">
-              更新日志
-            </Link>
-            里；有想法、遇到问题，去
-            <Link to="/feedback" className="text-accent hover:underline">
-              反馈页
-            </Link>
-            告诉我。
-          </p>
-        </div>
-      </div>
-      {codes.length > 0 && (
-        <div className="grid content-start gap-3">
-          <h3 className="text-[15px] font-semibold text-ink">如果觉得有点用，欢迎加入</h3>
-          {codes}
-        </div>
-      )}
-    </section>
-  );
-}
-
 /** The latest 精选 under the river's paper; it moves on each time an item reaches the paper. */
 function Latest({ item, className = "" }: { item: SiteStats["latest"][number] | undefined; className?: string }) {
   if (!item) return null;
@@ -193,7 +118,7 @@ function Latest({ item, className = "" }: { item: SiteStats["latest"][number] | 
 }
 
 export default function AboutPage() {
-  const { contact, stats } = useLoaderData<typeof loader>();
+  const { stats } = useLoaderData<typeof loader>();
   const [focus, setFocus] = useState<number | null>(null);
   const [at, setAt] = useState(0);
   const shown = useRef(0);
@@ -221,7 +146,7 @@ export default function AboutPage() {
           <p className="mt-5 max-w-[36em] text-[15.5px] leading-[1.85] text-ink-3 xl:text-[17px]">
             {ABOUT.lead.split("{sources}").map((part, i) => (
               <span key={i}>
-                {i > 0 && (stats ? <span className="num font-semibold text-ink">{stats.sources}</span> : "上百")}
+                {i > 0 && (stats ? <span className="num font-semibold text-ink">{stats.sources}</span> : "多个")}
                 {part}
               </span>
             ))}
@@ -269,14 +194,8 @@ export default function AboutPage() {
         </ol>
       </section>
 
-      {ABOUT.maker && <Maker maker={ABOUT.maker} contact={contact} />}
-
       <p className="mt-16 well rounded-card px-5 py-4 text-[13px] leading-[1.85] text-ink-3">
         {ABOUT.copyright}
-        <Link to="/feedback" className="text-accent hover:underline">
-          反馈页
-        </Link>
-        联系我们。
       </p>
 
       <footer className="mt-8 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-5 text-[12.5px] text-ink-4">

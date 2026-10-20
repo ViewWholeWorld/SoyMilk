@@ -12,11 +12,9 @@ import { loadDevelopments, loadGroupReports } from "@aihot/backend/publication/g
 import { loadTopicTags } from "@aihot/backend/publication/topics";
 import { loadHotStrip } from "@aihot/backend/publication/hot";
 import { loadChangelog, siteMeta } from "@aihot/backend/site/meta";
-import { loadContact, loadMakerAvatar } from "@aihot/backend/site/contact";
 import { loadSiteStats } from "@aihot/backend/site/stats";
 import { itemAvailability } from "@aihot/backend/publication/availability";
 import { loadTopicDirectory, loadTopicPage } from "@aihot/backend/publication/topics";
-import { registerFeedback } from "./feedback.ts";
 
 import { loadHot, loadStoryDetail, resolveStory } from "@aihot/backend/publication/stories";
 import { listReports, loadReport, reportNavigation, loadReportNavigation, loadReportMonth, type ReportKind } from "@aihot/backend/publication/reports";
@@ -150,11 +148,6 @@ export function registerSite(app: FastifyInstance) {
     return reply.send(data.body);
   }));
 
-  app.get("/api/site/contact", siteHandler(async (req, reply) => {
-    const [contact, makerAvatar] = await Promise.all([loadContact(), loadMakerAvatar()]);
-    return sendJsonWithEtag(req, reply, { ...contact, makerAvatar }, { etagPrefix: "contact", cacheControl: "public, max-age=300, s-maxage=300" });
-  }));
-
   app.get("/api/site/stats", siteHandler(async (req, reply) => {
     return sendJsonWithEtag(req, reply, await loadSiteStats(), { etagPrefix: "stats", cacheControl: "public, max-age=300, s-maxage=300" });
   }));
@@ -183,7 +176,6 @@ export function registerSite(app: FastifyInstance) {
     return sendJsonWithEtag(req, reply, data, { etagPrefix: "topic", cacheControl: cacheUntil(reply, 60, data.refreshAt) });
   }));
 
-  registerFeedback(app);
 
 
   app.get("/api/site/hot", siteHandler(async (req, reply) => {

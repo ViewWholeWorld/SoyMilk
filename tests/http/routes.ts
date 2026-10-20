@@ -3,7 +3,7 @@
 export interface ReadCase { route: string; path?: string; status?: number }
 export const publicReads: ReadCase[] = [
   { route: "/api/health" },
-  ...["meta", "timeline", "pool", "contact", "stats", "changelog", "topics", "hot", "items/availability"].map(name => ({ route: `/api/site/${name}` })),
+  ...["meta", "timeline", "pool", "stats", "changelog", "topics", "hot", "items/availability"].map(name => ({ route: `/api/site/${name}` })),
   { route: "/api/site/items/:id", path: "/api/site/items/missing", status: 404 },
   { route: "/api/site/items/:id/original", path: "/api/site/items/missing/original", status: 404 },
   { route: "/api/site/stories/:publicId", path: "/api/site/stories/missing", status: 404 },
@@ -34,7 +34,7 @@ export const publicReads: ReadCase[] = [
 export const adminReads = [
   "me", "model-config", "model-assignments", "model-suppliers", "model-stats", "model-stats/options", "model-attempts",
   "model-config/codex", "model-config/codex/login/:id", "sources", "sources/:id", "content", "content/:id",
-  "feedback", "feedback/:id/screenshot", "runs", "settings", "models", "model-pricing", "model-price-catalog",
+  "runs", "settings", "models", "model-pricing", "model-price-catalog",
   "model-costs", "model-cost-backfills", "model-cost-backfills/:id", "selectbench", "selectbench/:id", "nav-counts", "audit",
 ];
 export const adminWrites: [string, string][] = [
@@ -44,18 +44,18 @@ export const adminWrites: [string, string][] = [
   ["POST", "model-config/codex/login/:id/cancel"], ["POST", "model-config/codex/logout"], ["POST", "model-config/codex/models"],
   ["POST", "sources"], ["POST", "sources/preview"], ["PATCH", "sources/:id"], ["POST", "sources/:id/preview"], ["POST", "sources/:id/fetch"],
   ...["visibility", "seo", "override", "rerun", "detach"].map(name => ["POST", `content/:id/${name}`] as [string, string]),
-  ["POST", "stories/merge"], ["PATCH", "feedback/:id"], ["POST", "feedback/:id/erase"],
-  ["POST", "feedback-bans"], ["DELETE", "feedback-bans/:hash"], ["POST", "receipts/:id/release"],
-  ["POST", "deliveries/:id/resolve"], ["POST", "processing/requeue"], ["POST", "settings/contact-qr"],
+  ["POST", "stories/merge"],
+  ["POST", "receipts/:id/release"],
+  ["POST", "processing/requeue"],
   ["POST", "followups/:key/dismiss"], ["POST", "followups/:key/restore"],
-  ["POST", "notify-targets/:key"], ["PUT", "budgets/:service"], ["POST", "models/:capability"],
+  ["PUT", "budgets/:service"], ["POST", "models/:capability"],
   ["PUT", "model-pricing"], ["POST", "model-pricing/restore"], ["POST", "model-price-catalog/sync"],
   ["POST", "model-cost-backfills/preview"], ["POST", "model-cost-backfills"], ["POST", "model-cost-backfills/:id/resume"],
   ["POST", "selectbench/import"],
 ];
 export const fallbackRoutes = ["/api/v1", "/api/v1/*", "/api/public/*"];
 export const authRoutes: [string, string][] = [
-  ...["login", "options", "feishu", "callback", "check"].map(name => ["GET", `/api/auth/${name}`] as [string, string]),
+  ...["login", "options", "check"].map(name => ["GET", `/api/auth/${name}`] as [string, string]),
   ["POST", "/api/auth/password"], ["POST", "/api/auth/logout"],
 ];
 export const expectedRoutes = new Set([
@@ -63,7 +63,7 @@ export const expectedRoutes = new Set([
   ...adminReads.map(route => `GET /api/admin/${route}`),
   ...adminWrites.map(([method, route]) => `${method} /api/admin/${route}`),
   ...authRoutes.map(([method, route]) => `${method} ${route}`),
-  "POST /api/site/feedback", "POST /api/ingest/items",
+  "POST /api/ingest/items",
   ...["GET", "POST", "DELETE", "OPTIONS", "PUT", "PATCH"].map(method => `${method} /api/mcp`),
   ...fallbackRoutes.flatMap(route => ["OPTIONS", "POST", "PUT", "PATCH", "DELETE", "TRACE"].map(method => `${method} ${route}`)),
   "GET /api/v1", "GET /api/v1/*",
@@ -83,6 +83,4 @@ export const businessGaps: Record<string, string> = {
   "POST /api/admin/model-config/codex/login/:id/cancel": "验证不存在的会话；不发起真实授权",
   "POST /api/admin/model-config/codex/logout": "仅验证鉴权与 CSRF；不创建或断开真实账号",
   "POST /api/admin/model-config/codex/models": "仅验证鉴权与 CSRF；成功列表需要已授权的官方子进程",
-  "GET /api/auth/feishu": "仅验证未配置时的跳转；不访问飞书",
-  "GET /api/auth/callback": "仅验证缺失 state 被拒绝；不访问飞书",
 };

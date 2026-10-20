@@ -47,28 +47,16 @@ export const ABOUT = {
   /** 大标题：第一行正常颜色，第二行强调色。 */
   headline: ["关注的领域每天都有新动静，", "值得看的，只有几条。"] as [string, string],
   /** 标题下面的一段话。{sources} 会换成实时的信源数。 */
-  lead: `${SITE.name} 替你盯着 {sources} 个信源：抓取、归并、打分、精选，每天早上 8 点出一份日报。免费，不用注册。`,
+  lead: `${SITE.name} 替你盯着 {sources} 个信源：抓取、归并、打分、精选，每天早上 8 点出一份日报，用于个人阅读。`,
   /** 信源河动画下面的四个环节。 */
   steps: {
-    collect: "官方博客、媒体、X 账号、公众号和各类订阅源都在看；活跃的源 15 分钟就看一次。",
+    collect: "从 RSS、网页列表和 JSON 接口采集官方博客与媒体动态；按信源节奏更新。",
     store: "抓到的都存下来，同一件事的报道归到一起；只计入热度的账号也算在内，热点榜就是从这里算出来的。",
     select: "模型先看是不是这个行业的事、有没有实际信息，再写中文标题、摘要和推荐理由；营销稿和重复转发进不来。",
-    publish: "每天 08:00 出日报，周一出周报，每月 1 日出月报；最精选的几条可以推到飞书群。",
+    publish: "每天 08:00 出日报，周一出周报，每月 1 日出月报。",
   },
-  /**
-   * 作者块（选填），null 就不显示。
-   * avatarSourceId：一个 X 账号信源的 id，头像取它的（选填）。
-   * 二维码在后台“设置”里上传，或者放进 industry/brand/contact/；没有二维码就不显示那张卡片。
-   */
-  maker: null as null | {
-    name: string;
-    greeting: string[];
-    avatarSourceId?: string | null;
-    wechat?: { title: string; note: string };
-    feishu?: { title: string; note: string };
-  },
-  /** 页面底部的版权与下架说明（结尾会接“反馈页”的链接）。 */
-  copyright: `${SITE.name} 是聚合摘要和阅读索引，原文版权归各来源所有。如果你是来源方，希望更正、下架或调整展示方式，可以通过`,
+  /** 页面底部的版权说明。 */
+  copyright: `${SITE.name} 是个人使用的聚合摘要和阅读索引，原文版权归各来源所有。`,
 } as const;
 
 /** “AI 日报”这类说法：行业词和名词之间，英文词加空格，中文词不加。 */

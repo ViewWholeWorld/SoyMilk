@@ -10,10 +10,6 @@ import { HEALTH_LABEL, KIND_LABEL, MODE_LABEL, TIER_LABEL, VISIBILITY_LABEL } fr
 import { AdminPage, Badge, Button, Card, DataTable, Dot, Empty, Field, healthTone, Input, Json, KV, ReasonDialog, Select, Stat, Textarea, Time } from "../../features/admin/ui";
 
 
-/** X runs: pages read, and older stretches still to read (backlog) or given up (dropped). */
-
-
-
 export async function loader({ request, params }: Route.LoaderArgs) {
   return adminGet<AdminSourceDetail>(request, `/api/admin/sources/${encodeURIComponent(params.id)}`);
 }
@@ -51,6 +47,8 @@ export default function SourceDetail({ loaderData }: Route.ComponentProps) {
     setDraft(draftOf(s));
     setDraftFor(s.updated_at);
   }
+  const retired = ["x_search", "mp_account"].includes(s.kind);
+  const fetchable = ["rss", "web_list", "json_list"].includes(s.kind);
   const base = `/api/admin/sources/${encodeURIComponent(s.id)}`;
 
   const patch = (): Record<string, unknown> | null => {
@@ -95,10 +93,11 @@ export default function SourceDetail({ loaderData }: Route.ComponentProps) {
           <Badge tone={s.participation_mode === "editorial" ? "accent" : "muted"}>{MODE_LABEL[s.participation_mode]}</Badge>
         </span>
       }
-      subtitle={<span className="font-mono text-[12px]">{s.id}</span>}
+      subtitle={<span className="font-mono text-[12px]">{s.id}{retired ? " · 采集已下线，历史内容保留" : ""}</span>}
       actions={
         <>
           <Button
+            disabled={!fetchable}
             busy={pending === "preview"}
             onClick={async () => {
               const r = await run<AdminSourcePreview>("POST", `${base}/preview`, {}, { label: "preview", revalidate: false });
@@ -107,10 +106,10 @@ export default function SourceDetail({ loaderData }: Route.ComponentProps) {
           >
             预览抓取
           </Button>
-          <Button busy={pending === "fetch"} onClick={() => run("POST", `${base}/fetch`, {}, { label: "fetch", success: "已加入采集队列" })}>
+          <Button disabled={!fetchable} busy={pending === "fetch"} onClick={() => run("POST", `${base}/fetch`, {}, { label: "fetch", success: "已加入采集队列" })}>
             立即采集
           </Button>
-          <Button tone={s.enabled ? "danger" : "primary"} onClick={() => setDialog("toggle")}>
+          <Button disabled={retired && !s.enabled} tone={s.enabled ? "danger" : "primary"} onClick={() => setDialog("toggle")}>
             {s.enabled ? "暂停" : "恢复"}
           </Button>
         </>
@@ -195,7 +194,7 @@ export default function SourceDetail({ loaderData }: Route.ComponentProps) {
             </div>
             <div className="mt-4">
               <Field label="采集配置（JSON）">
-                <Textarea className="font-mono !text-[12px]" rows={Math.min(18, draft.config.split("\n").length + 1)} value={draft.config} onChange={(e) => setDraft({ ...draft, config: e.target.value })} spellCheck={false} />
+                <Textarea disabled={retired} className="font-mono !text-[12px]" rows={Math.min(18, draft.config.split("\n").length + 1)} value={draft.config} onChange={(e) => setDraft({ ...draft, config: e.target.value })} spellCheck={false} />
               </Field>
               {configError && <div className="mt-1 text-[12.5px] text-hot">{configError}</div>}
             </div>

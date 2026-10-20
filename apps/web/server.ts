@@ -17,7 +17,7 @@ const PROXY_TIMEOUT_MS = Number.isFinite(configuredProxyTimeout) && configuredPr
 /**
  * Whether a reverse proxy in front (Caddy, nginx) records the visitor in X-Forwarded-For. Without one
  * the header is never believed: a visitor could name any address and slip past the api's per-visitor
- * limits (sign-in attempts, feedback).
+ * limits (sign-in attempts).
  */
 const TRUST_PROXY = process.env.TRUST_PROXY === "true";
 const CLIENT_DIR = path.resolve(import.meta.dirname, "build/client");
