@@ -27,7 +27,6 @@ import {
 } from "./writing.ts";
 import { CATEGORY_BY_ITEM_TYPE, CATEGORY_GUIDE, CATEGORY_TAGS, ENTITIES, ENTITY_TAGS, ITEM_TYPES, normalizeTags, TOPIC_TAGS } from "./vocabulary.ts";
 import { promptText, promptVersion } from "./prompts.ts";
-import { config } from "../config.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
 import { ANALYSIS_PURPOSES, analysisHistory, analysisTag, compatibleAnalysisModels, exclusiveAnalysisSteps, type AnalysisStep } from "./analysis-route.ts";
 
@@ -445,23 +444,22 @@ async function runSummarize(a: AnalyzeInputArticle, opts: StepOpts): Promise<Non
 }
 
 type CombinedStep = "combinedUnderstand" | "combinedSummarize";
-const combinedEnabled = (step: CombinedStep) => step === "combinedUnderstand" ? config.combinedUnderstand : config.combinedSummarize;
 const combinedWriter = (step: CombinedStep) => step === "combinedUnderstand" ? "understand" : "summarize";
 const hasModelWriting = (a: AnalyzeInputArticle) => {
   const t = translateInputOf(a);
   return isShortTweetInput(t) ? needsShortTweetTranslation(collapseWhitespace(t.mainText || t.title)) : t.text.trim().length >= 20;
 };
-const canCombine = async (step: CombinedStep) => combinedEnabled(step) &&
+const canCombine = async (step: CombinedStep) =>
   compatibleAnalysisModels(await modelFor("structure"), await modelFor(combinedWriter(step)), step === "combinedUnderstand" ? "understand" : "exact");
 
 async function runCombined(a: AnalyzeInputArticle, opts: StepOpts, step: CombinedStep, savedId?: number): Promise<Pick<AnalysisRun, "writing" | "structure" | "combined">> {
   const schema = step === "combinedUnderstand" ? CombinedUnderstandSchema : CombinedSummarizeSchema;
   const version = COMBINED_VERSIONS[step];
   const parse = step === "combinedUnderstand" ? parseCombinedUnderstandJson : undefined;
-  // 先读已接收结果；开关、连接分配及供应商暂不可用均不妨碍本地消费。
+  // 先读已接收结果；连接分配变化及供应商暂不可用均不妨碍本地消费。
   let res = savedId ? await reuseJsonReceipt(savedId, schema, version, { materialHash: materialHash(a), parse }) : null;
   if (!res) {
-    if (!(await canCombine(step))) throw new ProviderUnavailableError("configuration", "本轮已选择合并处理；需启用原路径并恢复兼容模型后重试");
+    if (!(await canCombine(step))) throw new ProviderUnavailableError("configuration", "本轮已选择合并处理；需恢复兼容模型后重试");
     const model = await modelFor(combinedWriter(step));
     const t = translateInputOf(a);
     const short = isShortTweetInput(t);

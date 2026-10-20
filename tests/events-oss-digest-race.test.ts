@@ -1,6 +1,6 @@
 // 用本地模型与显式门闩复现旧上下文和异步回写；不连接真实模型或依赖sleep排序。
 import { gate, stub, useModelStubs } from "./setup.ts";
-import { pair, story, source, article, sourceVersion, cleanup, fixtureTag, trackStory } from "./events-oss-withdrawal-fixture.ts";
+import { pair as fixturePair, story, source, article, sourceVersion, cleanup, fixtureTag, trackStory } from "./events-oss-withdrawal-fixture.ts";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { sql, closeDb } from "@aihot/backend/db";
@@ -12,10 +12,13 @@ import { composeStoryDigest } from "@aihot/backend/events/digest";
 import { mergeStoryInto } from "@aihot/backend/events/merge";
 import { groupArticle } from "@aihot/backend/events/group";
 import { loadStoryDetail } from "@aihot/backend/publication/stories";
-import { config } from "@aihot/backend/config";
-
-// 本文件专门复现模型在途竞态；确定性单篇路径由 single-report-digest 覆盖。
-config.singleReportDigestReuse = false;
+// 用超过单篇复用长度的合法摘要进入模型路径，保留真实在途竞态而不关闭优化。
+async function pair(...args: Parameters<typeof fixturePair>) {
+  const result = await fixturePair(...args);
+  await sql`UPDATE analyses SET summary_zh=summary_zh||repeat('合成材料',501) WHERE article_id IN ${sql([result.a,result.b])}`;
+  await sql`UPDATE publications SET summary=summary||repeat('合成材料',501) WHERE article_id IN ${sql([result.a,result.b])}`;
+  return result;
+}
 
 const prompts: string[] = [];
 const safe = { title: "安全的新事件标题", digest: "只依据当前可公开报道重建的安全事件综述。", latest: "安全的最新进展" };

@@ -7,7 +7,6 @@ import { completeReceipt } from "../providers/receipts.ts";
 import { digestReports, digestInputsHash } from "./derived-content.ts";
 import { promptText, promptVersion } from "../editorial/prompts.ts";
 import { buildDigestInput, DigestSchema } from "./digest-input.ts";
-import { config } from "../config.ts";
 import { looksZh } from "../editorial/writing.ts";
 
 export const DIGEST_PROMPT_VERSION = promptVersion("story-digest");
@@ -48,7 +47,7 @@ export async function composeStoryDigest(storyId: number, opts: { afterCorrectio
   const title = single?.title.trim() ?? "";
   const summary = single?.summary?.trim() ?? "";
   // 复用公开投影，不能从原始分析或标题补造事实；过长材料保留原生成路径。
-  const reuse = config.singleReportDigestReuse && !!single && looksZh(title) && looksZh(summary) &&
+  const reuse = !!single && looksZh(title) && looksZh(summary) &&
     title.length <= 120 && summary.length >= 10 && summary.length <= 2000;
   // 旧标题本身没有独立provenance；即使保留已验证综述，也不将它作为模型依据。
   const res = reuse ? null : await chatJson({

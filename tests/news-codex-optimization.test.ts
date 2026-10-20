@@ -4,7 +4,6 @@ import { after, before, test } from "node:test";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { sql, closeDb } from "@aihot/backend/db";
-import { config } from "@aihot/backend/config";
 import { upsertMaterial } from "@aihot/backend/content/materials";
 import { analyzeArticle } from "@aihot/backend/editorial/analyze";
 import { compatibleAnalysisModels } from "@aihot/backend/editorial/analysis-route";
@@ -37,7 +36,7 @@ async function article(lowScore = false) {
     bodyStatus: "ok", publishedAt: new Date("2026-10-19T01:00:00Z"), via: "fetch" })).articleId;
 }
 
-for (const effort of [null, "medium"] as const) test(`P2a 沿用 Codex ${effort ?? "默认"} 配置，P2b 保持 low，关闭后零请求复用`, async () => {
+for (const effort of [null, "medium"] as const) test(`P2a 自动沿用 Codex ${effort ?? "默认"} 配置，P2b 保持 low，配置变化后零请求复用`, async () => {
   const writer = await saveModelConnection({ ...connection, reasoningEffort: effort });
   const structure = await saveModelConnection({ ...connection, reasoningEffort: "low" });
   try {
@@ -47,7 +46,6 @@ for (const effort of [null, "medium"] as const) test(`P2a 沿用 Codex ${effort 
     const beforeAssignments = [process.env.STRUCTURE_MODEL, process.env.UNDERSTAND_MODEL, process.env.SUMMARIZE_MODEL];
     assert.equal(await compatibleAnalysisModels(key(structure.id), "default"), false);
     assert.equal(await compatibleAnalysisModels(key(structure.id), "default", "understand"), true);
-    config.combinedUnderstand = true; config.combinedSummarize = true;
     await withCodexSession(async () => {
       const id = await article(), first = await analyzeArticle(id);
       assert.equal(first!.receiptIds.length, 4);
@@ -65,7 +63,6 @@ for (const effort of [null, "medium"] as const) test(`P2a 沿用 Codex ${effort 
       const allCalls = await server.request("fixture/calls", {});
       assert.deepEqual(allCalls.slice(4).map((c: { step: string; effort: string | null }) => [c.step, c.effort]),
         [["prefilter", "low"], ["score", effort], ["score", effort], ["combinedSummarize", "low"]]);
-      config.combinedUnderstand = false; config.combinedSummarize = false;
       process.env.STRUCTURE_MODEL = "deepseek-flash"; process.env.UNDERSTAND_MODEL = "deepseek-flash";
       assert.deepEqual((await analyzeArticle(id))!.receiptIds, first!.receiptIds);
       assert.equal((await server.request("fixture/calls", {})).length, allCalls.length);
@@ -75,7 +72,6 @@ for (const effort of [null, "medium"] as const) test(`P2a 沿用 Codex ${effort 
     assert.deepEqual([process.env.STRUCTURE_MODEL, process.env.UNDERSTAND_MODEL, process.env.SUMMARIZE_MODEL], beforeAssignments);
     assert.equal(provider.hits(), 0);
   } finally {
-    config.combinedUnderstand = false; config.combinedSummarize = false;
     await selectModelConnection(null);
     await deleteModelConnection(writer.id); await deleteModelConnection(structure.id);
     for (const name of ["PREFILTER_MODEL", "STRUCTURE_MODEL", "SUMMARIZE_MODEL", "UNDERSTAND_MODEL"]) process.env[name] = "default";
