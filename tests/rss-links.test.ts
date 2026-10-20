@@ -17,12 +17,15 @@ const pages: Record<string, string> = {
   "/fallback": feed(entry('<link rel="related" href="article-1"/>')),
   "/missing": feed(entry("") + entry('<link rel="alternate"/>')),
   "/fragments": feed(entry('<link href="notes#first"/>') + entry('<link href="notes#second"/>'), ' xml:base="https://publisher.example/"'),
+  "/news/rss.xml": '<rss version="2.0"><channel><title>RSS</title><item><title>Relative article</title><link>../article</link></item><item><title>Absolute article</title><link>https://publisher.example/absolute</link></item></channel></rss>',
+  "/dates": feed(entry('<link href="https://publisher.example/no-published"/>') + entry('<published>2026-09-29T00:00:00Z</published><link href="https://publisher.example/published"/>')),
 };
 const server = http.createServer((req, res) => {
   if (req.url === "/old/feed.xml") {
     res.writeHead(302, { location: "/news/feed.xml" });
     return res.end();
   }
+  if (req.url === "/old/rss.xml") { res.writeHead(302, { location: "/news/rss.xml" }); return res.end(); }
   res.setHeader("content-type", "application/atom+xml");
   res.end(pages[req.url!] ?? "");
 });
@@ -64,4 +67,15 @@ test("absolute alternate links and the first-link fallback keep working", async 
 test("fragment identities are computed from the resolved Atom article URL", async () => {
   const items = await read("/fragments", true);
   assert.deepEqual(items.map((item) => item.identityKey), ["url:https://publisher.example/notes#first", "url:https://publisher.example/notes#second"]);
+});
+
+test("RSS相对链接按最终 feed URL 解析，绝对链接保持", async () => {
+  assert.deepEqual((await read("/old/rss.xml")).map(item => item.url), [root + "/article", "https://publisher.example/absolute"]);
+});
+
+test("Atom updated仅记录修订时间，不冒充首次published", async () => {
+  const [unknown, published] = await read("/dates");
+  assert.equal(unknown!.publishedAt, null);
+  assert.equal(unknown!.sourceUpdatedAt!.toISOString(), "2026-10-01T00:00:00.000Z");
+  assert.equal(published!.publishedAt!.toISOString(), "2026-09-29T00:00:00.000Z");
 });

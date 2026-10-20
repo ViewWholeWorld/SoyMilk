@@ -3,6 +3,8 @@
 import { credential } from "../config.ts";
 import { guardedFetch } from "../lib/http-fetch.ts";
 import { paidRequest, ProviderRejectedError, ProviderUnavailableError } from "./receipts.ts";
+import { environmentCooldownScope, spendingRefusal } from "./provider-cooldown.ts";
+import { assertPageContent, contentDocument, UnavailablePageError } from "../lib/page-content.ts";
 
 export interface JinaPage {
   title: string | null;
@@ -12,6 +14,7 @@ export interface JinaPage {
 }
 
 export function parseJinaText(text: string): JinaPage {
+  text = text.replace(/\r\n?/g, "\n");
   const header = text.split(/\nMarkdown Content:\n/)[0] ?? "";
   const body = text.includes("\nMarkdown Content:\n") ? text.split(/\nMarkdown Content:\n/).slice(1).join("\nMarkdown Content:\n") : text;
   const field = (name: string) => new RegExp(`^${name}:\\s*(.+)$`, "m").exec(header)?.[1]?.trim() ?? null;
@@ -35,7 +38,8 @@ export async function jinaRead(
   const tolerance: Record<string, string> = Number.isInteger(opts.cacheToleranceSeconds) && opts.cacheToleranceSeconds! >= 0 ? { "x-cache-tolerance": String(opts.cacheToleranceSeconds) } : {};
   const day = opts.round ?? new Date().toISOString().slice(0, 10);
   const receipt = await paidRequest(
-    { service: "jina", model: null, purpose: opts.purpose, subject: opts.subject, identity: { url: targetUrl, day, format: opts.format ?? "markdown" }, requestSummary: { url: targetUrl, day, format: opts.format ?? "markdown" } },
+    { service: "jina", model: null, purpose: opts.purpose, subject: opts.subject, identity: { url: targetUrl, day, format: opts.format ?? "markdown" }, requestSummary: { url: targetUrl, day, format: opts.format ?? "markdown" },
+      cooldown: environmentCooldownScope("jina", null, base, key) },
     async () => {
       const res = await guardedFetch(`${base}/${targetUrl}`, {
         headers: { authorization: `Bearer ${key}`, "x-return-format": opts.format ?? "markdown", accept: "text/plain", ...tolerance },
@@ -45,7 +49,7 @@ export async function jinaRead(
       if (res.status === 401 || res.status === 402 || res.status === 403 || res.status === 422 || res.status === 400) {
         throw new ProviderRejectedError(`jina HTTP ${res.status}`, res.status, false);
       }
-      if (res.status === 429 || res.status >= 500) throw new ProviderRejectedError(`jina HTTP ${res.status}`, res.status, true);
+      if (res.status === 429 || res.status >= 500) throw new ProviderRejectedError(`jina HTTP ${res.status}`, res.status, true, false, spendingRefusal("jina", res.status, res.text()));
       const text = res.text();
       // Billed in tokens; estimated at about ¥0.36 per million. Without the usage header nothing is guessed.
       const tokens = Number(res.headers.get("x-usage-tokens")) || null;
@@ -54,5 +58,16 @@ export async function jinaRead(
     },
   );
   const raw = String((receipt.response as { text?: string })?.text ?? "");
-  return { ...parseJinaText(raw), receiptId: receipt.receiptId, raw };
+  const page = parseJinaText(raw);
+  // 先保留付费回执再判定目标页；不可用目标不改 failed，避免自动重买。
+  if (opts.format === "html") contentDocument(raw);
+  else {
+    const normalized = raw.replace(/\r\n?/g, "\n");
+    const at = normalized.indexOf("\nMarkdown Content:\n");
+    const header = at < 0 ? "" : normalized.slice(0, at);
+    const warning = /^Warning:.*(?:Target URL returned error [45]\d\d\b|requiring CAPTCHA).*$/im.exec(header);
+    if (warning) throw new UnavailablePageError(warning[0]);
+    assertPageContent(at < 0 ? "" : page.title ?? "", page.markdown);
+  }
+  return { ...page, receiptId: receipt.receiptId, raw };
 }

@@ -27,6 +27,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
   const [outcome, setOutcome] = useState<"sent" | "drop" | "resend">("sent");
   // Failure group to put back into processing ("" = every failure of the last 30 days).
   const [requeue, setRequeue] = useState<string | null>(null);
+  const [followUp,setFollowUp] = useState<AdminRuns['followUps'][number] | null>(null);
 
   // Live view: refresh every 20 s while visible.
   useEffect(() => {
@@ -104,6 +105,32 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
           />
         </Card>
       )}
+
+      <Card className="mt-5" title="信源产出节奏" pad={false}>
+        <DataTable dense rows={r.sourceDiagnostics} rowKey={s=>s.id} empty="没有七天未发现新内容的信源" columns={[
+          {key:'name',label:'信源',render:s=><Link className="text-accent" to={`/admin/sources/${encodeURIComponent(s.id)}`}>{s.name}</Link>},
+          {key:'mode',label:'用途',render:s=>s.mode},
+          {key:'state',label:'判断',render:s=><Badge tone={s.status==='overdue' ? 'warn' : 'muted'}>{s.status==='overdue' ? '超出自身节奏' : s.status==='unknown' ? '历史不足' : '符合自身节奏'}</Badge>},
+          {key:'evidence',label:'依据',render:s=><span className="text-[12px] text-ink-3">{s.detail}；窗口内 {s.evidenceDays} 个产出日</span>},
+        ]}/>
+      </Card>
+      <Card className="mt-5" title="逐项信源跟进" pad={false}>
+        <DataTable dense rows={r.followUps} rowKey={f=>f.key} empty="没有需要跟进的信源问题" columns={[
+          {key:'title',label:'问题',render:f=>f.title},
+          {key:'detail',label:'证据',render:f=><span className="text-[12px] text-ink-3">{f.detail}</span>},
+          {key:'observed',label:'最新证据',render:f=><Time at={f.observedAt}/>},
+          {key:'dismissed',label:'人工判断',render:f=>f.dismissed ? <span title={`${f.dismissed.by} · ${bj(f.dismissed.at)}`}>已忽略：{f.dismissed.reason}</span> : '待跟进'},
+          {key:'action',label:'',render:f=><Button size="sm" onClick={()=>setFollowUp(f)}>{f.dismissed ? '恢复跟进' : '忽略'}</Button>},
+        ]}/>
+      </Card>
+      {r.providerRefusals.length>0 && <Card className="mt-5" title="尚未验证恢复的额度拒绝" pad={false}>
+        <DataTable dense rows={r.providerRefusals} rowKey={f=>f.key} columns={[
+          {key:'title',label:'问题',render:f=>f.title},
+          {key:'impact',label:'当前影响',render:f=>f.impact},
+          {key:'evidence',label:'恢复依据',render:f=><span className="text-[12px] text-ink-3">{f.detail}</span>},
+          {key:'at',label:'最近拒绝',render:f=><Time at={f.observedAt}/>},
+        ]}/>
+      </Card>}
 
       <div className="mt-5 grid gap-5 xl:grid-cols-2">
         <Card title="需要核对的付费回执" right={<span>{Object.entries(r.receipts.counts).map(([k, v]) => `${k} ${v}`).join(" · ")}</span>} pad={false}>
@@ -231,6 +258,10 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
         </Card>
       )}
 
+      <ReasonDialog open={!!followUp} title={followUp?.dismissed ? '恢复信源跟进' : '忽略当前信源问题'}
+        description={followUp?.dismissed ? '恢复后，该问题会重新出现在跟进列表。' : '填写理由后只忽略已观察到的故障；出现新的故障证据时会自动重新跟进。'}
+        confirmLabel={followUp?.dismissed ? '恢复跟进' : '记录并忽略'} busy={pending==='followup'} onClose={()=>setFollowUp(null)}
+        onSubmit={async reason=>(await run('POST',`/api/admin/followups/${encodeURIComponent(followUp!.key)}/${followUp!.dismissed ? 'restore' : 'dismiss'}`,{reason},{label:'followup',success:'已记录'}))!==null}/>
       <ReasonDialog
         open={!!receipt}
         title={`核对回执 #${receipt?.id ?? ""}`}

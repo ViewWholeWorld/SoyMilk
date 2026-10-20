@@ -1,5 +1,6 @@
 import type { Db } from "../db.ts";
 import { normalizeModelUsage, type NormalizedModelUsage } from "./model-usage.ts";
+import type { ProviderCooldownScope } from "./provider-cooldown.ts";
 
 export const BILLING_KINDS = ["api", "subscription_equivalent"] as const;
 export type BillingKind = typeof BILLING_KINDS[number];
@@ -16,6 +17,7 @@ export interface PriceVector {
 }
 
 export interface PricingSnapshot extends PriceVector {
+  providerScope?: ProviderCooldownScope;
   supplierId?: string | null;
   configured: boolean;
   providerKey: string;

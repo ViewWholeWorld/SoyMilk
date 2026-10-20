@@ -17,6 +17,7 @@ import { sha256 } from "@aihot/backend/lib/ids";
 import { contentChain, overrideFields, rerun, searchContent, setSeoIndexed, setVisibility } from "@aihot/backend/admin/content";
 import { banSource, eraseFeedback, feedbackScreenshot, listFeedback, unbanSource, updateFeedback } from "@aihot/backend/admin/feedback";
 import { requeueFailedArticles, runsOverview } from "@aihot/backend/admin/runs";
+import { dismissFollowUp, restoreFollowUp } from "@aihot/backend/operations/alerts";
 import { replaceContactQr, setTargetEnabled, settingsOverview, updateBudget } from "@aihot/backend/admin/settings";
 import { createSource, fetchNow, listSources, previewSource, previewStoredSource, sourceDetail, updateSource } from "@aihot/backend/admin/sources";
 import { navCounts } from "@aihot/backend/admin/navigation";
@@ -113,6 +114,8 @@ export function registerAdmin(app: FastifyInstance) {
 
   // Runs (F20)
   app.get("/api/admin/runs", adminHandler(async () => runsOverview()));
+  app.post("/api/admin/followups/:key/dismiss", adminHandler(async (req,_reply,admin) => dismissFollowUp(param(req,'key'),body<{reason:string}>(req).reason,actorOf(admin))));
+  app.post("/api/admin/followups/:key/restore", adminHandler(async (req,reply,admin) => orNotFound(req,reply,await restoreFollowUp(param(req,'key'),body<{reason:string}>(req).reason,actorOf(admin)))));
   app.post("/api/admin/receipts/:id/release", adminHandler(async (req, reply, admin) => orNotFound(req, reply, await releaseReceipt(Number(param(req, "id")), body(req) as never, actorOf(admin)))));
   app.post("/api/admin/deliveries/:id/resolve", adminHandler(async (req, reply, admin) => orNotFound(req, reply, await resolveDelivery(Number(param(req, "id")), body(req) as never, actorOf(admin)))));
   app.post("/api/admin/processing/requeue", adminHandler(async (req, _reply, admin) => requeueFailedArticles(body(req) as never, actorOf(admin))));

@@ -55,7 +55,7 @@ export function registerOg(app: FastifyInstance) {
 
   app.get("/og/pages/:file", async (req, reply) => {
     const name = (req.params as { file: string }).file.replace(/\.png$/, "");
-    const card = PAGES[name];
+    const card = Object.hasOwn(PAGES, name) ? PAGES[name] : null;
     if (!card || !(req.params as { file: string }).file.endsWith(".png")) return notFound(reply);
     return send(req, reply, card, 86400);
   });

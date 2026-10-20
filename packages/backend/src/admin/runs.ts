@@ -6,6 +6,8 @@ import { sql } from "../db.ts";
 type Heartbeat = Omit<AdminRuns["processes"][number], "role" | "alive">;
 import { audit } from "../audit.ts";
 import { failureGroupSql, requeueFailed } from "../jobs/content.ts";
+import { healthFindings, rhythmMultiple, rhythmText, RHYTHM_MULTIPLE, sourceHealth } from "../sources/health.ts";
+import { dismissedFollowUps, providerRefusalFindings, type AlertState } from "../operations/alerts.ts";
 
 const STALE_HEARTBEAT_MS = 3 * 60_000;
 
@@ -56,6 +58,11 @@ export async function runsOverview(): Promise<Runs> {
   const [retrying] = await sql<{ n: number; next: Date | null }[]>`
     SELECT count(*)::int AS n, min(processing_retry_at) AS next FROM articles WHERE processing_state = 'new' AND processing_attempts > 0`;
   const now = Date.now();
+  const health = await sourceHealth(now);
+  const findings = healthFindings(health);
+  const dismissed = await dismissedFollowUps(findings);
+  const [alerts]=await sql<{value:AlertState}[]>`SELECT value FROM settings WHERE key='alerts.state'`;
+  const refusals=await providerRefusalFindings(now,alerts?.value ?? {});
   return {
     checkedAt: new Date(now).toISOString(),
     processes: heartbeats.map((h) => ({
@@ -69,6 +76,11 @@ export async function runsOverview(): Promise<Runs> {
     queues,
     failedJobs,
     lagging,
+    sourceDiagnostics:health.flatMap(g => g.silent.map(s => ({id:s.id,name:s.name,mode:g.name,
+      status:rhythmMultiple(s)===null ? 'unknown' as const : rhythmMultiple(s)!>RHYTHM_MULTIPLE ? 'overdue' as const : 'within_rhythm' as const,
+      detail:rhythmText(s),evidenceDays:s.evidence_days,medianGapDays:s.median_gap_days,quietDays:s.quiet_days,everOutput:s.ever_output}))),
+    followUps:findings.map(f => ({key:f.key,title:f.title,detail:f.detail ?? '',observedAt:f.observedAt ?? null,dismissed:dismissed[f.key] ?? null})),
+    providerRefusals:refusals.map(f=>({key:f.key,title:f.title,impact:f.impact ?? '',detail:f.detail ?? '',observedAt:f.observedAt ?? null})),
     receipts: { counts: Object.fromEntries(receipts.map((r) => [r.status, r.n])), issues: receiptIssues },
     deliveries,
     errors,

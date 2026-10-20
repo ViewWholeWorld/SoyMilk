@@ -2,6 +2,7 @@
 // the server runs in (Docker runs in UTC; run this file with TZ=UTC and TZ=Asia/Shanghai to see both).
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { execFileSync } from "node:child_process";
 import { parseLooseDate } from "@aihot/backend/sources/web-list";
 
 const iso = (v: string, offset?: string) => parseLooseDate(v, offset)?.toISOString() ?? null;
@@ -32,4 +33,27 @@ test("a date that carries its zone keeps it", () => {
 test("no date at all is null", () => {
   assert.equal(iso(""), null);
   assert.equal(iso("yesterday"), null);
+});
+
+test("英文 at 和带点月份缩写、AM／PM 保持源时区语义", () => {
+  assert.equal(iso("September 1, 2026 at 3:30 PM"), "2026-09-01T07:30:00.000Z");
+  assert.equal(iso("Sep. 1, 2026 at 12:30 AM", "-07:00"), "2026-09-01T07:30:00.000Z");
+  assert.equal(iso("Sep. 1, 2026 at 12:30 PM", "-07:00"), "2026-09-01T19:30:00.000Z");
+  assert.equal(iso("September 1, 2026 at 3:30 PM GMT"), "2026-09-01T15:30:00.000Z");
+  assert.equal(iso("2026-09-01 3:30 PM"), "2026-09-01T07:30:00.000Z");
+  assert.equal(iso("Sep. 1, 2026 at 3:30 PM EST"), "2026-09-01T20:30:00.000Z");
+  assert.equal(iso("2026-09-01 10:00 EDT"), "2026-09-01T14:00:00.000Z");
+});
+
+test("非法日历日期和时刻不会滚到其他日期", () => {
+  for (const value of ["2026-02-29", "2026/04/31 10:00", "February 30, 2026 at 3:30 PM", "2026-09-01 13:30 PM", "Sep. 1, 2026 at 0:30 PM", "Sep. 1, 2026 at 25:00", "2026-09-01T25:00:00Z", "2026-09-01T24:00:00Z"]) assert.equal(iso(value), null, value);
+  assert.equal(iso("2028-02-29"), "2028-02-29T00:00:00.000Z");
+});
+
+test("不同进程 TZ 与夏令时缺口不改变源壁钟日期", () => {
+  const script = `import { parseLooseDate } from '@aihot/backend/sources/web-list'; process.stdout.write(JSON.stringify(['September 1, 2026 at 3:30 PM','Mar. 8, 2026 at 2:30 AM'].map(value => parseLooseDate(value,'+08:00')?.toISOString())));`;
+  for (const TZ of ["UTC", "Asia/Shanghai", "America/New_York"]) {
+    const got = execFileSync(process.execPath, ["--input-type=module", "-e", script], { env: { ...process.env, TZ }, encoding: "utf8" });
+    assert.deepEqual(JSON.parse(got), ["2026-09-01T07:30:00.000Z", "2026-03-07T18:30:00.000Z"], TZ);
+  }
 });

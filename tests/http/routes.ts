@@ -47,6 +47,7 @@ export const adminWrites: [string, string][] = [
   ["POST", "stories/merge"], ["PATCH", "feedback/:id"], ["POST", "feedback/:id/erase"],
   ["POST", "feedback-bans"], ["DELETE", "feedback-bans/:hash"], ["POST", "receipts/:id/release"],
   ["POST", "deliveries/:id/resolve"], ["POST", "processing/requeue"], ["POST", "settings/contact-qr"],
+  ["POST", "followups/:key/dismiss"], ["POST", "followups/:key/restore"],
   ["POST", "notify-targets/:key"], ["PUT", "budgets/:service"], ["POST", "models/:capability"],
   ["PUT", "model-pricing"], ["POST", "model-pricing/restore"], ["POST", "model-price-catalog/sync"],
   ["POST", "model-cost-backfills/preview"], ["POST", "model-cost-backfills"], ["POST", "model-cost-backfills/:id/resume"],
