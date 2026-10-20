@@ -20,7 +20,7 @@ import { registerFeedback } from "./feedback.ts";
 
 import { loadHot, loadStoryDetail, resolveStory } from "@aihot/backend/publication/stories";
 import { listReports, loadReport, reportNavigation, loadReportNavigation, loadReportMonth, type ReportKind } from "@aihot/backend/publication/reports";
-import { looseQuery, sendJsonWithEtag, sendProblem } from "../http/respond.ts";
+import { looseQuery, QueryError, sendJsonWithEtag, sendProblem } from "../http/respond.ts";
 
 type Handler = (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
 
@@ -41,7 +41,7 @@ export function siteHandler(fn: Handler): Handler {
     try {
       return await fn(req, reply);
     } catch (error) {
-      if (error instanceof BadRequest) return sendProblem(req, reply, { status: 400, code: "invalid_request", detail: error.message });
+      if (error instanceof BadRequest || error instanceof QueryError) return sendProblem(req, reply, { status: 400, code: "invalid_request", detail: error.message });
       if (error instanceof InvalidCursorError) return sendProblem(req, reply, { status: 400, code: "invalid_cursor", detail: error.message });
       if (error instanceof SearchBusyError) {
         return sendProblem(req, reply, { status: 503, code: "temporarily_unavailable", detail: "search busy", retryAfter: error.retryAfter });
@@ -176,6 +176,7 @@ export function registerSite(app: FastifyInstance) {
 
   app.get("/api/site/topics/:slug", siteHandler(async (req, reply) => {
     const slug = (req.params as { slug: string }).slug;
+    if (/[\u0000-\u001f\u007f]/.test(slug)) throw new BadRequest("invalid topic");
     const page = Number(looseQuery(req).page ?? 1);
     const data = Number.isInteger(page) ? await loadTopicPage(slug, page) : null;
     if (!data) return sendProblem(req, reply, { status: 404, code: "not_found", detail: "topic page not found", cacheControl: "no-store" });

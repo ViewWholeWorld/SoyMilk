@@ -10,7 +10,7 @@ import { isUnreadCard, shouldLoadUnread } from "./unread";
 import { IconChevronDown } from "../../components/icons";
 import { RingMark } from "../../components/Logo";
 import { EmptyState } from "../../components/ui/Page";
-import { beijingDate, beijingTime, beijingWeekday, fullDateTime } from "../../lib/format";
+import { beijingDate, beijingTime, beijingWeekday, fullDateTime, monthDay } from "../../lib/format";
 import { markRead, useReadSet } from "../../lib/local-state";
 import { isHydrated, isReload, markHydrated, readSnapshot, restoreAnchor, saveSnapshot } from "./restore";
 
@@ -47,8 +47,7 @@ export function TimelineTimeNote() {
 
 /** Sticky day header: a quiet row on desktop, a grey full-width bar on phones. */
 export function DayHeader({ day, today, count, collapsed, onToggle }: { day: string; today: string; count: number | null; collapsed?: boolean; onToggle?: () => void }) {
-  const [, m, d] = day.split("-").map(Number) as [number, number, number];
-  const date = `${m}月${d}日`;
+  const date = monthDay(day, today);
   const weekday = beijingWeekday(day);
   const short = WEEKDAY_SHORT[new Date(`${day}T12:00:00+08:00`).getUTCDay()] ?? "";
   return (

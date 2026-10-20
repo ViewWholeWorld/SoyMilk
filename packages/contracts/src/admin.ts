@@ -264,6 +264,11 @@ export interface AdminRuns {
     id: string; name: string; kind: string; health: string; fail_count: number; last_ok_at: Timestamp | null; last_fetch_at: Timestamp | null;
     next_fetch_at: Timestamp | null; interval_minutes: number; last_error: string | null;
   }>;
+  sourceDiagnostics: Array<{ id:string; name:string; mode:string; status:"overdue"|"unknown"|"within_rhythm"; detail:string;
+    evidenceDays:number; medianGapDays:number|null; quietDays:number|null; everOutput:boolean }>;
+  followUps: Array<{key:string;title:string;detail:string;observedAt:Timestamp|null;
+    dismissed:{reason:string;by:string;at:Timestamp}|null}>;
+  providerRefusals: Array<{key:string;title:string;impact:string;detail:string;observedAt:Timestamp|null}>;
   receipts: { counts: Record<string, number>; issues: AdminReceiptIssue[] };
   deliveries: AdminDeliveryIssue[];
   errors: Array<{ error: string; n: number; last: Timestamp; example: string }>;

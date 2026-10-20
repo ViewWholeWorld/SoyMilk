@@ -2,6 +2,7 @@
 import { credential } from "../config.ts";
 import { guardedFetch } from "../lib/http-fetch.ts";
 import { paidRequest, ProviderRejectedError, ProviderUnavailableError } from "./receipts.ts";
+import { environmentCooldownScope, spendingRefusal } from "./provider-cooldown.ts";
 
 export interface SdUser {
   name: string;
@@ -65,7 +66,7 @@ export async function searchTweets(query: string, opts: { purpose: string; subje
   if (!key) throw new ProviderUnavailableError("configuration", "SOCIALDATA_API_KEY is not configured");
   const type = opts.type ?? "Latest";
   const receipt = await paidRequest(
-    { service: "socialdata", purpose: opts.purpose, subject: opts.subject, identity: { query, type, cursor: opts.cursor ?? null, window: opts.window }, requestSummary: { query, type } },
+    { service: "socialdata", purpose: opts.purpose, subject: opts.subject, identity: { query, type, cursor: opts.cursor ?? null, window: opts.window }, requestSummary: { query, type }, cooldown: environmentCooldownScope("socialdata", null, apiBase(), key) },
     async () => {
       const sp = new URLSearchParams({ query, type });
       if (opts.cursor) sp.set("cursor", opts.cursor);
@@ -80,7 +81,7 @@ export async function searchTweets(query: string, opts: { purpose: string; subje
       if (res.status === 402 || res.status === 401 || res.status === 403 || res.status === 400 || res.status === 422) {
         throw new ProviderRejectedError(`socialdata HTTP ${res.status}: ${text.slice(0, 200)}`, res.status, false);
       }
-      if (res.status === 429 || res.status >= 500) throw new ProviderRejectedError(`socialdata HTTP ${res.status}`, res.status, true);
+      if (res.status === 429 || res.status >= 500) throw new ProviderRejectedError(`socialdata HTTP ${res.status}`, res.status, true, false, spendingRefusal("socialdata", res.status, text));
       const json = JSON.parse(text) as { tweets?: SdTweet[]; next_cursor?: string | null };
       const tweets = json.tweets?.length ?? 0;
       return { response: json, usage: { tweets }, cost: objectsCost(tweets) };
@@ -122,7 +123,7 @@ export async function getArticle(tweetId: string, opts: { purpose: string; subje
   const key = credential("collectors", "SOCIALDATA_API_KEY");
   if (!key) throw new ProviderUnavailableError("configuration", "SOCIALDATA_API_KEY is not configured");
   const receipt = await paidRequest(
-    { service: "socialdata", purpose: opts.purpose, subject: opts.subject, identity: { article: tweetId }, requestSummary: { article: tweetId } },
+    { service: "socialdata", purpose: opts.purpose, subject: opts.subject, identity: { article: tweetId }, requestSummary: { article: tweetId }, cooldown: environmentCooldownScope("socialdata", null, apiBase(), key) },
     async () => {
       const res = await guardedFetch(`${apiBase()}/twitter/article/${encodeURIComponent(tweetId)}`, {
         headers: { authorization: `Bearer ${key}`, accept: "application/json" },
@@ -135,7 +136,7 @@ export async function getArticle(tweetId: string, opts: { purpose: string; subje
       if (res.status === 402 || res.status === 401 || res.status === 403 || res.status === 400 || res.status === 422) {
         throw new ProviderRejectedError(`socialdata HTTP ${res.status}: ${text.slice(0, 200)}`, res.status, false);
       }
-      if (res.status === 429 || res.status >= 500) throw new ProviderRejectedError(`socialdata HTTP ${res.status}`, res.status, true);
+      if (res.status === 429 || res.status >= 500) throw new ProviderRejectedError(`socialdata HTTP ${res.status}`, res.status, true, false, spendingRefusal("socialdata", res.status, text));
       // A post without an article answers with the post alone, or with {status: "error"}.
       const json = JSON.parse(text) as { article?: SdArticle; status?: string };
       const article = json.status === "error" ? null : (json.article ?? null);
@@ -150,7 +151,7 @@ export async function getTweet(id: string, opts: { purpose: string; subject: str
   const key = credential("collectors", "SOCIALDATA_API_KEY");
   if (!key) throw new ProviderUnavailableError("configuration", "SOCIALDATA_API_KEY is not configured");
   const receipt = await paidRequest(
-    { service: "socialdata", purpose: opts.purpose, subject: opts.subject, identity: { tweet: id }, requestSummary: { tweet: id } },
+    { service: "socialdata", purpose: opts.purpose, subject: opts.subject, identity: { tweet: id }, requestSummary: { tweet: id }, cooldown: environmentCooldownScope("socialdata", null, apiBase(), key) },
     async () => {
       const res = await guardedFetch(`${apiBase()}/twitter/tweets/${encodeURIComponent(id)}`, {
         headers: { authorization: `Bearer ${key}`, accept: "application/json" },
@@ -163,7 +164,7 @@ export async function getTweet(id: string, opts: { purpose: string; subject: str
       if (res.status === 402 || res.status === 401 || res.status === 403 || res.status === 400 || res.status === 422) {
         throw new ProviderRejectedError(`socialdata HTTP ${res.status}: ${text.slice(0, 200)}`, res.status, false);
       }
-      if (res.status === 429 || res.status >= 500) throw new ProviderRejectedError(`socialdata HTTP ${res.status}`, res.status, true);
+      if (res.status === 429 || res.status >= 500) throw new ProviderRejectedError(`socialdata HTTP ${res.status}`, res.status, true, false, spendingRefusal("socialdata", res.status, text));
       return { response: JSON.parse(text) as SdTweet, usage: { tweets: 1 }, cost: objectsCost(1) };
     },
   );

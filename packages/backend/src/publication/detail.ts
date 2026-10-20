@@ -9,6 +9,7 @@ import { ITEM_COLUMNS, ITEM_FROM, toItemSummary, xView, type ItemRow } from "./i
 import { itemUrl } from "./links.ts";
 import { hasItemPage } from "./rules.ts";
 import { SITE } from "@aihot/industry/site";
+import { isChinese } from "../lib/language.ts";
 
 interface DetailRow extends ItemRow {
   body_html: string | null;
@@ -90,7 +91,7 @@ export async function loadItemDetail(id: string, now = new Date()): Promise<Deta
       complete: true,
     };
   } else if (row.body_mode === "full" && row.body_html) {
-    const isZh = row.language === "zh" || (/[一-鿿]/.test(row.body_text?.slice(0, 400) ?? "") && row.language !== "en");
+    const isZh = isChinese(row.language, row.body_text ?? "");
     const original = proxyBodyImages(row.body_html);
     const zh = isZh ? original : row.tr_html ? proxyBodyImages(row.tr_html) : null;
     const primary = withOutline(zh ?? original);

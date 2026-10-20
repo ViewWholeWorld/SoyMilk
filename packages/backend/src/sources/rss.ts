@@ -161,7 +161,8 @@ export async function fetchRss(source: SourceRow, opts: { force?: boolean } = {}
   if (channel) {
     const items = arr(doc.rss?.channel?.item ?? doc["rdf:RDF"]?.item);
     for (const it of items) {
-      const link = text(it.link) || text(it.guid);
+      const href = text(it.link) || text(it.guid);
+      const link = href ? URL.parse(href, res.url)?.toString() : null;
       const title = collapseWhitespace(stripTags(text(it.title)));
       if (!link || !title) continue;
       const contentEncoded = text(it["content:encoded"]);
@@ -208,7 +209,8 @@ export async function fetchRss(source: SourceRow, opts: { force?: boolean } = {}
         ...identity(entryUrl),
         title,
         author: text(arr(e.author)[0]?.name) || null,
-        publishedAt: parseDate(text(e.published) || text(e.updated)),
+        // updated 是修订时间；缺少首次发布时间时沿用材料层的未知时间归档规则。
+        publishedAt: parseDate(text(e.published)),
         sourceUpdatedAt: parseDate(text(e.updated)),
         ...feedText(bodyHtml, summary, source, plainBody),
         media: plainBody === null && bodyHtmlRaw ? imagesFrom(bodyHtmlRaw, entryUrl) : [],

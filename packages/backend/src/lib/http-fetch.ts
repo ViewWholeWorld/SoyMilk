@@ -72,7 +72,8 @@ export async function guardedFetch(input: string, opts: GuardedFetchOptions = {}
   let url = await check(input);
   const maxRedirects = opts.maxRedirects ?? 5;
   const maxBytes = opts.maxBytes ?? 8 * 1024 * 1024;
-  const headers = new Headers({ "user-agent": DEFAULT_UA, "accept-language": "zh-CN,zh;q=0.9,en;q=0.8", ...(opts.headers ?? {}) });
+  const headers = new Headers({ "user-agent": DEFAULT_UA, "accept-language": "zh-CN,zh;q=0.9,en;q=0.8" });
+  for (const [name, value] of Object.entries(opts.headers ?? {})) headers.set(name, value);
   const publicHeaders = new Set(["accept", "accept-language", "accept-encoding", "user-agent", "cache-control", "if-modified-since", "if-none-match", "range", "if-range"]);
   // 未知自定义头和请求体可能携带凭据，整个跳转链都保留最初的来源边界。
   const originBound = opts.redirectPolicy === "same-origin" || opts.body !== undefined || Object.keys(opts.headers ?? {}).some((name) => !publicHeaders.has(name.toLowerCase()));
@@ -136,7 +137,7 @@ async function withinDeadline<T>(work: Promise<T>, signal: AbortSignal): Promise
 }
 
 function decodeBody(body: Buffer, contentType: string | null): string {
-  const m = /charset=([\w-]+)/i.exec(contentType ?? "");
+  const m = /charset\s*=\s*["']?([\w-]+)/i.exec(contentType ?? "");
   let charset = m?.[1]?.toLowerCase() ?? "utf-8";
   if (!m) {
     const head = body.subarray(0, 2048).toString("latin1");
@@ -151,5 +152,5 @@ function decodeBody(body: Buffer, contentType: string | null): string {
   }
   // A character lost on the way reads as one U+FFFD however many of its bytes were garbled (some
   // feeds send two or three for one character), so text cut to a length keeps the same cut.
-  return text.replace(/\uFFFD+/g, "\uFFFD");
+  return text.replace(/\u0000/g, "\uFFFD").replace(/\uFFFD+/g, "\uFFFD");
 }

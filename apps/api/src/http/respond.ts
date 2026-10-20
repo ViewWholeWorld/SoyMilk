@@ -108,8 +108,9 @@ export function strictQuery(req: FastifyRequest, allowed: readonly string[]): Re
   const params = new URLSearchParams(qIndex >= 0 ? raw.slice(qIndex + 1) : "");
   const out: Record<string, string> = {};
   for (const [key, value] of params) {
+    if (/[\u0000-\u001f\u007f]/.test(key + value)) throw new QueryError("Query parameters must not contain control characters.");
     if (!allowed.includes(key)) throw new QueryError(`Unknown query parameter: ${key}.`);
-    if (key in out) throw new QueryError(`Query parameter must not be repeated: ${key}.`);
+    if (Object.hasOwn(out, key)) throw new QueryError(`Query parameter must not be repeated: ${key}.`);
     out[key] = value;
   }
   return out;
@@ -121,6 +122,9 @@ export function looseQuery(req: FastifyRequest): Record<string, string> {
   const qIndex = raw.indexOf("?");
   const params = new URLSearchParams(qIndex >= 0 ? raw.slice(qIndex + 1) : "");
   const out: Record<string, string> = {};
-  for (const [k, v] of params) if (!(k in out)) out[k] = v;
+  for (const [k, v] of params) {
+    if (/[\u0000-\u001f\u007f]/.test(k + v)) throw new QueryError("Query parameters must not contain control characters.");
+    if (!Object.hasOwn(out, k)) Object.defineProperty(out, k, { value: v, enumerable: true });
+  }
   return out;
 }

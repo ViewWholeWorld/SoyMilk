@@ -60,7 +60,7 @@ const LATEST_INPUT = z.strictObject({
   limit: z.number().int().min(1).max(30).default(10).describe("Maximum number of results, from 1 to 30."),
 });
 const SEARCH_INPUT = z.strictObject({
-  q: z.string().min(2).max(200).describe("Search query, 2 to 200 characters."),
+  q: z.string().min(2).max(200).regex(/^[^\u0000-\u001f\u007f]*$/, "Search query must not contain control characters.").describe("Search query, 2 to 200 characters."),
   window: z.enum(["24h", "7d"]).default("7d").describe("Search window. Defaults to the latest 7 days."),
   category,
   limit: z.number().int().min(1).max(30).default(10).describe("Maximum number of results, from 1 to 30."),

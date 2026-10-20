@@ -75,6 +75,8 @@ export interface Finding {
   detail?: string;
   /** When the problem began, when known; otherwise when it was first seen. */
   since?: Date;
+  /** 本条问题最新的真实故障证据；用于让人工忽略在新故障出现时失效。 */
+  observedAt?: Date;
 }
 
 const MARK: Record<Exclude<Level, "digest">, string> = { now: "🔴", today: "🟠" };

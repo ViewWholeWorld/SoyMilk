@@ -10,6 +10,8 @@ import { startHttp } from "./runtime.ts";
 import { adminReads, adminWrites, fallbackRoutes, publicReads } from "./routes.ts";
 import { modelWorkflows } from "./models.ts";
 import { contentWorkflows } from "./content.ts";
+import { sourceHealthWorkflows } from "./source-health.ts";
+import { upstreamWorkflows } from "./upstream.ts";
 
 test("从空库迁移后通过生产网页代理执行 HTTP API 验收", async t => {
   const h = await startHttp();
@@ -106,6 +108,8 @@ test("从空库迁移后通过生产网页代理执行 HTTP API 验收", async t
     });
     await modelWorkflows(h, scenario);
     await contentWorkflows(h, scenario);
+    await sourceHealthWorkflows(h, scenario);
+    await upstreamWorkflows(h, scenario);
     await scenario("生产 SSR 后台各标签可访问，退出后的会话和 CSRF 失效", async () => {
       for (const path of ["/admin/models", "/admin/models?tab=prices", "/admin/model-stats", "/admin/model-stats?tab=costs", "/admin/model-stats?tab=costs&details=1&backfill=1"]) {
         assert.match((await h.request("GET", path, 200, { admin: true })).text, /SoyMilk/);

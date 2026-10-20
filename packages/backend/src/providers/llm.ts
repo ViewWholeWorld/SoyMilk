@@ -4,7 +4,7 @@
 import type { z } from "zod";
 import type { ReasoningEffort } from "@aihot/contracts/admin";
 import { config, credential } from "../config.ts";
-import { sha256 } from "../lib/ids.ts";
+import { sha256, stableJson } from "../lib/ids.ts";
 import { completeReceipt, paidRequest, ProviderRejectedError, ProviderUnavailableError, rejectReceivedResponse, requestWait, storedReceipt } from "./receipts.ts";
 import { sql } from "../db.ts";
 import { chatGPTAccess } from "./chatgpt-auth.ts";
@@ -15,6 +15,7 @@ import { withCodexServer } from "./codex-session.ts";
 import { guardedFetch, type GuardedResponse } from "../lib/http-fetch.ts";
 import { shutdownSignal } from "../lib/shutdown.ts";
 import { modelBillingContext } from "./model-billing.ts";
+import { spendingRefusal, type ProviderCooldownScope } from "./provider-cooldown.ts";
 
 export interface ModelSpec {
   key: string;
@@ -28,6 +29,17 @@ export interface ModelSpec {
   vision?: boolean;
   reasoningEffort?: ReasoningEffort | null;
   connection?: { id?: string; name?: string; type: "api-key" | "codex"; baseUrl?: string; apiKey?: string; generation?: string; supplierId?: string | null };
+}
+
+export function modelProviderCooldownScope(spec: ModelSpec, context: { baseUrl?: string | null; apiKey?: string | null; codexGeneration?: string; chatGPTRegistration?: string }): ProviderCooldownScope {
+  const { baseUrl, apiKey, codexGeneration, chatGPTRegistration } = context;
+  const transport = codexGeneration ? "codex" : chatGPTRegistration ? "chatgpt" : "api-key";
+  const billing = modelBillingContext(spec, transport, baseUrl);
+  return { service: spec.service, model: spec.model, providerKey: billing.providerKey, supplierId: billing.supplierId ?? null,
+    accountFingerprint: sha256(codexGeneration ?? chatGPTRegistration ?? apiKey ?? ""),
+    configurationFingerprint: sha256(stableJson({ endpoint: baseUrl ?? null, transport, generation: spec.connection?.generation ?? null,
+      extra: spec.extra ?? null, jsonMode: spec.jsonMode, vision: spec.vision ?? null, reasoningEffort: spec.reasoningEffort ?? null })),
+  };
 }
 
 function extraFromEnv(value: string | undefined): Record<string, unknown> | undefined {
@@ -128,11 +140,14 @@ export interface ChatJsonOptions<S extends z.ZodType> {
   /** false: the model answers in its own text format (no JSON mode); `parse` turns it into the schema's input. */
   json?: boolean;
   parse?: (content: string) => unknown;
+  /** 翻译将不可用响应拒绝与持久失败次数在同一业务事务提交。 */
+  deferOutputRejection?: boolean;
 }
 
 export interface ChatJsonResult<T> {
   data: T;
   receiptId: number;
+  receiptAttempt: number;
   reused: boolean;
   model: string;
   usage: Record<string, unknown> | null;
@@ -140,9 +155,11 @@ export interface ChatJsonResult<T> {
 
 export class ModelOutputError extends Error {
   readonly receiptId: number | null;
-  constructor(message: string, receiptId: number | null = null) {
+  readonly receiptAttempt: number | null;
+  constructor(message: string, receiptId: number | null = null, receiptAttempt: number | null = null) {
     super(message);
     this.receiptId = receiptId;
+    this.receiptAttempt = receiptAttempt;
   }
 }
 
@@ -243,6 +260,7 @@ async function executeChatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>, sp
     ...(spec.extra ?? {}),
   };
   const billingContext = modelBillingContext(spec, codex ? "codex" : access ? "chatgpt" : "api-key", baseUrl);
+  const providerScope = modelProviderCooldownScope(spec, { baseUrl, apiKey, codexGeneration: codex?.generation, chatGPTRegistration: access?.registration });
 
   const receipt = await paidRequest(
     {
@@ -251,10 +269,11 @@ async function executeChatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>, sp
       purpose: opts.purpose,
       subject: opts.subject,
       identity: { model: spec.model, promptVersion: opts.promptVersion, system: sha256(opts.system), user: sha256(userText), temperature, maxTokens, extra: spec.extra ?? null, ...(spec.reasoningEffort ? { reasoningEffort: spec.reasoningEffort } : {}), ...(access ? { transport: "chatgpt-responses-v1", registrationHash: sha256(access.registration) } : {}), ...(spec.connection ? { connection: spec.connection.generation } : {}), ...(codex ? { transport: "codex-app-server", account: codex.generation } : {}) },
-      requestSummary: { promptVersion: opts.promptVersion, systemHash: sha256(opts.system), userHash: sha256(userText), userChars: userText.length, temperature, maxTokens, reasoningEffort: spec.reasoningEffort ?? null, modelKey: opts.model, ...(opts.materialHash ? { materialHash: opts.materialHash } : {}) },
+      requestSummary: { promptVersion: opts.promptVersion, systemHash: sha256(opts.system), userHash: sha256(userText), userChars: userText.length, temperature, maxTokens, reasoningEffort: spec.reasoningEffort ?? null, modelKey: opts.model, providerScope, ...(opts.materialHash ? { materialHash: opts.materialHash } : {}) },
       attemptTag: opts.attemptTag,
       exclusiveWith: opts.exclusiveWith,
       billingContext,
+      cooldown: providerScope,
     },
     async () => {
       const started = Date.now();
@@ -289,7 +308,7 @@ async function executeChatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>, sp
       if (res.status < 200 || res.status >= 300) {
         const retryable = res.status === 429 || res.status >= 500;
         throw new ProviderRejectedError(spec.connection ? `模型接口返回 HTTP ${res.status}` : `HTTP ${res.status}: ${text.slice(0, 500)}`,
-          res.status, retryable, !retryable && /contentFilter|"1301"/.test(text));
+          res.status, retryable, !retryable && /contentFilter|"1301"/.test(text), spendingRefusal(billingContext.officialProviderId ?? spec.service, res.status, text));
       }
       let json: Record<string, unknown>;
       try {
@@ -315,10 +334,10 @@ async function executeChatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>, sp
     parsed = opts.schema.parse(opts.parse ? opts.parse(content) : extractJson(content));
   } catch (error) {
     // Unusable output: record it and let a later attempt pay for a fresh answer.
-    await rejectReceivedResponse(receipt.receiptId, `unusable output: ${String(error).slice(0, 500)}`);
-    throw new ModelOutputError(`Model ${opts.model} returned unusable output for ${opts.subject}: ${String(error).slice(0, 300)}`, receipt.receiptId);
+    if (!opts.deferOutputRejection) await rejectReceivedResponse(receipt.receiptId, `unusable output: ${String(error).slice(0, 500)}`, sql, receipt.attempt);
+    throw new ModelOutputError(`Model ${opts.model} returned unusable output for ${opts.subject}: ${String(error).slice(0, 300)}`, receipt.receiptId, receipt.attempt);
   }
-  return { data: parsed, receiptId: receipt.receiptId, reused: receipt.reused, model: spec.key, usage: response.usage ?? null };
+  return { data: parsed, receiptId: receipt.receiptId, receiptAttempt: receipt.attempt, reused: receipt.reused, model: spec.key, usage: response.usage ?? null };
 }
 
 export async function markReceiptsCompleted(ids: number[]): Promise<void> {
@@ -335,10 +354,10 @@ export async function reuseJsonReceipt<S extends z.ZodType>(id: number, schema: 
   const response = saved.response as { choices?: Array<{ message?: { content?: string } }>; usage?: Record<string, unknown> };
   const content = response.choices?.[0]?.message?.content ?? "";
   try {
-    return { data: schema.parse(opts.parse ? opts.parse(content) : extractJson(content)), receiptId: id, reused: true,
+    return { data: schema.parse(opts.parse ? opts.parse(content) : extractJson(content)), receiptId: id, receiptAttempt: saved.attempts, reused: true,
       model: typeof saved.request.modelKey === "string" ? saved.request.modelKey : saved.model, usage: response.usage ?? null };
   } catch (error) {
-    await rejectReceivedResponse(id, `unusable output: ${String(error).slice(0, 500)}`);
+    await rejectReceivedResponse(id, `unusable output: ${String(error).slice(0, 500)}`, sql, saved.attempts);
     throw new ModelOutputError(`已保存响应 ${id} 无法解析`, id);
   }
 }

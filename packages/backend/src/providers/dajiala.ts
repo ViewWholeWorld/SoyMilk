@@ -4,6 +4,7 @@
 import { credential } from "../config.ts";
 import { guardedFetch } from "../lib/http-fetch.ts";
 import { paidRequest, ProviderRejectedError, type CallOutcome } from "./receipts.ts";
+import { environmentCooldownScope, spendingRefusal } from "./provider-cooldown.ts";
 
 export interface MpPost {
   position: number;
@@ -52,7 +53,7 @@ function outcomeOf(json: { code?: number; msg?: string; cost_money?: number }, l
 export async function mpHistory(ghid: string, opts: { subject: string; window: string }): Promise<MpHistory> {
   const { url, key } = base();
   const receipt = await paidRequest(
-    { service: "dajiala", purpose: "mp_history", subject: opts.subject, identity: { ghid, window: opts.window }, requestSummary: { ghid } },
+    { service: "dajiala", purpose: "mp_history", subject: opts.subject, identity: { ghid, window: opts.window }, requestSummary: { ghid }, cooldown: environmentCooldownScope("dajiala", null, url, key) },
     async () => {
       const res = await guardedFetch(`${url}/fbmain/monitor/v3/post_history`, {
         method: "POST",
@@ -61,7 +62,7 @@ export async function mpHistory(ghid: string, opts: { subject: string; window: s
         timeoutMs: 30_000,
         route: "direct",
       });
-      if (res.status === 429 || res.status >= 500) throw new ProviderRejectedError(`dajiala HTTP ${res.status}`, res.status, true);
+      if (res.status === 402 || res.status === 429 || res.status >= 500) throw new ProviderRejectedError(`dajiala HTTP ${res.status}`, res.status, res.status !== 402, false, spendingRefusal("dajiala", res.status, res.text()));
       const json = JSON.parse(res.text()) as { code?: number; msg?: string; cost_money?: number };
       const cost = outcomeOf(json, "post_history");
       return { response: json, cost, usage: { posts: Array.isArray((json as { data?: unknown[] }).data) ? (json as { data: unknown[] }).data.length : 0 } };
@@ -75,7 +76,7 @@ export async function mpHistory(ghid: string, opts: { subject: string; window: s
 export async function mpArticle(articleUrl: string, opts: { subject: string; identity: string }): Promise<MpArticle> {
   const { url, key } = base();
   const receipt = await paidRequest(
-    { service: "dajiala", purpose: "mp_article", subject: opts.subject, identity: { article: opts.identity }, requestSummary: { url: articleUrl } },
+    { service: "dajiala", purpose: "mp_article", subject: opts.subject, identity: { article: opts.identity }, requestSummary: { url: articleUrl }, cooldown: environmentCooldownScope("dajiala", null, url, key) },
     async () => {
       const res = await guardedFetch(`${url}/fbmain/monitor/v3/article_detail?${new URLSearchParams({ url: articleUrl, key, mode: "1", verifycode: "" })}`, {
         redirectPolicy: "same-origin",
@@ -84,7 +85,7 @@ export async function mpArticle(articleUrl: string, opts: { subject: string; ide
         maxBytes: 8 * 1024 * 1024,
         route: "direct",
       });
-      if (res.status === 429 || res.status >= 500) throw new ProviderRejectedError(`dajiala HTTP ${res.status}`, res.status, true);
+      if (res.status === 402 || res.status === 429 || res.status >= 500) throw new ProviderRejectedError(`dajiala HTTP ${res.status}`, res.status, res.status !== 402, false, spendingRefusal("dajiala", res.status, res.text()));
       const json = JSON.parse(res.text()) as { code?: number; msg?: string; cost_money?: number };
       const cost = outcomeOf(json, "article_detail");
       return { response: json, cost, usage: { chars: String((json as { content?: string }).content ?? "").length } };
