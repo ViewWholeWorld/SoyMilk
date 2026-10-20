@@ -139,39 +139,15 @@ export async function contentWorkflows(h: HttpRuntime, scenario: (name: string, 
     const redirect = await h.request("GET", `/api/site/stories/${publication.publicId}`, 308, { level: "business" });
     assert.equal(redirect.response.headers.get("location"), `/api/site/stories/${targetPublicId}`);
   });
-  await scenario("反馈提交、截图读取、状态冲突、封禁与隐私删除", async () => {
-    const png = await sharp({ create: { width: 128, height: 128, channels: 3, background: "white" } }).png().toBuffer();
-    const body = { content: "HTTP 合成反馈", email: "fixture@example.test", pageUrl: "/all", screenshot: { mime: "image/png", data: png.toString("base64") } };
-    await write("POST", "/api/site/feedback", { content: "" }, 400);
-    const { id } = await write("POST", "/api/site/feedback", body, 201);
-    const row = (await read("/api/admin/feedback?q=HTTP")).rows.find((row: any) => row.id === id); assert.ok(row); assert.equal(row.content, body.content);
-    const screenshot = await h.request("GET", `/api/admin/feedback/${id}/screenshot`, 200, { admin: true, level: "business" });
-    assert.equal(screenshot.response.headers.get("content-type"), "image/png");
-    const update = { status: "triaged", note: "HTTP 验收处理中", version: row.updated_at };
-    assert.equal((await write("PATCH", `/api/admin/feedback/${id}`, update)).status, "triaged");
-    await write("PATCH", `/api/admin/feedback/${id}`, update, 409);
-    await write("POST", "/api/admin/feedback-bans", { sourceHash: row.source_hash, reason: "合成封禁" }, 204);
-    await write("POST", "/api/site/feedback", { content: "封禁验证" }, 403);
-    await write("DELETE", `/api/admin/feedback-bans/${row.source_hash}`, undefined, 204);
-    assert.equal((await write("POST", `/api/admin/feedback/${id}/erase`, { reason: "合成隐私删除" })).erased, true);
-    await read(`/api/admin/feedback/${id}/screenshot`, 404);
-    const erased = (await read("/api/admin/feedback")).rows.find((r: any) => r.id === id);
-    assert.equal(erased.email, null); assert.equal(erased.page_url, null); assert.equal(erased.screenshot, null); assert.match(erased.content, /已按要求删除/);
-  });
-  await scenario("设置上传、预算、通知目标和模型能力设置均写入隔离夹具", async () => {
-    const png = await sharp({ create: { width: 128, height: 128, channels: 3, background: "white" } }).png().toBuffer();
-    const contact = await write("POST", "/api/admin/settings/contact-qr", { slot: "wechatQr", image: "data:image/png;base64," + png.toString("base64") });
-    assert.ok(contact.wechatQr.startsWith("/contact/"));
-    await h.request("GET", contact.wechatQr);
-    assert.equal((await read("/api/site/contact")).wechatQr, contact.wechatQr);
+  await scenario("预算和模型能力设置均写入隔离夹具", async () => {
     const budget = await write("PUT", "/api/admin/budgets/http-fixture", { perMinute: 1, perHour: 2, perDay: 3, reason: "合成预算" });
     assert.equal(budget.per_day, 3); assert.equal(budget.per_minute, 1);
-    await sql`INSERT INTO notify_targets(key,purpose,kind) VALUES('http-fixture','content','log')`;
-    const enabled = await write("POST", "/api/admin/notify-targets/http-fixture", { enabled: true, reason: "合成日志目标" });
-    assert.equal(enabled.enabled, true); assert.equal(enabled.pushEnabledHere, false);
     await write("POST", "/api/admin/models/score", { model: null, reason: "恢复默认配置验收" });
     await write("POST", "/api/admin/models/missing", { model: null, reason: "未知能力" }, 400);
     const settings = await read("/api/admin/settings"); assert.ok(settings.budgets.some((b: any) => b.service === "http-fixture"));
+    assert.deepEqual(Object.keys(settings), ["budgets"]);
+    assert.ok(!settings.budgets.some((b: any) => ["socialdata", "dajiala"].includes(b.service)));
+    for (const service of ["socialdata", "dajiala"]) await write("PUT", "/api/admin/budgets/" + service, { perMinute: 1, perHour: 2, perDay: 3, reason: "退役配置" }, 400);
     const overview = await read("/api/admin/models");
     assert.ok(overview.capabilities.some((row: any) => row.key === "score")); assert.equal(typeof overview.tokenSummary, "object");
   });
@@ -189,16 +165,12 @@ export async function contentWorkflows(h: HttpRuntime, scenario: (name: string, 
       await h.request("GET", url.replace(/sig=[a-f0-9]+/, "sig=0000000000000000"), 403, { level: "boundary" }); assert.equal(hits, 1);
     } finally { config.allowPrivateNetworkFetch = allowPrivate; server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
   });
-  await scenario("未知回执人工释放、投递核对、失败重排及评测导入", async () => {
+  await scenario("未知回执人工释放、失败重排及评测导入", async () => {
     const sample = await attempt("recover", { status: "unknown" });
     await sql`UPDATE receipts SET status='unknown' WHERE id=${sample.receiptId}`;
     await write("POST", `/api/admin/receipts/${sample.receiptId}/release`, { billed: false, note: "合成回执未计费" });
     assert.equal((await sql`SELECT status FROM receipts WHERE id=${sample.receiptId}`)[0]!.status, "failed");
     await write("POST", `/api/admin/receipts/${sample.receiptId}/release`, { billed: false, note: "重复核对" }, 409);
-    const [delivery] = await sql`INSERT INTO deliveries(target_key,dedupe_key,subject_kind,subject_id,status)
-      VALUES('http-fixture','http-fixture','article',${publication.articleId},'unknown') RETURNING id`;
-    assert.equal((await write("POST", `/api/admin/deliveries/${delivery!.id}/resolve`, { outcome: "sent", note: "合成确认" })).status, "sent");
-    await write("POST", `/api/admin/deliveries/${delivery!.id}/resolve`, { outcome: "sent", note: "重复核对" }, 409);
     await sql`UPDATE articles SET processing_state='failed',processing_error='HTTP 合成失败' WHERE id=${publication.articleId}`;
     const requeue = await write("POST", "/api/admin/processing/requeue", { group: null, reason: "合成失败恢复" }); assert.equal(requeue.requeued, 1);
     const report = { meta: { n: 1 }, models: { fixture: { summary: { n: 1 }, cases: [{ caseId: "http-case", title: "合成评测", gold: "select", decision: "select", score: 90 }] } } };
@@ -207,7 +179,7 @@ export async function contentWorkflows(h: HttpRuntime, scenario: (name: string, 
     assert.equal((await read(`/api/admin/selectbench/${run.id}`)).rows[0].case_id, "http-case");
     const runs = await read("/api/admin/runs");
     assert.ok(runs.queues.some((row: any) => row.n > 0)); assert.ok(runs.receipts.issues.some((row: any) => row.id === sample.receiptId && row.status === "failed"));
-    assert.deepEqual(await read("/api/admin/nav-counts"), { feedback: 0, sources: 0, runs: 0 });
+    assert.deepEqual(await read("/api/admin/nav-counts"), { sources: 0, runs: 0 });
     const audit = await read("/api/admin/audit"); assert.ok(audit.rows.some((row: any) => row.action === "selectbench.import"));
   });
 }

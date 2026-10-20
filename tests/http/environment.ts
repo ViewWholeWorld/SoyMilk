@@ -28,8 +28,8 @@ export function httpTestEnvironment(databaseUrl: string, directory: string): Nod
     IMG_PROXY_SIGN_SECRET: "http-fixture-image-secret-0123456789", INGEST_TOKEN: "http-fixture-ingest-token-only",
     SITE_URL: "http://localhost:3000", LOG_LEVEL: "error", TZ: "Asia/Shanghai",
     COLLECT_ENABLED: "false", MODEL_CALLS_ENABLED: "false", MODEL_COST_BACKFILL_ENABLED: "true",
-    FEISHU_CONTENT_PUSH_ENABLED: "false", FEISHU_INTERNAL_ENABLED: "false", FEISHU_LOGIN_ENABLED: "false",
-    INDEXNOW_SUBMIT_ENABLED: "false", ALLOW_PRIVATE_NETWORK_FETCH: "false",
+
+    ALLOW_PRIVATE_NETWORK_FETCH: "false",
     LLM_BASE_URL: "http://127.0.0.1:1/v1", LLM_API_KEY: "", LLM_AUTH_MODE: "api-key",
   });
 }

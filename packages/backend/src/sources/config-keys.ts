@@ -6,7 +6,7 @@ import type { SourceRow } from "./types.ts";
 // Rules applied in collect.ts to every kind read through collectSource.
 const COLLECTED = ["_aihot", "allowUrlPrefixes", "denyUrlPrefixes", "ingestNoiseFilter", "itemUrlPrefixRewrite", "sortByPublishedAt", "detail", "fetchPublicContent"];
 
-const KEYS: Record<SourceRow["kind"], string[]> = {
+const KEYS: Partial<Record<SourceRow["kind"], string[]>> = {
   rss: [...COLLECTED, "feedUrl", "summaryIsBody", "preserveUrlFragment", "allowCategories", "denyCategories", "maxItemAgeDays"],
   web_list: [
     ...COLLECTED, "url", "baseUrl", "parseMode", "adapter", "cacheToleranceSeconds", "linksStartLine", "preserveUrlFragment",
@@ -17,9 +17,6 @@ const KEYS: Record<SourceRow["kind"], string[]> = {
     "titlePaths", "summaryPaths", "summaryIsBody", "authorPaths", "publishedAtPath", "publishedAtUnit", "externalIdPath",
     "urlTemplate", "urlTemplateFallback", "rawDropKeys", "requireBoolean", "minNumeric",
   ],
-  // X accounts are mostly read in shards, which apply only these.
-  x_search: ["_aihot", "ingestNoiseFilter", "itemUrlPrefixRewrite", "query", "searchType"],
-  mp_account: ["wxid", "ghid", "nickname"],
   external: [],
 };
 
@@ -43,6 +40,7 @@ const VALUES: Record<string, string[]> = {
 
 /** The config entries a source of this kind would ignore or cannot run, e.g. ["adapter=site_cards", "detail.titleFoo"]. */
 export function unsupportedConfig(kind: SourceRow["kind"], config: Record<string, unknown>): string[] {
+  if (!Object.hasOwn(KEYS, kind)) return [`kind=${kind}`];
   const allowed = new Set(KEYS[kind] ?? []);
   const out: string[] = [];
   for (const [key, value] of Object.entries(config ?? {})) {

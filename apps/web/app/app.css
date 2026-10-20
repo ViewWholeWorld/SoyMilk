@@ -305,7 +305,7 @@
   box-shadow: var(--shadow-card);
 }
 /* The well: a quiet sunk panel for what navigates or annotates rather than reads (the report's 报眼,
-   the hot lead's heat panel, notes on about and feedback). Radius is set where it is used. */
+   the hot lead's heat panel, notes on about). Radius is set where it is used. */
 @utility well {
   background-color: var(--bg-sunk);
   box-shadow: inset 0 0 0 1px var(--line-soft);

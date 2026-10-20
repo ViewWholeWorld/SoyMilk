@@ -77,9 +77,9 @@ test("从空库迁移后通过生产网页代理执行 HTTP API 验收", async t
     await scenario("真实密码会话、错误密码和安全跳转", async () => {
       const redirect = await h.request("GET", "/api/auth/login?return=https://untrusted.example.test", 302, { level: "business" });
       assert.equal(new URL(redirect.response.headers.get("location")!, h.base).searchParams.get("return"), "/admin");
-      const opts = await h.request("GET", "/api/auth/options", 200, { level: "business" }); assert.deepEqual(opts.data, { password: true, feishu: false });
-      await h.request("GET", "/api/auth/feishu", 302, { level: "boundary" });
-      await h.request("GET", "/api/auth/callback", 403, { level: "boundary" });
+      const opts = await h.request("GET", "/api/auth/options", 200, { level: "business" }); assert.deepEqual(opts.data, { password: true });
+      await h.request("GET", "/api/auth/feishu", 404, { level: "boundary" });
+      await h.request("GET", "/api/auth/callback", 404, { level: "boundary" });
       await h.request("GET", "/api/auth/check", 401, { level: "guard" });
       const wrong = await h.request("POST", "/api/auth/password", 303, { body: { password: "wrong-fixture" }, level: "boundary" });
       assert.match(wrong.response.headers.get("location") ?? "", /error=wrong/); assert.equal(wrong.response.headers.get("set-cookie"), null);
@@ -100,11 +100,40 @@ test("从空库迁移后通过生产网页代理执行 HTTP API 验收", async t
         if (name === "model-stats" || name === "model-costs") assert.equal(result.data.summary.calls, 0);
         if (name === "model-attempts") assert.equal(result.data.total, 0);
       }
-      for (const name of ["sources/missing", "content/missing", "feedback/999999/screenshot", "model-cost-backfills/00000000-0000-4000-8000-000000000000", "selectbench/missing", "model-config/codex/login/missing"]) {
+      for (const name of ["sources/missing", "content/missing", "model-cost-backfills/00000000-0000-4000-8000-000000000000", "selectbench/missing", "model-config/codex/login/missing"]) {
         await h.request("GET", "/api/admin/" + name, 404, { admin: true, level: "boundary" });
       }
       await h.request("POST", "/api/admin/model-config/codex/login/missing/cancel", 404, { body: {}, admin: true, level: "boundary" });
       await h.request("POST", "/api/admin/model-config/codex/login", 400, { body: { restart: "invalid" }, admin: true, level: "boundary" });
+    });
+    await scenario("已下线页面与接口在匿名和登录状态均返回 404，不写入历史表", async () => {
+      const counts = () => sql`SELECT (SELECT count(*)::int FROM feedback) AS feedback,(SELECT count(*)::int FROM receipts) AS receipts,(SELECT count(*)::int FROM deliveries) AS deliveries`;
+      const before = await counts();
+      const routes: Array<[string,string]> = [
+        ["GET","/api/site/contact"], ["POST","/api/site/feedback"], ["GET","/api/admin/feedback"],
+        ["GET","/api/admin/feedback/1/screenshot"], ["PATCH","/api/admin/feedback/1"], ["POST","/api/admin/feedback/1/erase"],
+        ["POST","/api/admin/feedback-bans"], ["DELETE","/api/admin/feedback-bans/legacy"],
+        ["POST","/api/admin/settings/contact-qr"], ["POST","/api/admin/notify-targets/legacy"],
+        ["POST","/api/admin/deliveries/1/resolve"], ["GET","/api/auth/feishu"], ["GET","/api/auth/callback"],
+        ["GET","/feedback"], ["GET","/admin/feedback"], ["GET","/contact/legacy.png"], ["GET","/legacy-indexnow-key.txt"],
+      ];
+      for (const admin of [false,true]) for (const [method,path] of routes) {
+        await h.request(method,path,404,{ admin, ...(method === "POST" || method === "PATCH" ? { body: { content: "不得保存", slot: "wechatQr" } } : {}) });
+      }
+      assert.deepEqual(await counts(), before);
+      const about = (await h.request("GET","/about",200)).text;
+      assert.ok(!about.includes("/api/site/contact") && !about.includes("联系二维码"));
+    });
+    await scenario("退役采集类型不能创建、预览、启用或手动排队", async () => {
+      for (const kind of ["x_search","mp_account"]) {
+        const id = "http-retired-" + kind.replaceAll("_","-");
+        const draft = { id, name: "历史信源", kind, config: { url: "https://retired.invalid/" } };
+        for (const path of ["/api/admin/sources", "/api/admin/sources/preview"]) await h.request("POST",path,400,{ admin:true,body:draft });
+        await sql`INSERT INTO sources(id,name,kind,enabled) VALUES(${id},'历史信源',${kind},false)`;
+        const detail = await h.request("GET","/api/admin/sources/"+id,200,{admin:true});
+        await h.request("PATCH","/api/admin/sources/"+id,400,{admin:true,body:{patch:{enabled:true},version:detail.data.source.updated_at,reason:"不得重开"}});
+        for (const action of ["preview","fetch"]) await h.request("POST","/api/admin/sources/"+id+"/"+action,400,{admin:true,body:{}});
+      }
     });
     await modelWorkflows(h, scenario);
     await contentWorkflows(h, scenario);

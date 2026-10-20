@@ -21,7 +21,7 @@ export interface AdminMe {
 }
 
 /** Items waiting for the admin, shown on the navigation. */
-export type AdminNavCounts = Partial<Record<"feedback" | "sources" | "runs", number>>;
+export type AdminNavCounts = Partial<Record<"sources" | "runs", number>>;
 
 /** One manual change (audit_log), as a history list shows it. */
 export interface AdminAuditEntry {
@@ -175,7 +175,7 @@ export interface AdminPublication {
   updated_at: Timestamp;
 }
 
-/** An item's whole chain: source → discoveries → revisions → judgements → publication → grouping → deliveries. */
+/** An item's whole chain: source → discoveries → revisions → judgements → publication → grouping. */
 export interface AdminContentChain {
   article: {
     id: string; source_id: string; url: string; identity_key: string; title: string; author: string | null; language: string | null;
@@ -195,35 +195,7 @@ export interface AdminContentChain {
   ledger: Array<{ seq: number; op: string; visible_at: Timestamp; changed_at: Timestamp }>;
   membership: Array<{ fact_id: number; role: string; manual: boolean; fact_public_id: string; fact_title: string; story_id: number | null; story_public_id: string | null; story_title: string | null }>;
   decisions: Array<{ verdict: string; fact_id: number | null; story_id: number | null; receipt_id: number | null; candidates: unknown; created_at: Timestamp }>;
-  deliveries: Array<{ target_key: string; dedupe_key: string; status: string; attempts: number; response: string | null; created_at: Timestamp; sent_at: Timestamp | null }>;
   history: AdminAuditEntry[];
-}
-
-// Feedback (F14)
-
-export interface AdminFeedbackRow {
-  id: number;
-  content: string;
-  email: string | null;
-  page_url: string | null;
-  /** local (viewable here until forwarded), feishu (in the internal chat), gone (could not be forwarded), or null. */
-  screenshot: "local" | "feishu" | "gone" | null;
-  source_hash: string;
-  status: string;
-  note: string | null;
-  forwarded_at: Timestamp | null;
-  forward_error: string | null;
-  created_at: Timestamp;
-  updated_at: Timestamp;
-  banned: boolean;
-  from_source: number;
-}
-
-export interface AdminFeedback {
-  page: number;
-  rows: AdminFeedbackRow[];
-  counts: Record<string, number>;
-  bans: Array<{ source_hash: string; reason: string | null; created_by: string | null; created_at: Timestamp }>;
 }
 
 // Runs (F20)
@@ -237,18 +209,6 @@ export interface AdminReceiptIssue {
   status: string;
   attempts: number;
   error: string | null;
-  created_at: Timestamp;
-  updated_at: Timestamp;
-}
-
-export interface AdminDeliveryIssue {
-  id: number;
-  target_key: string;
-  subject_kind: string;
-  subject_id: string;
-  status: string;
-  attempts: number;
-  response: string | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 }
@@ -270,26 +230,12 @@ export interface AdminRuns {
     dismissed:{reason:string;by:string;at:Timestamp}|null}>;
   providerRefusals: Array<{key:string;title:string;impact:string;detail:string;observedAt:Timestamp|null}>;
   receipts: { counts: Record<string, number>; issues: AdminReceiptIssue[] };
-  deliveries: AdminDeliveryIssue[];
   errors: Array<{ error: string; n: number; last: Timestamp; example: string }>;
   retrying: { count: number; next: Timestamp | null };
   ingest: Array<{ client: string; kind: string; status: string; error: string | null; summary: unknown; created_at: Timestamp }>;
 }
 
 // Settings
-
-export interface AdminNotifyTarget {
-  key: string;
-  purpose: string;
-  kind: string;
-  enabled: boolean;
-  enabled_at: Timestamp | null;
-  config_ref: string | null;
-  note: string | null;
-  updated_at: Timestamp;
-  deliveries_7d: number;
-  last_sent_at: Timestamp | null;
-}
 
 export interface AdminBudget {
   service: string;
@@ -303,8 +249,6 @@ export interface AdminBudget {
 }
 
 export interface AdminSettings {
-  contact: { wechatQr: string | null; feishuQr: string | null };
-  targets: AdminNotifyTarget[];
   budgets: AdminBudget[];
 }
 

@@ -51,13 +51,13 @@ test('事故从首次检测起计时；暂停和自然老去不关闭，剩余�
   assert.equal(state!.value[key]!.since,new Date(now).toISOString(),'不能把最老文章年龄当事故时长');
   process.env.COLLECT_ENABLED='false';process.env.MODEL_CALLS_ENABLED='false';
   let result=await checkAlerts(now+4*86400_000);
-  assert.ok(result.open.includes(key));assert.ok(!result.sent.includes(key+':recovered'));
+  assert.ok(result.open.includes(key));assert.ok(!result.recorded.includes(key+':recovered'));
   await sql`UPDATE articles SET processing_state='analyzed' WHERE id IN ${sql(ids.slice(1))}`;
   result=await checkAlerts(now+4*86400_000+60000);
   assert.ok(result.open.includes(key),'低于初始阈值不代表剩余积压已恢复');
   await sql`UPDATE articles SET processing_state='analyzed' WHERE id=${ids[0]!}`;
   result=await checkAlerts(now+4*86400_000+120000);
-  assert.ok(result.sent.includes(key+':recovered'),'明确完成证据允许关闭事故');
+  assert.ok(result.recorded.includes(key+':recovered'),'明确完成证据允许关闭事故');
 });
 
 test('忽略只覆盖当前证据，新失败重开且恢复操作均留审计',async()=>{
@@ -131,7 +131,7 @@ test('已保存的事故兼容旧证据标记，关闭采集后仍按完成证�
   await sql`UPDATE articles SET processing_state='new',discovered_at=${new Date(now-3*3600_000)} WHERE id IN ${sql(ids)}`;
   process.env.COLLECT_ENABLED='false';process.env.MODEL_CALLS_ENABLED='false';
   let result=await checkAlerts(now+50*60000);
-  assert.ok(result.open.includes(key));assert.ok(!result.sent.some(k=>k.startsWith(key)));
+  assert.ok(result.open.includes(key));assert.ok(!result.recorded.some(k=>k.startsWith(key)));
   const [saved]=await sql<{value:Record<string,unknown>}[]>`SELECT value FROM settings WHERE key='alerts.state'`;
   assert.deepEqual(saved!.value[key],previous,'兼容已持久化的旧标记，不重置事故');
   await sql`UPDATE articles SET processing_state='analyzed' WHERE id IN ${sql(ids.slice(1))}`;
@@ -139,7 +139,7 @@ test('已保存的事故兼容旧证据标记，关闭采集后仍按完成证�
   assert.ok(result.open.includes(key),'自然老去或仅剩一条都不能关闭');
   await sql`UPDATE articles SET processing_state='analyzed' WHERE id=${ids[0]!}`;
   result=await checkAlerts(now+4*86400_000+60000);
-  assert.ok(result.sent.includes(key+':recovered'));assert.ok(!result.open.includes(key));
+  assert.ok(result.recorded.includes(key+':recovered'));assert.ok(!result.open.includes(key));
 });
 
 test('旧service资金拒绝迁入具体scope，只有同scope后发成功关闭',async()=>{
@@ -162,18 +162,18 @@ test('旧service资金拒绝迁入具体scope，只有同scope后发成功关闭
   const key=result.open.find(k=>k.startsWith(legacy+':'))!;
   assert.ok(key);assert.ok(!result.open.includes(legacy));
   assert.ok(result.open.includes('provider.refused.no-proof'),'缺少身份与成功证据的旧事件保守保留');
-  assert.ok(!result.sent.some(k=>k.startsWith(legacy)),'迁入不能重复宣布或伪报恢复');
+  assert.ok(!result.recorded.some(k=>k.startsWith(legacy)),'迁入不能重复宣布或伪报恢复');
   const [saved]=await sql<{value:Record<string,{since:string}>}[]>`SELECT value FROM settings WHERE key='alerts.state'`;
   assert.equal(saved!.value[key]!.since,since,'迁入沿用原事故起点');
   await attempt('received',now-4000,now+200);
   await attempt('received',now+100,now+200,true);
   result=await checkAlerts(now+2*86400_000);
-  assert.ok(result.open.includes(key));assert.ok(!result.sent.includes(key+':recovered'));
+  assert.ok(result.open.includes(key));assert.ok(!result.recorded.includes(key+':recovered'));
   await attempt('received',now+2*86400_000+400,now+2*86400_000+500);
   result=await checkAlerts(now+2*86400_000+600);
-  assert.ok(result.sent.includes(key+':recovered'));assert.ok(!result.open.includes(key));
+  assert.ok(result.recorded.includes(key+':recovered'));assert.ok(!result.open.includes(key));
   result=await checkAlerts(now+2*86400_000+700);
-  assert.ok(!result.sent.includes(key+':recovered'),'恢复只报告一次');
+  assert.ok(!result.recorded.includes(key+':recovered'),'恢复只报告一次');
 });
 
 test("an outage is announced once, repeated hourly, and closed with one recovery", async () => {
@@ -186,17 +186,17 @@ test("an outage is announced once, repeated hourly, and closed with one recovery
   const stuck = (sent: string[]) => sent.filter((k) => k.startsWith("content.process"));
 
   let r = await checkAlerts(t0);
-  assert.deepEqual(stuck(r.sent), ["content.process"]);
-  assert.ok(!r.sent.some((k) => k.startsWith("receipts.unknown")), "an entry from before the levels closes silently");
+  assert.deepEqual(stuck(r.recorded), ["content.process"]);
+  assert.ok(!r.recorded.some((k) => k.startsWith("receipts.unknown")), "an entry from before the levels closes silently");
   assert.ok(!r.open.includes("receipts.unknown"));
   r = await checkAlerts(t0 + 50 * 60_000);
-  assert.deepEqual(stuck(r.sent), [], "no repeat within the hour");
+  assert.deepEqual(stuck(r.recorded), [], "no repeat within the hour");
   r = await checkAlerts(t0 + 61 * 60_000);
-  assert.deepEqual(stuck(r.sent), ["content.process"], "hourly reminder while it lasts");
+  assert.deepEqual(stuck(r.recorded), ["content.process"], "hourly reminder while it lasts");
 
   await sql`UPDATE articles SET processing_state = 'analyzed' WHERE id IN ${sql(ids)}`;
   r = await checkAlerts(t0 + 70 * 60_000);
-  assert.deepEqual(stuck(r.sent), ["content.process:recovered"]);
+  assert.deepEqual(stuck(r.recorded), ["content.process:recovered"]);
   r = await checkAlerts(t0 + 80 * 60_000);
-  assert.deepEqual(stuck(r.sent), []);
+  assert.deepEqual(stuck(r.recorded), []);
 });

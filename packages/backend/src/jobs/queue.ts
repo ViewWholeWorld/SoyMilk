@@ -17,9 +17,6 @@ export interface JobData {
   "events.group": { articleId: string; signalOnly?: boolean; force?: boolean };
   "events.digest": { storyId: number; afterCorrection?: boolean };
   "sources.fetch": { sourceId: string; force?: boolean };
-  "sources.fetch-x": { key: string; sourceIds: string[] };
-  "sources.mp": { sourceId: string; reason?: "schedule" | "manual" };
-  "notify.selected": { articleId: string; attempt?: number };
   "publication.republish-source": { sourceId: string };
   "media.prepare": { articleId: string } | { url: string; mode: string };
 }
@@ -32,9 +29,6 @@ export const QUEUES = {
   group: "events.group",
   digest: "events.digest",
   fetchSource: "sources.fetch",
-  fetchXShard: "sources.fetch-x",
-  mpCheck: "sources.mp",
-  notifySelected: "notify.selected",
   republishSource: "publication.republish-source",
   prepareMedia: "media.prepare",
 } as const satisfies Record<string, QueueName>;
@@ -49,9 +43,6 @@ const QUEUE_OPTIONS: Record<QueueName, QueueOptions> = {
   [QUEUES.group]: { policy: "short", retryLimit: 4, retryDelay: 20, retryBackoff: true, expireInSeconds: 600 },
   [QUEUES.digest]: { policy: "short", retryLimit: 3, retryDelay: 60, retryBackoff: true, expireInSeconds: 900 },
   [QUEUES.fetchSource]: { policy: "short", retryLimit: 0, expireInSeconds: 600 },
-  [QUEUES.fetchXShard]: { policy: "short", retryLimit: 0, expireInSeconds: 900 },
-  [QUEUES.mpCheck]: { policy: "short", retryLimit: 3, retryDelay: 60, retryBackoff: true, expireInSeconds: 600 },
-  [QUEUES.notifySelected]: { policy: "short", retryLimit: 0, expireInSeconds: 300 },
   [QUEUES.republishSource]: { policy: "short", retryLimit: 2, retryDelay: 60, expireInSeconds: 3600 },
   [QUEUES.prepareMedia]: { policy: "short", retryLimit: 1, retryDelay: 120, expireInSeconds: 600 },
 };
@@ -100,6 +91,24 @@ function queueDb(tx: Db) {
   return { executeSql: async (text: string, values?: unknown[]) => ({ rows: await tx.unsafe(text, (values ?? []) as never[]) }) };
 }
 
+// 升级时只取消下线功能尚未执行的任务，保留任务历史和所有在途／付费记录。
+const RETIRED_QUEUES = [
+  "sources.fetch-x", "sources.mp", "notify.selected", "cron.sources.mp-reconcile",
+  "cron.seo.indexnow", "cron.ops.digest", "cron.feedback.forward", "cron.reports.source-health",
+];
+
+export async function retireQueuedJobs(b: PgBoss): Promise<number> {
+  return sql.begin(async tx => {
+    const jobs = await tx<{ id: string; name: string }[]>`SELECT id,name FROM pgboss.job
+      WHERE name=ANY(${RETIRED_QUEUES}) AND state IN ('created','retry') FOR UPDATE`;
+    for (const name of RETIRED_QUEUES) {
+      const ids = jobs.filter(job => job.name === name).map(job => job.id);
+      if (ids.length) await b.cancel(name, ids, { db: queueDb(tx) });
+    }
+    return jobs.length;
+  });
+}
+
 /** Enqueues a job. With `tx`, the job commits atomically with the caller's business write. */
 export async function enqueue<Q extends QueueName>(name: Q, data: JobData[Q], options: SendOptions = {}, tx?: Db): Promise<string | null> {
   await ensureQueue(name);
@@ -117,7 +126,7 @@ export async function retryReleasedReceiptJobs(): Promise<number> {
   return sql.begin(async (tx) => {
     const jobs = await tx<{ id: string; name: string }[]>`
       SELECT j.id, j.name FROM pgboss.job j
-      WHERE j.state = 'failed'
+      WHERE j.state = 'failed' AND NOT (j.name = ANY(${RETIRED_QUEUES}))
         AND EXISTS (SELECT 1 FROM audit_log a WHERE a.action = 'receipt.release'
                     AND a.subject = 'receipt:' || (j.output->>'receiptId') AND a.created_at > j.started_on)
       ORDER BY j.completed_on LIMIT 200 FOR UPDATE OF j SKIP LOCKED`;

@@ -1,15 +1,14 @@
 // Worker process: queues and schedules for collection, processing, events, reports and ops.
 import { assertProductionSecrets } from "@aihot/backend/config";
 import { closeDb } from "@aihot/backend/db";
-import { getBoss, stopBoss } from "@aihot/backend/jobs/queue";
+import { getBoss, retireQueuedJobs, stopBoss } from "@aihot/backend/jobs/queue";
 import { registerContentJobs } from "@aihot/backend/jobs/content";
 import { registerTranslationJobs } from "@aihot/backend/jobs/translate";
 import { registerSourceJobs } from "@aihot/backend/jobs/sources";
 import { registerEventJobs } from "@aihot/backend/jobs/events";
-import { registerNotifyJobs } from "@aihot/backend/jobs/notify";
+import { registerMediaJobs } from "@aihot/backend/jobs/media";
 import { registerPublicationJobs } from "@aihot/backend/jobs/publication";
 import { registerSchedules } from "./schedules.ts";
-import { ensureContentTargets } from "@aihot/backend/notify/deliver";
 import { startHeartbeat } from "@aihot/backend/operations/heartbeat";
 import { startCodexWorker, stopCodexWorker } from "@aihot/backend/providers/codex-session";
 import { shutdownSignal } from "@aihot/backend/lib/shutdown";
@@ -17,13 +16,13 @@ import { shutdownSignal } from "@aihot/backend/lib/shutdown";
 assertProductionSecrets([["auth", "IMG_PROXY_SIGN_SECRET"]]);
 if (process.env.CODEX_REUSE_ENABLED === "true") startCodexWorker(Number(process.env.CODEX_CONCURRENCY || 2));
 
-await ensureContentTargets();
 const boss = await getBoss();
+await retireQueuedJobs(boss);
 await registerContentJobs(boss);
 await registerTranslationJobs(boss);
 if (process.env.COLLECT_ENABLED !== "false") await registerSourceJobs(boss);
 await registerEventJobs(boss);
-await registerNotifyJobs(boss);
+await registerMediaJobs(boss);
 await registerPublicationJobs(boss);
 await registerSchedules(boss);
 const heartbeat = startHeartbeat("worker");

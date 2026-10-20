@@ -1,14 +1,9 @@
-// Operations alerts. The person reading them is the site owner, not an engineer: each
-// message says what readers see, whether it heals by itself and what, if anything, the owner must do.
-//   now    — readers are affected and it has not healed: sent at once, repeated hourly, recovery reported.
-//   today  — money at risk or only the owner can act: sent at once, repeated at most daily, recovery reported.
-//   digest — follow-ups without reader impact: one 09:00 message a day, meant to be handed to the AI.
-// Delivery goes through sendAlert (ops chat, internal-chat fallback; off unless FEISHU_INTERNAL_ENABLED).
+// 后台事故诊断与证据跟进；状态持久化并记录本地日志，不向外部发送提醒。
 import { beijingDate, beijingTime } from "@aihot/contracts/time";
 import { sql } from "../db.ts";
 import { credential } from "../config.ts";
 import { audit } from "../audit.ts";
-import { beijingDay, beijingStamp, duration, formatAlert, formatRecovery, sendAlert, type Finding, type Level } from "../notify/feishu.ts";
+import { beijingStamp, duration, formatAlert, formatRecovery, recordDiagnostic, type Finding, type Level } from "./diagnostics.ts";
 import { backupConfigured } from "./backup.ts";
 import { sourceHealthFindings } from "../sources/health.ts";
 import { CAPABILITIES, modelFor, type CapabilityKey } from "../editorial/models.ts";
@@ -37,7 +32,7 @@ export async function collectFindings(now = Date.now(), open: AlertState = {}): 
   const settled = !hb?.value.startedAt || now - Date.parse(hb.value.startedAt) > 20 * 60_000;
   if ((settled && collecting()) || open['content.collect']) {
     const [last] = await sql<{ at: Date | null }[]>`SELECT max(discovered_at) AS at FROM articles WHERE discovered_at > ${new Date(now - 4 * QUIET_MS)}`;
-    const [anySource] = await sql`SELECT 1 FROM sources WHERE enabled LIMIT 1`;
+    const [anySource] = await sql`SELECT 1 FROM sources WHERE enabled AND kind IN ('rss','web_list','json_list') LIMIT 1`;
     if (anySource && (!last?.at || now - last.at.getTime() > QUIET_MS)) {
       out.push({
         key: "content.collect",
@@ -102,24 +97,6 @@ export async function collectFindings(now = Date.now(), open: AlertState = {}): 
   // ---- Money, and things only the owner can do --------------------------------------------------
   out.push(...(await providerFindings(now,open)));
 
-  // Content-group pushes the Feishu webhook refused (a removed bot, a changed address); nothing resends them.
-  const [refused] = await sql<{ n: number; target: string | null; response: string | null }[]>`
-    SELECT count(*)::int AS n, max(t.note) AS target, left(max(d.response), 200) AS response FROM deliveries d JOIN notify_targets t ON t.key = d.target_key
-    WHERE d.status = 'failed' AND d.updated_at > ${new Date((open['deliveries.failed'] ? Date.parse(open['deliveries.failed'].since) : now)-86400_000)}
-      AND d.updated_at < ${new Date(now+1)}
-      AND NOT EXISTS (SELECT 1 FROM audit_log log WHERE log.action='delivery.drop' AND log.subject='delivery:'||d.id AND log.created_at>=d.updated_at)`;
-  if (refused!.n > 0) {
-    out.push({
-      key: "deliveries.failed",
-      level: "today",
-      title: "飞书内容群有推送没发出去",
-      impact: `过去 24 小时 ${refused!.n} 条精选通知没进${refused!.target ?? "内容群"}`,
-      heals: "不会自动重发",
-      action: "转给 AI 处理；如果推送机器人被移出了群，需要你把它加回去",
-      detail: refused!.response ?? "",
-    });
-  }
-
   if (backupConfigured()) {
     const [b] = await sql<{ value: { at: string; uploaded: boolean; filesError?: string } }[]>`SELECT value FROM settings WHERE key = 'backup.last'`;
     const age = b ? now - Date.parse(b.value.at) : Infinity;
@@ -142,14 +119,12 @@ export async function collectFindings(now = Date.now(), open: AlertState = {}): 
 
   // ---- Follow-ups for the daily digest ------------------------------------------------------------
   if (collecting()) out.push(...await sourceHealthFindings(now));
-  const [r] = await sql<{ receipts: number; services: string | null; deliveries: number }[]>`
+  const [r] = await sql<{ receipts: number; services: string | null }[]>`
     SELECT (SELECT count(*)::int FROM receipts WHERE status = 'unknown') AS receipts,
-           (SELECT string_agg(DISTINCT service || '/' || purpose, '、') FROM receipts WHERE status = 'unknown') AS services,
-           (SELECT count(*)::int FROM deliveries WHERE status = 'unknown') AS deliveries`;
+           (SELECT string_agg(DISTINCT service || '/' || purpose, '、') FROM receipts WHERE status = 'unknown') AS services`;
   if (r!.receipts > 0) {
     out.push({ key: "receipts.unknown", level: "digest", title: `${r!.receipts} 个付费请求自动重试过一次，结果仍未知`, detail: `${r!.services}；后台“运行”页核对后放行` });
   }
-  if (r!.deliveries > 0) out.push({ key: "deliveries.unknown", level: "digest", title: `${r!.deliveries} 条飞书内容群推送不确定是否送达`, detail: "后台“运行”页核对群里有没有，再标记或重发" });
 
   // Runnable jobs (deferred ones excluded) that have waited more than two hours.
   const queues = await sql<{ name: string; n: number; oldest: Date }[]>`
@@ -171,9 +146,7 @@ const PROVIDERS: Record<string, { name: string; stops: string; where: string }> 
   dashscope: { name: "阿里云百炼", stops: MODEL_STOPS, where: "阿里云百炼控制台" },
   deepseek: { name: "DeepSeek", stops: MODEL_STOPS, where: "DeepSeek 开放平台" },
   mimo: { name: "小米 MiMo", stops: MODEL_STOPS, where: "小米 MiMo 开放平台" },
-  socialdata: { name: "SocialData", stops: "X（推特）上的新内容收不到", where: "SocialData 后台" },
   jina: { name: "Jina", stops: "部分文章取不到正文", where: "Jina 后台" },
-  dajiala: { name: "极致了（Dajiala）", stops: "公众号新文章收不到", where: "极致了后台" },
 };
 export const providerName = (service: string) => PROVIDERS[service]?.name ?? service;
 export const providerStops = (service: string) => PROVIDERS[service]?.stops ?? "相关功能停了";
@@ -260,10 +233,12 @@ export interface AlertState {
   [key: string]: { title: string; level?: Level; since: string; sentAt: string };
 }
 
-/** Every 10 minutes: new problems and recoveries of the now/today levels go out; digest items wait for 09:00. */
+/** 每十分钟记录事故与恢复，兼容旧 sentAt 字段作为本地日志的节流时间。 */
 export async function checkAlerts(now = Date.now()) {
   const [row] = await sql<{ value: AlertState }[]>`SELECT value FROM settings WHERE key = 'alerts.state'`;
   const state: AlertState = { ...(row?.value ?? {}) };
+  // 旧推送事故退出诊断范围，不能误记为已恢复。
+  for (const key of Object.keys(state)) if (key.startsWith("deliveries.")) delete state[key];
   const all = await collectFindings(now,state);
   // 旧版按整个 service 合并；迁入已冻结的范围，避免升级时伪报恢复。
   for (const [key,old] of Object.entries(state)) {
@@ -278,7 +253,7 @@ export async function checkAlerts(now = Date.now()) {
     state[f.key]={title:f.title,level:'digest',since:new Date(now).toISOString(),sentAt:''};
     found.push(f);
   }
-  const sent: string[] = [];
+  const recorded: string[] = [];
   for (const f of found) {
     if (f.level === 'digest') continue;
     const level = f.level as Exclude<Level, "digest">;
@@ -286,9 +261,9 @@ export async function checkAlerts(now = Date.now()) {
     if (open?.sentAt && now - Date.parse(open.sentAt) <= REPEAT_MS[level]) continue;
     const since = open ? new Date(open.since) : (f.key.startsWith('content.') ? new Date(now) : (f.since ?? new Date(now)));
     const msg = formatAlert(f, since, now, !!open?.sentAt);
-    await sendAlert(msg.title, msg.lines);
+    recordDiagnostic(msg.title, msg.lines);
     state[f.key] = { title: f.title, level, since: since.toISOString(), sentAt: new Date(now).toISOString() };
-    sent.push(f.key);
+    recorded.push(f.key);
   }
   for (const key of Object.keys(state)) {
     if (found.some((f) => f.key === key)) continue;
@@ -302,34 +277,14 @@ export async function checkAlerts(now = Date.now()) {
     // Entries without a level predate this scheme (2026-09-29) and close without a message.
     if (state[key]!.level && state[key]!.level!=='digest') {
       const msg = formatRecovery(state[key]!.title, new Date(state[key]!.since), now);
-      const [dropped]=key==='deliveries.failed' ? await sql`SELECT count(*)::int AS n FROM deliveries d WHERE d.status='failed'
-        AND d.updated_at>${new Date(Date.parse(state[key]!.since)-86400_000)}
-        AND EXISTS(SELECT 1 FROM audit_log a WHERE a.action='delivery.drop' AND a.subject='delivery:'||d.id AND a.created_at>=d.updated_at)` : [];
-      if (dropped?.n) await sendAlert(`已结束跟进：${state[key]!.title}`,[`${dropped.n} 条旧通知已决定不再补发，未确认送达`]);
-      else await sendAlert(msg.title, msg.lines);
-      sent.push(`${key}:${dropped?.n ? 'closed' : 'recovered'}`);
+      recordDiagnostic(msg.title, msg.lines);
+      recorded.push(`${key}:recovered`);
     }
     delete state[key];
   }
   await sql`INSERT INTO settings (key, value, updated_by) VALUES ('alerts.state', ${sql.json(state as never)}, 'alerts')
             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
-  return { open: Object.keys(state), sent };
-}
-
-/** 09:00: one message with the follow-ups that do not touch readers; nothing when there are none. */
-export async function sendDigest(now = Date.now()) {
-  const [row] = await sql<{value:AlertState}[]>`SELECT value FROM settings WHERE key='alerts.state'`;
-  const found = (await collectFindings(now,row?.value ?? {})).filter((f) => f.level === "digest");
-  const dismissed = await dismissedFollowUps(found);
-  if (collecting()) {
-    const lapsed=Object.keys(await savedDismissals()).filter(key=>!dismissed[key]);
-    if (lapsed.length) await sql`UPDATE settings SET value=value-${sql.array(lapsed)}::text[],updated_at=now() WHERE key='alerts.dismissed'`;
-  }
-  const items = found.filter(f => !dismissed[f.key]);
-  const lines = items.map((f, i) => `${i + 1}. ${f.title}${f.detail ? `\n   ${f.detail}` : ""}`);
-  if (!lines.length) return { items: 0 };
-  await sendAlert(`📋 系统日报 · ${beijingDay(now)}`, ['以下事项需要跟进，具体影响见各条说明；可把整条转给 AI 处理。', ...lines]);
-  return { items: lines.length };
+  return { open: Object.keys(state), recorded };
 }
 
 export interface DismissedFollowUp { title:string; reason:string; by:string; at:string }

@@ -1,90 +1,47 @@
-// The worker watchdog, run from the api process: the worker cannot report its own death.
-import { randomUUID } from "node:crypto";
+// API 独立检查 worker 心跳，保留本地故障证据，无外部通知或发送重试。
 import { sql } from "../db.ts";
-import { beijingStamp, formatAlert, formatRecovery, sendAlert, type Finding } from "../notify/feishu.ts";
-
-interface PendingNotice {
-  id: string;
-  state: "up" | "down";
-  since: string;
-  at: string;
-}
+import { beijingStamp, formatAlert, formatRecovery, recordDiagnostic, type Finding } from "./diagnostics.ts";
 
 interface WatchState {
   state: "up" | "down";
   since: string;
-  pending?: PendingNotice[];
-  lease?: { token: string; until: string };
 }
 
-const DELIVERY_LEASE_MS = 2 * 60_000;
-
-// The process manager restarts a crashed worker within seconds and a deploy restarts it on purpose;
-// half an hour without a heartbeat means those did not help.
 const WORKER_STALE_MS = 30 * 60_000;
-
 const WORKER_DOWN: Finding = {
   key: "worker",
   level: "now",
   title: "后台处理服务停了，网站不会出现新内容",
-  impact: "新内容的采集、处理、推送和日报全部暂停，网站停在旧内容上",
+  impact: "新内容的采集、处理和报告生成暂停，网站停在旧内容上",
   heals: "系统自动重启没有成功",
-  action: "转给 AI 立即处理",
+  action: "查看后台运行状态与 worker 日志",
 };
 
-/**
- * API 记录心跳状态和待发通知；短事务认领队首，发送期间不持有数据库锁。
- * 外部成功但回执丢失时可能重复投递，重试保留同一通知编号，不承诺恰好一次。
- */
+/** 短事务串行记录状态转换；旧通知队列和发送租约在下次检查时退出运行状态。 */
 export async function checkWorkerHeartbeat(): Promise<void> {
-  const claimed = await sql.begin(async (tx) => {
-    // 首次还没有 settings 行时也需串行；行锁另与发送后的条件确认更新互斥。
+  const transition = await sql.begin(async (tx) => {
     await tx`SELECT pg_advisory_xact_lock(hashtext('watchdog.worker'))`;
     const [row] = await tx<{ value: WatchState }[]>`SELECT value FROM settings WHERE key = 'watchdog.worker' FOR UPDATE`;
     const [hb] = await tx<{ updated_at: Date; now: Date }[]>`
       SELECT updated_at, clock_timestamp() AS now FROM settings WHERE key = 'heartbeat.worker'`;
     if (!hb) return null;
-    const now = hb.now.getTime();
-    const stale = now - hb.updated_at.getTime() > WORKER_STALE_MS;
-    const next = stale ? "down" : "up";
+    const state = hb.now.getTime() - hb.updated_at.getTime() > WORKER_STALE_MS ? "down" : "up";
     const prior = row?.value;
-    const changed = !prior || prior.state !== next;
-    const since = stale ? hb.updated_at.toISOString() : hb.now.toISOString();
-    let value: WatchState = prior ?? { state: next, since, pending: [] };
-    if (changed) {
-      const pending = [...(prior?.pending ?? [])];
-      // 首次健康只初始化；旧格式的同态记录不追溯重发，但以后的变化都持久入队。
-      if (stale || prior) pending.push({
-        id: randomUUID(), state: next, at: hb.now.toISOString(),
-        since: stale ? since : prior?.state === "down" ? prior.since : hb.updated_at.toISOString(),
-      });
-      value = { ...prior, state: next, since, pending };
-    }
-    const notice = value.pending?.[0];
-    const token = notice && (!value.lease || Date.parse(value.lease.until) <= now) ? randomUUID() : null;
-    if (token) value.lease = { token, until: new Date(now + DELIVERY_LEASE_MS).toISOString() };
-    if (changed || token) await tx`
-      INSERT INTO settings (key, value, updated_by) VALUES ('watchdog.worker', ${tx.json(value as never)}, 'api')
+    const changed = !prior || prior.state !== state;
+    const since = changed ? (state === "down" ? hb.updated_at : hb.now).toISOString() : prior.since;
+    const value = { state, since };
+    // 只保留心跳证据；升级不会再补发旧通知。
+    if (changed || Object.keys(prior ?? {}).some(key => key !== "state" && key !== "since")) await tx`
+      INSERT INTO settings (key, value, updated_by) VALUES ('watchdog.worker', ${tx.json(value)}, 'api')
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()`;
-    return token && notice ? { notice, token } : null;
+    return changed && (state === "down" || prior) ? { state, since: state === "up" ? prior!.since : since, at: hb.now.getTime() } : null;
   });
-  if (!claimed) return;
-  const { notice, token } = claimed;
-  const since = new Date(notice.since);
-  const at = Date.parse(notice.at);
-  const msg = notice.state === "down"
-    ? formatAlert({ ...WORKER_DOWN, detail: `worker 心跳停在 ${beijingStamp(since)}；看 worker 的日志（docker compose logs worker）` }, since, at)
-    : formatRecovery(WORKER_DOWN.title, since, at);
-  msg.lines.push(`通知编号：${notice.id}（${beijingStamp(at)} 记录）`);
-  let sent = false;
-  try {
-    sent = await sendAlert(msg.title, msg.lines) === "sent";
-  } finally {
-    // 失败或关闭只释放租约；旧尝试的迟到结果不能清掉重领的租约或后续恢复通知。
-    await sql`UPDATE settings
-      SET value = ${sent ? sql`jsonb_set(value, '{pending}', (value->'pending') - 0) - 'lease'` : sql`value - 'lease'`}, updated_at = now()
-      WHERE key = 'watchdog.worker' AND value #>> '{pending,0,id}' = ${notice.id} AND value #>> '{lease,token}' = ${token}`;
-  }
+  if (!transition) return;
+  const since = new Date(transition.since);
+  const msg = transition.state === "down"
+    ? formatAlert({ ...WORKER_DOWN, detail: `worker 心跳停在 ${beijingStamp(since)}` }, since, transition.at)
+    : formatRecovery(WORKER_DOWN.title, since, transition.at);
+  recordDiagnostic(msg.title, msg.lines);
 }
 
 export function startWorkerWatchdog(): NodeJS.Timeout {

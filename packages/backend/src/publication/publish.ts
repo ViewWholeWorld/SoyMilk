@@ -320,11 +320,8 @@ export async function publishArticleTx(tx: Tx, articleId: string, options: Publi
     await tx`DELETE FROM pool_search WHERE article_id = ${articleId}`;
   }
 
-  // Content-group push: once, for an item that arrives live and becomes selected (never for imports,
-  // backfill or stale-on-discovery material); it runs after the release gate opens.
+  // 精选文章的阅读图片提前准备，分享图和海报仍按需生成。
   if (selected && !previous?.selected_ready_at && !options.releasedAt && !article.backfill && visibility === "public") {
-    const at = visibleAfter && visibleAfter > now ? visibleAfter : now;
-    await enqueue(QUEUES.notifySelected, { articleId }, { singletonKey: `selected:${articleId}`, startAfter: new Date(at.getTime() + 5_000) }, tx);
     // Its images are fetched and resized now, before the release gate lets readers in.
     await enqueue(QUEUES.prepareMedia, { articleId }, { singletonKey: `media:${articleId}` }, tx);
   }

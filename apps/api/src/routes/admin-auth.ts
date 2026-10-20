@@ -4,19 +4,14 @@ import { ZodError } from "zod";
 import type { AdminMe } from "@aihot/contracts/admin";
 import { config } from "@aihot/backend/config";
 import {
-  completeLogin,
   cookie,
   endSession,
-  feishuLoginConfigured,
   LoginRejected,
-  loginRedirect,
-  parseCookies,
   passwordLogin,
   safeReturn,
   SESSION_COOKIE,
   SESSION_DAYS,
   sessionPrincipal,
-  STATE_COOKIE,
   type AdminPrincipal,
 } from "@aihot/backend/admin/auth";
 import { sendProblem } from "../http/respond.ts";
@@ -85,7 +80,7 @@ export function registerAdminAuth(app: FastifyInstance) {
     return reply.header("Cache-Control", "no-store").redirect(loginPage(returnTo), 302);
   });
 
-  app.get("/api/auth/options", async (_req, reply) => reply.header("Cache-Control", "no-store").send({ password: !!config.adminPassword, feishu: feishuLoginConfigured() }));
+  app.get("/api/auth/options", async (_req, reply) => reply.header("Cache-Control", "no-store").send({ password: !!config.adminPassword }));
 
   app.post("/api/auth/password", async (req, reply) => {
     const b = (req.body ?? {}) as Record<string, string>;
@@ -99,30 +94,6 @@ export function registerAdminAuth(app: FastifyInstance) {
     } catch (error) {
       if (!(error instanceof LoginRejected)) req.log.error({ err: error }, "admin login failed");
       return reply.redirect(loginPage(returnTo, error instanceof LoginRejected && /ADMIN_PASSWORD/.test(error.message) ? "unset" : "wrong"), 303);
-    }
-  });
-
-  // Optional Feishu sign-in (FEISHU_LOGIN_APP_ID / FEISHU_LOGIN_APP_SECRET and an allowlist).
-  app.get("/api/auth/feishu", async (req, reply) => {
-    const returnTo = String((req.query as Record<string, string>).return ?? "/admin");
-    if (!feishuLoginConfigured()) return reply.redirect(loginPage(returnTo), 302);
-    const { url, stateCookie } = loginRedirect(returnTo);
-    reply.header("Set-Cookie", cookie(STATE_COOKIE, stateCookie, 600, secure())).header("Cache-Control", "no-store");
-    return reply.redirect(url, 302);
-  });
-
-  // The callback registered in the Feishu open platform: the state cookie comes back here.
-  app.get("/api/auth/callback", async (req, reply) => {
-    const q = req.query as Record<string, string>;
-    reply.header("Cache-Control", "no-store");
-    try {
-      const { token, returnTo } = await completeLogin(String(q.code ?? ""), String(q.state ?? ""), parseCookies(req.headers.cookie)[STATE_COOKIE], req.headers["user-agent"]);
-      reply.header("Set-Cookie", [cookie(SESSION_COOKIE, token, SESSION_DAYS * 86400, secure()), cookie(STATE_COOKIE, "", 0, secure())]);
-      return reply.redirect(returnTo, 302);
-    } catch (error) {
-      const message = error instanceof LoginRejected ? error.message : "登录失败，请稍后再试";
-      if (!(error instanceof LoginRejected)) req.log.error({ err: error }, "admin login failed");
-      return reply.code(403).type("text/html; charset=utf-8").send(`<!doctype html><meta charset="utf-8"><title>登录失败</title><p style="font:16px system-ui;padding:40px">${message}。<a href="/admin/login">重新登录</a></p>`);
     }
   });
 
