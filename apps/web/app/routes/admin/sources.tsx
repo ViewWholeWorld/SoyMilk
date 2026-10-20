@@ -95,7 +95,7 @@ export default function Sources({ loaderData }: Route.ComponentProps) {
               render: (r) => (
                 <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
                   <Dot tone={r.enabled ? healthTone(r.health) : "muted"} />
-                  {r.enabled ? HEALTH_LABEL[r.health] ?? r.health : "已暂停"}
+                  {["x_search", "mp_account"].includes(r.kind) ? "采集已下线" : r.enabled ? HEALTH_LABEL[r.health] ?? r.health : "已暂停"}
                   {r.fail_count > 0 && <span className="num text-[11.5px] text-ink-4">×{r.fail_count}</span>}
                 </span>
               ),

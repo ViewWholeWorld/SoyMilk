@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Link, useFetcher } from "react-router";
 import { useEffect } from "react";
 import type { Route } from "./+types/runs";
-import type { AdminDeliveryIssue, AdminReceiptIssue, AdminRuns } from "@aihot/contracts/admin";
+import type { AdminReceiptIssue, AdminRuns } from "@aihot/contracts/admin";
 import { adminGet } from "../../lib/admin.server";
 import { useAdminAction } from "../../features/admin/action";
 import { ago, bj, duration, num } from "../../features/admin/format";
@@ -23,8 +23,6 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
   const { run, pending } = useAdminAction();
   const [receipt, setReceipt] = useState<AdminReceiptIssue | null>(null);
   const [billed, setBilled] = useState("false");
-  const [delivery, setDelivery] = useState<AdminDeliveryIssue | null>(null);
-  const [outcome, setOutcome] = useState<"sent" | "drop" | "resend">("sent");
   // Failure group to put back into processing ("" = every failure of the last 30 days).
   const [requeue, setRequeue] = useState<string | null>(null);
   const [followUp,setFollowUp] = useState<AdminRuns['followUps'][number] | null>(null);
@@ -42,8 +40,8 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
   const failing = r.jobs.filter((j) => j.status === "failed");
 
   return (
-    <AdminPage title="运行" subtitle={<>任务、队列、信源延迟与需要人工核对的回执和投递。每 20 秒自动刷新 · 最近检查 {bj(r.checkedAt)}</>}>
-      <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
+    <AdminPage title="运行" subtitle={<>任务、队列、信源延迟与需要人工核对的回执。每 20 秒自动刷新 · 最近检查 {bj(r.checkedAt)}</>}>
+      <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat
           label="worker"
           value={<span className="inline-flex items-center gap-2 text-[18px]"><Dot tone={worker?.alive ? "ok" : "bad"} />{worker ? (worker.alive ? "运行中" : "心跳中断") : "无心跳"}</span>}
@@ -52,7 +50,6 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
         <Stat label="队列积压" value={num(queued)} tone={queued > 500 ? "warn" : undefined} hint="排队与等待重试" />
         <Stat label="失败的定时任务" value={num(failing.length)} tone={failing.length ? "bad" : "ok"} hint="最近一次运行失败" />
         <Stat label="回执结果未知" value={num(r.receipts.issues.filter((x) => x.status === "unknown").length)} tone={r.receipts.issues.some((x) => x.status === "unknown") ? "bad" : "ok"} hint={`7 天 ${num(Object.values(r.receipts.counts).reduce((a, b) => a + b, 0))} 次付费请求`} />
-        <Stat label="投递待核实" value={num(r.deliveries.filter((d) => d.status === "unknown").length)} tone={r.deliveries.some((d) => d.status === "unknown") ? "bad" : "ok"} />
       </div>
 
       <div className="grid gap-5 xl:grid-cols-2">
@@ -149,21 +146,6 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
             ]}
           />
         </Card>
-        <Card title="需要核实的投递" pad={false}>
-          <DataTable
-            dense
-            rows={r.deliveries}
-            rowKey={(d) => d.id}
-            empty="没有待核实的投递"
-            columns={[
-              { key: "t", label: "目标", render: (d) => d.target_key },
-              { key: "s", label: "状态", render: (d) => <Badge tone={d.status === "unknown" ? "bad" : "warn"}>{d.status}</Badge> },
-              { key: "sub", label: "内容", render: (d) => (d.subject_kind === "selected" ? <Link className="text-accent" to={`/admin/content/${d.subject_id}`}>{d.subject_id}</Link> : `${d.subject_kind} ${d.subject_id}`) },
-              { key: "at", label: "时间", render: (d) => <Time at={d.updated_at} /> },
-              { key: "a", label: "", render: (d) => <Button size="sm" onClick={() => setDelivery(d)}>处理</Button> },
-            ]}
-          />
-        </Card>
       </div>
 
       <div className="mt-5 grid gap-5 xl:grid-cols-2">
@@ -239,7 +221,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
               ]}
             />
           ) : (
-            <Empty>还没有外部上报（公众号截图监控、采集脚本）</Empty>
+            <Empty>还没有外部采集脚本上报</Empty>
           )}
         </Card>
       </div>
@@ -287,24 +269,6 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
         onClose={() => setRequeue(null)}
         onSubmit={async (reason) => (await run("POST", "/api/admin/processing/requeue", { group: requeue || null, reason }, { label: "requeue", success: "已重新排队" })) !== null}
       />
-      <ReasonDialog
-        open={!!delivery}
-        title="处理投递"
-        description="先到对应飞书群确认有没有收到。确认没收到再重发；开发环境不会真的发出。"
-        confirmLabel="确认"
-        danger={outcome === "resend"}
-        busy={pending === "delivery"}
-        onClose={() => setDelivery(null)}
-        onSubmit={async (note) => (await run("POST", `/api/admin/deliveries/${delivery!.id}/resolve`, { outcome, note }, { label: "delivery", success: "已处理" })) !== null}
-      >
-        <Field label="结果">
-          <Select value={outcome} onChange={(e) => setOutcome(e.target.value as typeof outcome)}>
-            <option value="sent">群里已收到，标记为已送达</option>
-            <option value="drop">不再发送</option>
-            <option value="resend">群里没有，重新发送</option>
-          </Select>
-        </Field>
-      </ReasonDialog>
     </AdminPage>
   );
 }

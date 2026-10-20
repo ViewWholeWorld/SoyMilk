@@ -1,15 +1,15 @@
-import { gate, stub, tag } from "./setup.ts";
+import { gate, tag } from "./setup.ts";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { after, before, test } from "node:test";
 import { config } from "@aihot/backend/config";
 import { closeDb, sql } from "@aihot/backend/db";
 import { stopBoss } from "@aihot/backend/jobs/queue";
-import { collectSource, collectXShard } from "@aihot/backend/sources/collect";
+import { collectSource } from "@aihot/backend/sources/collect";
 import { sourceHealth } from "@aihot/backend/sources/health";
 
 const T = `source-waits-${tag()}`;
-const environment = Object.fromEntries(["JINA_API_KEY", "JINA_BASE_URL", "SOCIALDATA_API_KEY", "SOCIALDATA_BASE_URL"].map(key => [key, process.env[key]]));
+const environment = Object.fromEntries(["JINA_API_KEY", "JINA_BASE_URL"].map(key => [key, process.env[key]]));
 const privateFetch = config.allowPrivateNetworkFetch;
 const budgets: Array<{ service: string; per_minute: number; per_hour: number; per_day: number }> = [];
 let mode: "ok" | "hold" | "unknown" | "reject" = "ok";
@@ -24,19 +24,15 @@ const jina = http.createServer(async (_req, res) => {
   res.end("Markdown Content:\n[一条真实新闻](https://example.test/news)");
 });
 await new Promise<void>(resolve => jina.listen(0, "127.0.0.1", resolve));
-const social = await stub(async () => { held!.entered.open(); await held!.release.promise; return { tweets: [], next_cursor: null }; });
 process.env.JINA_API_KEY = "test-key";
 process.env.JINA_BASE_URL = `http://127.0.0.1:${(jina.address() as { port: number }).port}`;
-process.env.SOCIALDATA_API_KEY = "test-key";
-process.env.SOCIALDATA_BASE_URL = social.url;
 config.allowPrivateNetworkFetch = true;
 before(async () => {
-  budgets.push(...await sql<typeof budgets>`SELECT service,per_minute,per_hour,per_day FROM budgets WHERE service IN ('jina','socialdata')`);
-  await sql`UPDATE budgets SET per_minute=10000,per_hour=10000,per_day=100000 WHERE service IN ('jina','socialdata')`;
+  budgets.push(...await sql<typeof budgets>`SELECT service,per_minute,per_hour,per_day FROM budgets WHERE service IN ('jina')`);
+  await sql`UPDATE budgets SET per_minute=10000,per_hour=10000,per_day=100000 WHERE service IN ('jina')`;
 });
 after(async () => {
   held?.release.open();
-  await social.close();
   await new Promise<void>(resolve => { jina.closeAllConnections(); jina.close(() => resolve()); });
   await stopBoss();
   await sql`DELETE FROM receipts WHERE subject LIKE ${"source:" + T + "%"} OR subject LIKE ${"x-shard:" + T + "%"}`;
@@ -150,25 +146,4 @@ test("真实 Jina HTTP 故障仍递增失败次数并触发连续失败诊断", 
   assert.equal((await latest(id)).status, "failed");
   assert.equal((await state(id)).fail_count, 5);
   assert.equal((await health(id)).health, "failing");
-});
-
-test("X 合并采集的在途回执对所有成员只记等待", async () => {
-  const ids = [T + "-x-a", T + "-x-b"];
-  for (const [index, id] of ids.entries()) await sql`INSERT INTO sources(id,name,kind,config,cursor) VALUES(${id},${id},'x_search',
-    ${sql.json({ query: `from:review_${index} -filter:replies` })},${sql.json({ lastTweetId: "100" })})`;
-  held = { entered: gate(), release: gate() };
-  const first = collectXShard(T, ids);
-  try {
-    await Promise.race([held.entered.promise, first.then(() => assert.fail("合并采集没有到达本地 SocialData 替身"))]);
-    assert.equal((await collectXShard(T, ids)).status, "skipped");
-    for (const id of ids) {
-      assert.equal((await latest(id)).detail.waiting.kind, "busy");
-      assert.equal((await latest(id)).detail.shard, T);
-      assert.equal((await state(id)).fail_count, 0);
-      assert.equal((await health(id)).failed, 0);
-    }
-    assert.equal(social.hits(), 1);
-  } finally { held.release.open(); }
-  assert.equal((await first).status, "ok");
-  held = null;
 });

@@ -40,7 +40,6 @@ const api = createServer((req, res) => {
   if (url.pathname === "/api/site/hot") return res.end(JSON.stringify({ entries: [] }));
   if (url.pathname === "/api/site/echo-client") return res.end(JSON.stringify({ forwarded: req.headers["x-forwarded-for"], real: req.headers["x-real-ip"] }));
   if (url.pathname === "/api/site/items/long-lived") return res.end(JSON.stringify({ id: "long-lived", title: "t" }));
-  if (url.pathname === "/api/site/contact") return res.end(JSON.stringify({ wechatQr: "/qr.png", feishuQr: "/qr.png" }));
   if (url.pathname === "/api/site/stories/merged") {
     res.statusCode = 308;
     return res.end(JSON.stringify({ mergedInto: "surviving-story" }));
@@ -213,9 +212,9 @@ test("the edge may keep a page longer than browsers, which a withdrawal purge ca
 
 test("browser caching preserves noindex and private sign-in responses", async () => {
   const feedback = await fetch(origin + "/feedback");
-  assert.equal(feedback.status, 200);
-  assert.match(await feedback.text(), /name="robots" content="noindex/);
-  assert.equal(feedback.headers.get("Cache-Control"), "public, max-age=300, s-maxage=300, must-revalidate");
+  assert.equal(feedback.status, 404);
+  await feedback.text();
+  assert.equal(feedback.headers.get("Cache-Control"), "private, no-store");
   const login = await fetch(origin + "/admin/login");
   assert.equal(login.status, 200);
   assert.equal(login.headers.get("Cache-Control"), "private, no-store");

@@ -9,7 +9,6 @@ export const KEYS = {
   theme: "aihot-theme",
   font: "aihot-font",
   changelogSeen: "aihot-changelog-seen-version",
-  feedbackDraft: "aihot-feedback-draft-v1",
 } as const;
 
 export const STARRED_LIMIT = 500;

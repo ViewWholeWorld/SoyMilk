@@ -11,7 +11,6 @@ import { promisify } from "node:util";
 import { config } from "@aihot/backend/config";
 import { closeDb, sql } from "@aihot/backend/db";
 import { runBackup } from "@aihot/backend/operations/backup";
-import { submitFeedback } from "@aihot/backend/operations/feedback";
 
 const run = promisify(execFile);
 const T = tag();
@@ -20,7 +19,7 @@ const originalFetch = globalThis.fetch;
 const env = {
   DB_BACKUP_STORE_SECRET_ID: "test-backup-id", DB_BACKUP_STORE_SECRET_KEY: "test-backup-key",
   DB_BACKUP_STORE_BUCKET: "test-bucket", DB_BACKUP_STORE_REGION: "test-region", DB_BACKUP_STORE_DOMAIN: "backup.invalid",
-  FEISHU_INTERNAL_ENABLED: "false",
+
 };
 const originalEnv = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
 Object.assign(process.env, env);
@@ -72,12 +71,12 @@ async function extractSavedFiles() {
   return { destination, data };
 }
 
-test("a real paired restore opens a feedback screenshot when forwarding is disabled and uploads are absent", async () => {
+test("a real paired restore preserves historical feedback rows and screenshot bytes after feature removal", async () => {
   const content = `Fictional backup feedback ${T}`;
-  const { id } = await submitFeedback({ content, screenshot: { mime: "image/png", data: PNG }, ip: "203.0.113.220", userAgent: `test-${T}` });
+  await save("feedback-screenshots/historical.png");
+  const [{ id }] = await sql`INSERT INTO feedback(content,source_hash,screenshot_key) VALUES(${content},${"historical:" + T},'local:historical.png') RETURNING id`;
   const [before] = await sql`SELECT screenshot_key, forward_error FROM feedback WHERE id = ${id}`;
   assert.match(before!.screenshot_key, /^local:/);
-  assert.equal(before!.forward_error, "pending");
   const externalKey = `feishu:synthetic-${T}`;
   const [external] = await sql<{ id: number }[]>`INSERT INTO feedback (content, source_hash, screenshot_key) VALUES ('Fictional external reference', ${`external:${T}`}, ${externalKey}) RETURNING id`;
   const summary = await runBackup(NOW);
@@ -99,7 +98,7 @@ test("a real paired restore opens a feedback screenshot when forwarding is disab
     import assert from "node:assert/strict";
     import { existsSync } from "node:fs";
     import { readFile } from "node:fs/promises";
-    import { feedbackScreenshot } from "@aihot/backend/admin/feedback";
+    import path from "node:path";
     import { closeDb, sql } from "@aihot/backend/db";
     try {
       const [row] = await sql\`SELECT content, screenshot_key FROM feedback WHERE id = \${Number(process.env.RESTORED_ID)}\`;
@@ -107,8 +106,7 @@ test("a real paired restore opens a feedback screenshot when forwarding is disab
       assert.equal(row.screenshot_key, process.env.RESTORED_KEY);
       const [external] = await sql\`SELECT screenshot_key FROM feedback WHERE id = \${Number(process.env.RESTORED_EXTERNAL_ID)}\`;
       assert.equal(external.screenshot_key, process.env.RESTORED_EXTERNAL_KEY);
-      assert.equal(await feedbackScreenshot(Number(process.env.RESTORED_EXTERNAL_ID)), null);
-      const file = await feedbackScreenshot(Number(process.env.RESTORED_ID));
+      const file = path.join(process.env.AIHOT_DATA_DIR, "feedback-screenshots", row.screenshot_key.slice("local:".length));
       assert.ok(file && existsSync(file), "restored local feedback screenshot must exist");
       assert.deepEqual(await readFile(file), Buffer.from(process.env.RESTORED_BYTES, "base64"));
     } finally { await closeDb(); }

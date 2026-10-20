@@ -4,19 +4,15 @@ import { ensureQueue, recordRun } from "@aihot/backend/jobs/queue";
 import { sweepUnprocessed } from "@aihot/backend/jobs/content";
 import { translatePending } from "@aihot/backend/editorial/translate";
 import { adaptIntervals, scheduleDueSources } from "@aihot/backend/sources/collect";
-import { scheduleMpReconcile } from "@aihot/backend/sources/mp";
 import { refreshSourceIcons } from "@aihot/backend/sources/icons";
 import { computeHotRanking, snapshotHeat } from "@aihot/backend/events/hot";
 import { refreshStoryStatuses } from "@aihot/backend/events/digest";
 import { linkRelatedStories } from "@aihot/backend/events/consolidate";
 import { catchUpReports, composeDaily, composeMonthly, composeWeekly, dueDaily, dueWeekly, dueMonthly } from "@aihot/backend/reports/compose";
 import { dailyRetention } from "@aihot/backend/operations/retention";
-import { submitIndexNow } from "@aihot/backend/operations/indexnow";
-import { checkAlerts, sendDigest } from "@aihot/backend/operations/alerts";
+import { checkAlerts } from "@aihot/backend/operations/alerts";
 import { recoverStaleWork } from "@aihot/backend/operations/recover";
-import { forwardPendingFeedback } from "@aihot/backend/operations/feedback";
 import { backupConfigured, runBackup } from "@aihot/backend/operations/backup";
-import { sourceHealthWeekly } from "@aihot/backend/operations/reports";
 import { reconcileBootstrapBudget } from "@aihot/backend/operations/bootstrap-budget";
 
 interface Scheduled {
@@ -54,8 +50,6 @@ export const SCHEDULES: Scheduled[] = [
     },
   },
   { name: "ops.retention", cron: "30 3 * * *", missed: "once", run: () => dailyRetention() },
-  // IndexNow for new indexable pages (off unless INDEXNOW_SUBMIT_ENABLED).
-  { name: "seo.indexnow", cron: "50 5 * * *", missed: "once", run: () => submitIndexNow() },
   // Work a stopped process left half way becomes visible, and unknown paid requests get their one
   // automatic release, before the alerts look.
   {
@@ -64,19 +58,12 @@ export const SCHEDULES: Scheduled[] = [
     run: recoverStaleWork,
   },
   { name: "ops.alerts", cron: "*/10 * * * *", run: () => checkAlerts() },
-  // One message with the follow-ups that do not touch readers (nothing when there are none).
-  { name: "ops.digest", cron: "0 9 * * *", missed: "once", run: () => sendDigest() },
-  // Feedback that did not reach the internal Feishu chat when it was sent (off with FEISHU_INTERNAL_ENABLED).
-  { name: "feedback.forward", cron: "*/10 * * * *", run: () => forwardPendingFeedback() },
   ...(backupConfigured() ? [{ name: "ops.backup", cron: "10 4 * * *", missed: "once" as const, run: () => runBackup() }] : []),
-  { name: "reports.source-health", cron: "0 9 * * 1", missed: "once", run: () => sourceHealthWeekly() },
   ...(collecting
     ? [
         { name: "sources.icons", cron: "40 4 * * *", missed: "once" as const, run: () => refreshSourceIcons() },
         { name: "sources.schedule", cron: "* * * * *", run: () => scheduleDueSources() },
         { name: "sources.adapt-intervals", cron: "20 4 * * *", run: adaptIntervals },
-        // WeChat official accounts (paid), each once per its interval.
-        { name: "sources.mp-reconcile", cron: "*/15 * * * *", run: () => scheduleMpReconcile() },
       ]
     : []),
 ];

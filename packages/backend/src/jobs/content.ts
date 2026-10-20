@@ -52,8 +52,7 @@ async function route(articleId: string, db: Db): Promise<Route | null> {
   const pending = row.body_status === "pending";
   const wantsBody = row.config.fetchPublicContent === true || !!row.config.detail || row.kind === "web_list";
   const needsPage = !signal && (wantsBody || (row.bare && pageFetchable(row.url, row.kind)));
-  const needsXArticle = row.kind === "x_search" && (!signal || (row.participation_mode === "hot_signal" && !historical));
-  return { step: pending && (needsPage || needsXArticle) ? "extract" : "analyze", signal, historical, bootstrap: row.bootstrap };
+  return { step: pending && needsPage ? "extract" : "analyze", signal, historical, bootstrap: row.bootstrap };
 }
 
 /**

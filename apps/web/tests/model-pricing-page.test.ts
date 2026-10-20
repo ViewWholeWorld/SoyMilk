@@ -50,7 +50,7 @@ before(async () => {
     env: {
       ...process.env, NODE_ENV: "production", WEB_HOST: "127.0.0.1", WEB_PORT: "0",
       API_BASE_URL: `http://127.0.0.1:${(api.address() as AddressInfo).port}`,
-      COLLECT_ENABLED: "false", MODEL_CALLS_ENABLED: "false", FEISHU_CONTENT_PUSH_ENABLED: "false", FEISHU_INTERNAL_ENABLED: "false", FEISHU_LOGIN_ENABLED: "false", INDEXNOW_SUBMIT_ENABLED: "false",
+      COLLECT_ENABLED: "false", MODEL_CALLS_ENABLED: "false",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

@@ -85,12 +85,12 @@ test("collection off leaves due sites and X avatars unchanged without outbound r
   await article(x, "off-x", { handle: "off-x", avatarUrl: `${origin}/off-x.png` });
   const before = await Promise.all([state(site), state(x)]);
   process.env.COLLECT_ENABLED = "false";
-  assert.deepEqual(await refreshSourceIcons(), { xAvatars: 0, checked: 0, found: 0 });
+  assert.deepEqual(await refreshSourceIcons(), { checked: 0, found: 0 });
   assert.deepEqual(hits, []);
   assert.deepEqual(await Promise.all([state(site), state(x)]), before);
 });
 
-test("enabled sites and X avatars refresh while paused sources remain untouched", async () => {
+test("enabled sites refresh while retired and paused sources remain untouched", async () => {
   const active = await source("active");
   const paused = await source("paused", "rss", false);
   const x = await source("active-x", "x_search");
@@ -102,11 +102,11 @@ test("enabled sites and X avatars refresh while paused sources remain untouched"
     res.writeHead(200, { "content-type": "image/png" });
     res.end(png);
   };
-  assert.deepEqual(await refreshSourceIcons(), { xAvatars: 1, checked: 1, found: 1 });
+  assert.deepEqual(await refreshSourceIcons(), { checked: 1, found: 1 });
   assert.deepEqual(hits, ["/", "/active-first.png"]);
   assert.equal((await state(active)).icon_url, `${origin}/active-first.png`);
   assert.ok((await state(active)).icon_checked_at);
-  assert.equal((await state(x)).icon_url, `${origin}/active-x.png`);
+  assert.deepEqual(await state(x), { icon_url: null, icon_checked_at: null });
   assert.deepEqual(await state(paused), { icon_url: null, icon_checked_at: null });
   assert.deepEqual(await state(pausedX), { icon_url: null, icon_checked_at: null });
 });
@@ -126,7 +126,7 @@ for (const pause of ["source", "collection"] as const) {
       if (pause === "source") await sql`UPDATE sources SET enabled = false WHERE id = ${id}`;
       else process.env.COLLECT_ENABLED = "false";
     } finally { release.open(); }
-    assert.deepEqual(await run, { xAvatars: 0, checked: 0, found: 0 });
+    assert.deepEqual(await run, { checked: 0, found: 0 });
     assert.deepEqual(hits, ["/"], "the in-flight homepage may finish; no image request follows");
     assert.deepEqual(await state(id), { icon_url: null, icon_checked_at: null });
   });
@@ -147,7 +147,7 @@ for (const pause of ["source", "collection"] as const) {
       if (pause === "source") await sql`UPDATE sources SET enabled = false WHERE id = ${id}`;
       else process.env.COLLECT_ENABLED = "false";
     } finally { release.open(); }
-    assert.deepEqual(await run, { xAvatars: 0, checked: 0, found: 0 });
+    assert.deepEqual(await run, { checked: 0, found: 0 });
     assert.deepEqual(hits, ["/", `/${suffix}-first.png`]);
     assert.deepEqual(await state(id), { icon_url: null, icon_checked_at: null });
   });
@@ -169,24 +169,15 @@ test("an image already in flight may finish without writing the paused source", 
     await entered.promise;
     await sql`UPDATE sources SET enabled = false WHERE id = ${id}`;
   } finally { release.open(); }
-  assert.deepEqual(await run, { xAvatars: 0, checked: 0, found: 0 });
+  assert.deepEqual(await run, { checked: 0, found: 0 });
   assert.deepEqual(hits, ["/", `/${suffix}-first.png`]);
   assert.deepEqual(await state(id), { icon_url: null, icon_checked_at: null });
 });
 
-test("pausing during the WeChat wait prevents its article page request", async (t) => {
+test("retired WeChat sources do not fetch icons or update state", async () => {
   const id = await source("mp", "mp_account");
   await article(id, "mp");
-  const waiting = gate();
-  const timer = globalThis.setTimeout;
-  t.mock.method(globalThis, "setTimeout", (...args: Parameters<typeof setTimeout>) => {
-    if (args[1] === 3000) waiting.open();
-    return timer(...args);
-  });
-  const run = refreshSourceIcons();
-  await waiting.promise;
-  await sql`UPDATE sources SET enabled = false WHERE id = ${id}`;
-  assert.deepEqual(await run, { xAvatars: 0, checked: 0, found: 0 });
+  assert.deepEqual(await refreshSourceIcons(), { checked: 0, found: 0 });
   assert.deepEqual(hits, []);
   assert.deepEqual(await state(id), { icon_url: null, icon_checked_at: null });
 });
@@ -199,10 +190,11 @@ test("collection off omits the icon cron and removes a previously registered sch
   const boss = {
     schedule: async (name: string) => { scheduled.push(name); },
     work: async () => {},
-    getSchedules: async () => [{ name: "cron.sources.icons" }, { name: "unrelated.queue" }],
+    getSchedules: async () => ["cron.sources.icons", "cron.seo.indexnow", "cron.ops.digest", "cron.feedback.forward", "cron.reports.source-health", "cron.sources.mp-reconcile", "unrelated.queue"].map(name => ({ name })),
     unschedule: async (name: string) => { removed.push(name); },
   } as unknown as PgBoss;
   await registerSchedules(boss);
   assert.ok(!scheduled.includes("cron.sources.icons"));
-  assert.deepEqual(removed, ["cron.sources.icons"]);
+  assert.deepEqual(removed, ["cron.sources.icons", "cron.seo.indexnow", "cron.ops.digest", "cron.feedback.forward", "cron.reports.source-health", "cron.sources.mp-reconcile"]);
+  for (const kind of ["daily", "weekly", "monthly", "catch-up"]) assert.ok(SCHEDULES.some(s => s.name === "reports." + kind));
 });

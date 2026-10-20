@@ -22,7 +22,7 @@ process.on("exit", () => {
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
-for (const valve of ["COLLECT_ENABLED", "MODEL_CALLS_ENABLED", "FEISHU_CONTENT_PUSH_ENABLED", "FEISHU_INTERNAL_ENABLED", "FEISHU_LOGIN_ENABLED", "INDEXNOW_SUBMIT_ENABLED"]) {
+for (const valve of ["COLLECT_ENABLED", "MODEL_CALLS_ENABLED"]) {
   process.env[valve] = "false";
 }
 const MODEL_PROVIDERS = ["LLM", "DASHSCOPE", "ZHIPU", "DEEPSEEK", "XIAOMI_MIMO"] as const;
@@ -34,8 +34,6 @@ process.env.LLM_AUTH_MODE = "api-key";
 delete process.env.EGRESS_PROXY_URL;
 process.env.SESSION_SECRET ??= "test-session-secret-0123456789";
 process.env.IMG_PROXY_SIGN_SECRET ??= "test-img-secret-0123456789";
-process.env.FEISHU_CONTENT_PUSH_ENABLED = "false";
-process.env.INDEXNOW_SUBMIT_ENABLED = "false";
 process.env.LOG_LEVEL ??= "error";
 // The tests were written against the named model presets AIHOT assigns to each step (each provider is
 // pointed at a local stub by the test that needs it). The open-source default is one model for every

@@ -120,7 +120,7 @@ export async function runBackup(now = new Date()) {
   // An empty archive only when there is nothing to keep. A failure to read or pack existing files is
   // tried once more and otherwise reported: the database dump still ships, but the run fails.
   const kept: string[] = [];
-  // 尚未转发的反馈截图仍由数据库的 local: 引用，恢复时必须和上传文件一起保留。
+  // 功能下线后，历史附件仍随数据库一起备份；不在精简过程中删除用户数据。
   for (const d of ["uploads", "feedback-screenshots"]) if (await stat(path.join(config.dataDir, d)).then((i) => i.isDirectory(), () => false)) kept.push(d);
   let filesError: string | null = null;
   if (!kept.length) await run("tar", ["-czf", files, "-T", "/dev/null"]);

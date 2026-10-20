@@ -7,8 +7,6 @@ import { collapseWhitespace, stripTags } from "../lib/text.ts";
 import { jinaRead } from "../providers/jina.ts";
 import { logicalKeyFor, ProviderUnavailableError, ReceiptUnknownError } from "../providers/receipts.ts";
 import { shutdownSignal } from "../lib/shutdown.ts";
-import { getArticle } from "../providers/socialdata.ts";
-import { onlyXArticleLink, xArticleText } from "../sources/x.ts";
 import { sanitizeBody, trimTrailingChrome } from "./sanitize.ts";
 import { contentHash, type MediaItem, type XPostData } from "./materials.ts";
 import { markdownBody } from "./markdown.ts";
@@ -132,10 +130,11 @@ export function pageFetchable(url: string, sourceKind: string): boolean {
 
 /** Fetches and stores the body of one article. Unconfirmed bodies are recorded as such. */
 export async function extractArticleBody(articleId: string, allowJina = process.env.JINA_BODY_FALLBACK !== "false"): Promise<"ok" | "unconfirmed" | "skipped"> {
-  const [a] = await sql<{ id: string; url: string; body_status: string; revision: number; x_post: { tweetId?: string } | null }[]>`
-    SELECT id, url, body_status, revision, x_post FROM articles WHERE id = ${articleId}`;
+  const [a] = await sql<{ id: string; url: string; body_status: string; revision: number; source_kind: string; x_post: { tweetId?: string } | null }[]>`
+    SELECT a.id, a.url, a.body_status, a.revision, a.x_post, s.kind AS source_kind FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = ${articleId}`;
   if (!a || a.body_status === "ok") return "skipped";
-  if (a.x_post?.tweetId) return extractXArticle(a.id, a.x_post.tweetId, a.revision);
+  // 已下线类型的历史正文不会再请求付费采集；已有正文直接沿用。
+  if (a.x_post?.tweetId || !pageFetchable(a.url, a.source_kind)) return markUnconfirmed(a.id, a.revision);
   const got = await extractFromUrl(a.url, { allowJina, subject: `article:${a.id}@${a.revision}`, round: () => pinBodyFallback(a.id, a.revision, a.url) });
   if (!got) {
     return markUnconfirmed(articleId, a.revision);
@@ -166,47 +165,6 @@ async function markUnconfirmed(articleId: string, revision: number): Promise<"un
   const rows = await sql`UPDATE articles SET body_status = 'unconfirmed', updated_at = now()
     WHERE id = ${articleId} AND revision = ${revision} AND body_status <> 'ok' RETURNING id`;
   return rows.length ? "unconfirmed" : "skipped";
-}
-
-/**
- * The X Article a post published (SocialData, paid, by the post's own id). The article joins the
- * post's body as a new revision; a post that is only the article's link takes the article's title.
- * No article (the link points at someone else's, or X has none) leaves the post "unconfirmed", and
- * the judging steps are told the article was not fetched.
- */
-async function extractXArticle(articleId: string, tweetId: string, revision: number): Promise<"ok" | "unconfirmed" | "skipped"> {
-  const found = await getArticle(tweetId, { purpose: "x_article", subject: `article:${articleId}@${revision}` });
-  const got = found ? xArticleText(found) : null;
-  if (!got) {
-    return markUnconfirmed(articleId, revision);
-  }
-  return sql.begin(async (tx) => {
-    const [row] = await tx<{ title: string; excerpt: string | null; body_text: string | null; media: MediaItem[]; x_post: XPostData | null; x_article: { title?: string | null; text?: string } | null }[]>`
-      SELECT title, excerpt, body_text, media, x_post, x_article FROM articles
-      WHERE id = ${articleId} AND revision = ${revision} AND body_status <> 'ok' FOR UPDATE`;
-    if (!row) return "skipped";
-    const block = (a: { title?: string | null; text?: string } | null) => (a ? [a.title ? `# ${a.title}` : "", a.text ?? ""].filter(Boolean).join("\n\n") : "");
-    // The post's own text, without an article appended by an earlier extraction (an admin re-run
-    // extracts again from the post; appending once more would repeat the article).
-    const previous = block(row.x_article);
-    let base = row.body_text ?? "";
-    if (previous && base.endsWith(previous)) base = base.slice(0, -previous.length).replace(/\s+$/, "");
-    const title = got.title && onlyXArticleLink(row.x_post?.text) ? got.title : row.title;
-    const bodyText = [base, block(got)].filter(Boolean).join("\n\n");
-    if (bodyText === row.body_text && title === row.title) {
-      // The same article again: nothing new, no new revision.
-      await tx`UPDATE articles SET body_status = 'ok', x_article = ${tx.json(got as never)}, updated_at = now() WHERE id = ${articleId}`;
-      return "ok";
-    }
-    const hash = contentHash({ title, bodyText, excerpt: row.excerpt, media: row.media, xPost: row.x_post });
-    const [r] = await tx<{ revision: number }[]>`
-      UPDATE articles SET title = ${title}, body_text = ${bodyText}, x_article = ${tx.json(got as never)}, body_status = 'ok',
-        revision = revision + 1, content_hash = ${hash}, processing_state = 'new', updated_at = now()
-      WHERE id = ${articleId} RETURNING revision`;
-    await tx`INSERT INTO article_revisions (article_id, revision, content_hash, title, body_text)
-             VALUES (${articleId}, ${r!.revision}, ${hash}, ${title}, ${bodyText})`;
-    return "ok";
-  });
 }
 
 export { collapseWhitespace };

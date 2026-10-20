@@ -1,7 +1,7 @@
 // 抓取故障看近七天；安静信源按自身产出节奏诊断，成功请求不等于有产出。
 import { beijingDate } from "@aihot/contracts/time";
 import { sql } from "../db.ts";
-import type { Finding } from "../notify/feishu.ts";
+import type { Finding } from "../operations/diagnostics.ts";
 import { sourceWaitMessage, WAITING_FETCH_RUN, MISCOUNTED_FETCH_WAIT } from "./wait.ts";
 
 export const RHYTHM_WINDOW_DAYS = 90;
@@ -77,7 +77,7 @@ export async function sourceHealth(now = Date.now()) {
     LEFT JOIN corrections c ON c.source_id=s.id
     LEFT JOIN items a ON a.source_id=s.id LEFT JOIN repeated e ON e.source_id=s.id
     LEFT JOIN output_sources o ON o.source_id=s.id
-    WHERE s.enabled AND s.kind NOT IN ('external','mp_account') AND s.participation_mode IN ('editorial','hot_signal') ORDER BY s.name,s.id`;
+    WHERE s.enabled AND s.kind IN ('rss','web_list','json_list') AND s.participation_mode IN ('editorial','hot_signal') ORDER BY s.name,s.id`;
   // 旧记录未保存逐条错误时保留汇总；有详情时只计真实失败，避免把预算等待当故障。
   const details = await sql<{ source_id: string; at: Date; detail: { detailAttempts?:number; detailFailures?: number; detailErrors?: Array<{ error?: string }> } | null }[]>`
     SELECT source_id,coalesce(finished_at,started_at) AS at,detail FROM fetch_runs WHERE started_at >= ${since} AND started_at < ${until} AND detail IS NOT NULL`;
