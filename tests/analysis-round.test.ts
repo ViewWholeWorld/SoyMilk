@@ -3,7 +3,6 @@ import { gate, stub, tag, useModelStubs } from "./setup.ts";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { sql, closeDb } from "@aihot/backend/db";
-import { config } from "@aihot/backend/config";
 import { upsertMaterial } from "@aihot/backend/content/materials";
 import { analyzeArticle } from "@aihot/backend/editorial/analyze";
 import { rerun, overrideFields } from "@aihot/backend/admin/content";
@@ -14,16 +13,17 @@ const T = tag(), source = `round-${T}`;
 let phase = "旧轮次";
 const provider = await stub((_hit, req) => {
   const body = JSON.parse(req.body), system = String(body.messages[0]?.content ?? "");
-  const content = system.includes("宽召回") ? { label: "PASS", reason: "本地合成" }
+  const structure = { category: "technology", tags: [], subjects: [], fact: null };
+  const writing = { itemType: "product_launch", authorRole: "principal", tags: [], editorialJudgment: phase, titleZh: `${phase}合成标题`, summaryZh: `${phase}合成摘要，仅用于本地回归。` };
+  const content = system.startsWith("你同时完成") ? { writing, structure }
+    : system.includes("宽召回") ? { label: "PASS", reason: "本地合成" }
     : system.includes("事件注意力评分器") ? { attentionScore: 90 }
-    : system.includes("资料结构化助手") ? { category: "technology", tags: [], subjects: [], fact: null }
-    : { itemType: "product_launch", authorRole: "principal", tags: [], editorialJudgment: phase, titleZh: `${phase}合成标题`, summaryZh: `${phase}合成摘要，仅用于本地回归。` };
+    : system.includes("资料结构化助手") ? structure : writing;
   return { choices: [{ message: { content: JSON.stringify(content) } }] };
 });
 await useModelStubs({ LLM: provider.url });
 for (const key of ["PREFILTER_MODEL", "SCORE_MODEL", "UNDERSTAND_MODEL", "STRUCTURE_MODEL", "SUMMARIZE_MODEL"]) process.env[key] = "default";
 process.env.LLM_MODEL = "round-fixture";
-config.combinedUnderstand = false; config.combinedSummarize = false;
 before(async () => { await sql`INSERT INTO sources(id,name,kind,tier,participation_mode,next_fetch_at) VALUES(${source},'轮次回归','rss','T1','editorial','2100-01-01')`; });
 after(async () => { await provider.close(); await stopBoss(); await closeDb(); });
 async function article() {

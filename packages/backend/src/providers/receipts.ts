@@ -10,6 +10,7 @@ import { sql, type Db } from "../db.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
 import { shutdownSignal } from "../lib/shutdown.ts";
 import { estimateModelCost, pricingSnapshotFor, type BillingContext, type PricingSnapshot } from "./model-pricing.ts";
+import { bindCooldownProbe, claimProviderCooldown, ProviderCooldownError, PROVIDER_COOLDOWN_SECONDS, settleProviderCooldown, type ProviderCooldownScope } from "./provider-cooldown.ts";
 
 export class BudgetExceededError extends Error {
   readonly service: string;
@@ -34,6 +35,7 @@ export class ProviderUnavailableError extends Error {
 
 /** Waiting before a request is accepted must not consume a content failure attempt. */
 export function requestWait(error: unknown): { kind: string; retryAfterSeconds: number } | null {
+  if (error instanceof ProviderCooldownError) return { kind: "provider-cooldown", retryAfterSeconds: error.retryAfterSeconds };
   if (error instanceof BudgetExceededError) return { kind: "budget", retryAfterSeconds: error.retryAfterSeconds };
   if (error instanceof ReceiptBusyError) return { kind: "busy", retryAfterSeconds: 60 };
   if (error instanceof ProviderUnavailableError) return { kind: error.kind, retryAfterSeconds: 300 };
@@ -53,11 +55,13 @@ export class ProviderRejectedError extends Error {
   readonly status: number | null;
   readonly retryable: boolean;
   readonly contentFiltered: boolean;
-  constructor(message: string, status: number | null, retryable: boolean, contentFiltered = false) {
+  readonly spendingRefused: boolean;
+  constructor(message: string, status: number | null, retryable: boolean, contentFiltered = false, spendingRefused = false) {
     super(message);
     this.status = status;
     this.retryable = retryable;
     this.contentFiltered = contentFiltered && !retryable;
+    this.spendingRefused = spendingRefused;
   }
 }
 
@@ -84,10 +88,12 @@ export interface ReceiptRequest {
   exclusiveWith?: Array<{ purpose: string; attemptTag: string }>;
   /** Non-secret model ownership used for immutable cost snapshots. */
   billingContext?: BillingContext;
+  cooldown?: ProviderCooldownScope;
 }
 
 export interface ReceiptResult {
   receiptId: number;
+  attempt: number;
   response: unknown;
   reused: boolean;
 }
@@ -112,8 +118,8 @@ export const rejectedByContentFilter = (row: { status: string; error: string | n
 /** 本地消费已保存响应；不因模型配置或功能开关改变而重新发送。 */
 export async function storedReceipt(id: number) {
   const row = await sql.begin(async tx => {
-    const [r] = await tx<Array<{ id: number; status: string; response: unknown; model: string; request: Record<string, unknown> | null; updated_at: Date }>>`
-      SELECT id,status,response,model,request,updated_at FROM receipts WHERE id=${id} FOR UPDATE`;
+    const [r] = await tx<Array<{ id: number; attempts: number; status: string; response: unknown; model: string; request: Record<string, unknown> | null; updated_at: Date }>>`
+      SELECT id,attempts,status,response,model,request,updated_at FROM receipts WHERE id=${id} FOR UPDATE`;
     if (r?.status === "pending" && Date.now() - r.updated_at.getTime() >= PENDING_STALE_MS) {
       await markUnknown(tx, id, "placeholder went stale without a recorded result");
       r.status = "unknown";
@@ -127,6 +133,7 @@ export async function storedReceipt(id: number) {
 
 interface ReceiptRow {
   id: number;
+  attempts: number;
   subject: string | null;
   status: string;
   response: unknown;
@@ -156,6 +163,15 @@ async function checkBudget(tx: Db, service: string): Promise<void> {
   if (c.day >= budget.per_day) throw new BudgetExceededError(service, "day", 3600);
 }
 
+async function claimCooldown(tx: Db, req: ReceiptRequest) {
+  try { return await claimProviderCooldown(tx, req.cooldown); }
+  catch (error) {
+    // 沿用所有调用方既有的预算等待路径（包括公众号和向量召回）。
+    if (error instanceof ProviderCooldownError) throw new BudgetExceededError(req.service, "provider", error.retryAfterSeconds);
+    throw error;
+  }
+}
+
 /**
  * Runs a paid request at most once per logical key and returns its raw response.
  * The caller parses the response and commits business results, then calls completeReceipt.
@@ -171,7 +187,7 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
     // Serialise budget checks per service so concurrent workers cannot overshoot.
     await tx`SELECT pg_advisory_xact_lock(hashtext(${"budget:" + req.service}))`;
     const [existing] = await tx<ReceiptRow[]>`
-      SELECT id, subject, status, response, created_at, updated_at FROM receipts WHERE logical_key = ${logicalKey} FOR UPDATE`;
+      SELECT id, attempts, subject, status, response, created_at, updated_at FROM receipts WHERE logical_key = ${logicalKey} FOR UPDATE`;
     if (existing) await registerConsumers(tx, existing.id, [existing.subject, req.subject]);
     if (existing?.status === "received" || existing?.status === "completed") return { kind: "reuse" as const, row: existing };
     if (req.subject?.startsWith("article:") && req.exclusiveWith?.length) {
@@ -195,7 +211,7 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
       // Older grouping receipts have no revision: keep guarding those until their outcome resolves.
       const legacySubject = ["group_article", "group_review", "group_signal"].includes(req.purpose) ? subject.replace(/@[1-9]\d*$/, "") : subject;
       const [unresolved] = await tx<ReceiptRow[]>`
-        SELECT r.id,r.subject,r.status,r.response,r.created_at,r.updated_at FROM receipts r
+        SELECT r.id,r.attempts,r.subject,r.status,r.response,r.created_at,r.updated_at FROM receipts r
         WHERE r.service=${req.service} AND r.purpose=${req.purpose} AND r.logical_key<>${logicalKey}
           AND (CASE WHEN ${groupReview} THEN split_part(r.subject,':fact:',1) ELSE r.subject END IN (${subject},${legacySubject})
             OR EXISTS(SELECT 1 FROM receipt_consumers c WHERE c.receipt_id=r.id
@@ -219,45 +235,54 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
       }
       if (existing.status === "unknown") return { kind: "unknown" as const, row: existing };
       // failed: the provider did not take the request, or its answer was unusable; a new attempt is allowed.
+      const cooldown = await claimCooldown(tx, req);
       await checkBudget(tx, req.service);
       const [r] = await tx<{ attempts: number }[]>`
-        UPDATE receipts SET status = 'pending', attempts = attempts + 1, error = NULL, updated_at = now() WHERE id = ${existing.id} RETURNING attempts`;
+        UPDATE receipts SET status = 'pending', attempts = attempts + 1, error = NULL,
+          request=coalesce(request,'{}'::jsonb) || ${tx.json((req.cooldown ? { providerScope: req.cooldown } : {}) as never)},
+          updated_at = now() WHERE id = ${existing.id} RETURNING attempts`;
       const attemptId = await startAttempt(tx, existing.id, r!.attempts, req);
-      return { kind: "call" as const, id: existing.id, attemptId };
+      await bindCooldownProbe(tx, cooldown, existing.id);
+      return { kind: "call" as const, id: existing.id, attemptId, attempt: r!.attempts, cooldown };
     }
+    const cooldown = await claimCooldown(tx, req);
     await checkBudget(tx, req.service);
     const [row] = await tx<{ id: number }[]>`
       INSERT INTO receipts (logical_key, service, model, purpose, subject, status, request, attempts)
       VALUES (${logicalKey}, ${req.service}, ${req.model ?? null}, ${req.purpose}, ${req.subject ?? null}, 'pending',
-              ${tx.json((req.requestSummary ?? {}) as never)}, 1)
+              ${tx.json({ ...(req.requestSummary ?? {}), ...(req.cooldown ? { providerScope: req.cooldown } : {}) } as never)}, 1)
       RETURNING id`;
     await registerConsumers(tx, row!.id, [req.subject]);
     const attemptId = await startAttempt(tx, row!.id, 1, req);
-    return { kind: "call" as const, id: row!.id, attemptId };
+    await bindCooldownProbe(tx, cooldown, row!.id);
+    return { kind: "call" as const, id: row!.id, attemptId, attempt: 1, cooldown };
   });
 
-  if (claimed.kind === "reuse") return { receiptId: claimed.row.id, response: claimed.row.response, reused: true };
+  if (claimed.kind === "reuse") return { receiptId: claimed.row.id, attempt: claimed.row.attempts, response: claimed.row.response, reused: true };
   if (claimed.kind === "busy") throw new ReceiptBusyError(`Receipt ${claimed.row.id} is in flight`);
   if (claimed.kind === "unknown") {
     throw new ReceiptUnknownError(claimed.row.id, `Receipt ${claimed.row.id} has an unknown outcome; it is released once automatically, then from the admin`);
   }
 
-  const { id: receiptId, attemptId } = claimed;
+  const { id: receiptId, attemptId, cooldown } = claimed;
   const started = Date.now();
   let outcome: CallOutcome;
   try {
     outcome = await call();
   } catch (error) {
     const status = error instanceof ProviderRejectedError ? "failed" : "unknown";
+    const spending = error instanceof ProviderRejectedError && (error.status === 402 || error.status === 429 && error.spendingRefused);
     // "unknown": the request may have reached the provider (timeout, reset): do not re-send automatically.
-    const message = (error instanceof ProviderRejectedError ? error.message : String(error)).slice(0, 2000);
+    const message = (error instanceof ProviderRejectedError ? error.message : String(error)).slice(0, 1900) + (spending ? "; providerRejection=spending" : "");
     await sql.begin(async (tx) => {
       await tx`UPDATE receipts SET status = ${status}, error = ${message},
-        request=coalesce(request, '{}'::jsonb) || ${tx.json({ providerRejection: error instanceof ProviderRejectedError && error.contentFiltered ? "content_filter" : null })},
+        request=coalesce(request, '{}'::jsonb) || ${tx.json({ providerRejection: spending ? "spending" : error instanceof ProviderRejectedError && error.contentFiltered ? "content_filter" : null })},
         updated_at = now() WHERE id = ${receiptId}`;
       await tx`UPDATE receipt_attempts SET status = ${status}, error = ${message}, latency_ms = ${Date.now() - started}, finished_at = now() WHERE id = ${attemptId}`;
+      await settleProviderCooldown(tx, cooldown, spending ? "spending" : status === "unknown" ? "unknown" : "failure");
     });
     if (status === "unknown") throw new ReceiptUnknownError(receiptId, error instanceof Error ? error.message : String(error), { cause: error });
+    if (spending && cooldown) throw new BudgetExceededError(req.service, "provider", PROVIDER_COOLDOWN_SECONDS);
     throw error;
   }
 
@@ -287,8 +312,9 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
         estimate_status = ${estimate?.status ?? null}, estimate_detail = ${estimate ? tx.json(estimate.detail as never) : null},
         latency_ms = ${Date.now() - started}, finished_at = now()
       WHERE id = ${attemptId}`;
+    await settleProviderCooldown(tx, cooldown, "success");
   });
-  return { receiptId, response: outcome.response, reused: false };
+  return { receiptId, attempt: claimed.attempt, response: outcome.response, reused: false };
 }
 
 async function registerConsumers(db: Db, receiptId: number, subjects: Array<string | null | undefined>): Promise<void> {
@@ -310,7 +336,15 @@ export async function consumersForRelease(db: Db, id: number): Promise<{ purpose
 }
 
 async function startAttempt(tx: Db, receiptId: number, attempt: number, req: ReceiptRequest): Promise<number> {
-  const pricing = req.billingContext ? { ...await pricingSnapshotFor(tx, req.billingContext), supplierId: req.billingContext.supplierId ?? null } : null;
+  // 非模型服务也冻结拒绝身份；保持完整 unpriced 形状，不为其生成模型费用估算。
+  const unpriced: PricingSnapshot | null = req.cooldown ? {
+    configured: false, providerKey: req.cooldown.providerKey, providerLabel: req.service, billingKind: "api", requestedModel: req.model ?? "-",
+    supplierId: req.cooldown.supplierId, mode: null, revision: null, referenceProviderId: null, referenceModelId: null,
+    source: "unpriced", sourceUpdatedAt: null, priceHash: null, stale: false, supported: false, calculatorVersion: "v1",
+    currency: "USD", inputPerMtok: null, outputPerMtok: null, cacheReadPerMtok: null, cacheWritePerMtok: null,
+  } : null;
+  const basePricing = req.billingContext ? { ...await pricingSnapshotFor(tx, req.billingContext), supplierId: req.billingContext.supplierId ?? null } : unpriced;
+  const pricing = basePricing ? { ...basePricing, ...(req.cooldown ? { providerScope: req.cooldown } : {}) } : null;
   const [row] = await tx<{ id: number }[]>`
     INSERT INTO receipt_attempts (receipt_id, attempt, service, model, provider_key, provider_label_snapshot, billing_kind, requested_model, pricing_snapshot, supplier_id, status)
     VALUES (${receiptId}, ${attempt}, ${req.service}, ${req.model ?? null}, ${req.billingContext?.providerKey ?? null}, ${req.billingContext?.providerLabel ?? null},
@@ -360,7 +394,9 @@ export async function completeReceipt(db: Db, receiptId: number): Promise<void> 
 }
 
 /** Marks a received response that could not be used (e.g. unparsable) so a fresh attempt can be made. */
-export async function rejectReceivedResponse(receiptId: number, reason: string): Promise<void> {
-  await sql`UPDATE receipts SET status = 'failed', error = ${reason.slice(0, 2000)},
-    request=coalesce(request, '{}'::jsonb) || '{"providerRejection":null}'::jsonb, updated_at = now() WHERE id = ${receiptId}`;
+export async function rejectReceivedResponse(receiptId: number, reason: string, db: Db = sql, expectedAttempt?: number): Promise<void> {
+  // 业务拒绝保留付费 attempt 的响应、用量和费用；旧消费者不能覆写新在途／未知结果。
+  await db`UPDATE receipts SET status = 'failed', error = ${reason.slice(0, 2000)},
+    request=coalesce(request, '{}'::jsonb) || '{"providerRejection":null}'::jsonb, updated_at = now()
+    WHERE id = ${receiptId} AND status='received' AND (${expectedAttempt ?? null}::integer IS NULL OR attempts=${expectedAttempt ?? null})`;
 }

@@ -3,6 +3,7 @@ import { guardedFetch } from "../lib/http-fetch.ts";
 import type { ContentPart } from "./llm.ts";
 import { CHATGPT_RESOURCE } from "./chatgpt-auth.ts";
 import { ProviderRejectedError } from "./receipts.ts";
+import { spendingRefusal } from "./provider-cooldown.ts";
 
 export function chatGPTBody(model: string, system: string, user: string | ContentPart[], json: boolean) {
   const content = typeof user === "string" ? [{ type: "input_text", text: user }] : user.map((part) => part.type === "text" ? { type: "input_text", text: part.text } : { type: "input_image", image_url: part.image_url.url });
@@ -32,6 +33,7 @@ export function readChatGPTStream(text: string): Record<string, unknown> {
 
 export async function requestChatGPT(body: Record<string, unknown>, token: string, timeoutMs: number) {
   const res = await guardedFetch(`${CHATGPT_RESOURCE}/responses`, { method: "POST", headers: { "content-type": "application/json", accept: "text/event-stream", authorization: `Bearer ${token}` }, body: JSON.stringify(body), timeoutMs, maxRedirects: 0 });
-  if (res.status < 200 || res.status >= 300) throw new ProviderRejectedError(`ChatGPT HTTP ${res.status}; check authorization and account usage`, res.status, res.status === 429 || res.status >= 500);
+  if (res.status < 200 || res.status >= 300) throw new ProviderRejectedError(`ChatGPT HTTP ${res.status}; check authorization and account usage`, res.status, res.status === 429 || res.status >= 500,
+    false, spendingRefusal("openai", res.status, res.text()));
   return readChatGPTStream(res.text());
 }

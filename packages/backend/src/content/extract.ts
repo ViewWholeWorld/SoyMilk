@@ -1,7 +1,6 @@
 // Article body extraction: readable text from the article page, or "unconfirmed" — never a wrong body.
 // Jina Reader is the budgeted fallback for pages that only render in a browser.
 import { Readability } from "@mozilla/readability";
-import { parseHTML } from "linkedom";
 import { sql } from "../db.ts";
 import { guardedFetch } from "../lib/http-fetch.ts";
 import { collapseWhitespace, stripTags } from "../lib/text.ts";
@@ -13,6 +12,8 @@ import { onlyXArticleLink, xArticleText } from "../sources/x.ts";
 import { sanitizeBody, trimTrailingChrome } from "./sanitize.ts";
 import { contentHash, type MediaItem, type XPostData } from "./materials.ts";
 import { markdownBody } from "./markdown.ts";
+import { assertPageContent, contentDocument, UnavailablePageError } from "../lib/page-content.ts";
+import { describeFigureDrawings, settleInlineVisibility } from "./figure-descriptions.ts";
 
 export interface ExtractedBody {
   html: string;
@@ -24,7 +25,9 @@ export interface ExtractedBody {
 const MIN_BODY_CHARS = 200;
 
 export function readable(html: string, url: string): ExtractedBody | null {
-  const { document } = parseHTML(html);
+  let document: ReturnType<typeof contentDocument>;
+  try { document = contentDocument(html); }
+  catch (error) { if (error instanceof UnavailablePageError) return null; throw error; }
   try {
     const base = document.createElement("base");
     base.setAttribute("href", url);
@@ -32,11 +35,15 @@ export function readable(html: string, url: string): ExtractedBody | null {
   } catch {
     // no head
   }
+  settleInlineVisibility(document);
+  describeFigureDrawings(document);
   const article = new Readability(document as unknown as ConstructorParameters<typeof Readability>[0], { charThreshold: MIN_BODY_CHARS, keepClasses: false }).parse();
   if (!article?.content) return null;
   const clean = trimTrailingChrome(sanitizeBody(article.content, url));
   const text = stripTags(clean);
   if (text.length < MIN_BODY_CHARS) return null;
+  try { assertPageContent(article.title ?? "", text); }
+  catch (error) { if (error instanceof UnavailablePageError) return null; throw error; }
   const images: ExtractedBody["images"] = [];
   for (const m of clean.matchAll(/<img\b[^>]*\bsrc="([^"]+)"[^>]*>/gi)) {
     const w = /\bwidth="(\d+)"/.exec(m[0]);
@@ -62,7 +69,9 @@ export async function extractFromUrl(url: string, opts: { allowJina: boolean; su
   shutdownSignal.signal.throwIfAborted();
   if (!opts.allowJina) return null;
   const round = await opts.round?.();
-  const page = await jinaRead(url, { purpose: "body_fallback", subject: opts.subject, round });
+  let page: Awaited<ReturnType<typeof jinaRead>>;
+  try { page = await jinaRead(url, { purpose: "body_fallback", subject: opts.subject, round }); }
+  catch (error) { if (error instanceof UnavailablePageError) return null; throw error; }
   const html = markdownBody(page.markdown, url);
   const text = stripTags(html);
   if (text.length < MIN_BODY_CHARS) return null;

@@ -71,7 +71,6 @@ function worker(queue: string, combined = false) {
     process.send({ ready: true });
   `;
   const env = { ...process.env, TEST_ANALYZE_QUEUE: queue, TEST_PROVIDER: provider.url, MODEL_CALLS_ENABLED: "false", AIHOT_CREDENTIALS_DIR: "/nonexistent-test-credentials",
-    NEWS_COMBINED_UNDERSTAND_ENABLED: String(combined), NEWS_COMBINED_SUMMARIZE_ENABLED: "false",
     PREFILTER_MODEL: "qwen3.7-flash", SCORE_MODEL: "glm-5.3-flash-selection", STRUCTURE_MODEL: combined ? "glm-5.3-flash" : "qwen3.8-flash", UNDERSTAND_MODEL: "glm-5.3-flash" };
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe", "ipc"] });
   children.add(child);

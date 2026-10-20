@@ -11,12 +11,13 @@ import type { AnyNode, Element } from "domhandler";
 import { z } from "zod";
 import { sql, type Db } from "../db.ts";
 import { sanitizeBody, textToHtml } from "../content/sanitize.ts";
-import { chatJson } from "../providers/llm.ts";
+import { chatJson, ModelOutputError } from "../providers/llm.ts";
 import { collapseWhitespace } from "../lib/text.ts";
+import { isChinese } from "../lib/language.ts";
 import { sha256 } from "../lib/ids.ts";
 import { modelFor } from "./models.ts";
 import { enqueue, QUEUES, shutdownSignal } from "../jobs/queue.ts";
-import { ReceiptUnknownError, requestWait } from "../providers/receipts.ts";
+import { completeReceipt, ReceiptUnknownError, rejectReceivedResponse, requestWait } from "../providers/receipts.ts";
 import { promptText, promptVersion } from "./prompts.ts";
 
 export const TRANSLATE_PROMPT_VERSION = promptVersion("translate-body", "translate-post");
@@ -39,17 +40,26 @@ const SYSTEM_POST = promptText("translate-post");
 
 export interface TranslateResult {
   articleId: string;
-  status: "translated" | "partial" | "skipped";
+  status: "translated" | "partial" | "skipped" | "failed";
   /** The article revision this result is about: the one read and translated, not a later one. */
   revision?: number;
   segments?: number;
   reason?: string;
+  /** 本轮新增付费请求与已保存响应复用次数；真实用量仍以 receipt_attempts 为准。 */
+  requests?: { sent: number; reused: number };
 }
 
-const isChinese = (language: string | null, sample: string) => language === "zh" || (/[一-鿿]/.test(sample.slice(0, 400)) && language !== "en");
+interface TranslationReceipt { id: number; attempt: number; rejected: boolean }
+interface TranslationPart { text: string | null; receipt: TranslationReceipt }
+interface TranslationWork {
+  receipts: TranslationReceipt[];
+  requested?: number;
+  reused?: number;
+  write?: { articleId: string; revision: number; title: string; html: string; text: string; complete: boolean };
+}
 
 /** Leaf text blocks of a sanitised body, in document order, skipping code. */
-function segmentsOf($: cheerio.CheerioAPI): Element[] {
+function segmentsOf($: cheerio.CheerioAPI, language: string | null): Element[] {
   const out: Element[] = [];
   const visit = (nodes: AnyNode[]) => {
     for (const node of nodes) {
@@ -58,7 +68,8 @@ function segmentsOf($: cheerio.CheerioAPI): Element[] {
       if (el.name === "pre" || el.name === "code") continue;
       const hasBlockChild = el.children.some((c) => c.type === "tag" && CONTAINER.test((c as Element).name));
       if (BLOCK.has(el.name) && !hasBlockChild) {
-        if (/[A-Za-zÀ-ɏЀ-ӿ぀-ヿ]/.test($(el).text())) out.push(el);
+        const text = $(el).text();
+        if (/\p{L}/u.test(text) && !isChinese(language, text)) out.push(el);
         continue;
       }
       visit(el.children);
@@ -68,7 +79,7 @@ function segmentsOf($: cheerio.CheerioAPI): Element[] {
   return out;
 }
 
-async function translateBatch(articleId: string, revision: number, index: number, parts: string[], system: string, attemptTag?: string): Promise<string[] | null> {
+async function translateBatch(articleId: string, revision: number, index: number, parts: string[], system: string, work: TranslationWork, attemptTag?: string): Promise<{ parts: TranslationPart[]; aligned: boolean }> {
   if (shutdownSignal.signal.aborted) throw new TranslationInterruptedError("worker shutting down");
   const model = await modelFor("translate");
   if (shutdownSignal.signal.aborted) throw new TranslationInterruptedError("worker shutting down");
@@ -84,13 +95,26 @@ async function translateBatch(articleId: string, revision: number, index: number
     maxTokens: Math.min(8000, Math.ceil(parts.join("").length * 1.2) + 400),
     timeoutMs: 180_000,
     attemptTag,
+    deferOutputRejection: true,
+  }).catch(error => {
+    if (error instanceof ModelOutputError && error.receiptId !== null && error.receiptAttempt !== null) {
+      work.receipts.push({ id: error.receiptId, attempt: error.receiptAttempt, rejected: true });
+    }
+    throw error;
   });
-  return res.data.t.length === parts.length ? res.data.t : null;
+  // 已发送的响应先完整保留；停机时不拒绝，也不在原批次之后启动新请求。
+  if (shutdownSignal.signal.aborted) throw new TranslationInterruptedError("worker shutting down");
+  const aligned = res.data.t.length === parts.length && res.data.t.every(t => t.trim().length > 0);
+  const receipt = { id: res.receiptId, attempt: res.receiptAttempt, rejected: !aligned };
+  work.receipts.push(receipt);
+  work.requested = (work.requested ?? 0) + (res.reused ? 0 : 1);
+  work.reused = (work.reused ?? 0) + (res.reused ? 1 : 0);
+  return { parts: parts.map((_part, i) => ({ text: aligned ? res.data.t[i]! : null, receipt })), aligned };
 }
 
 /** Translates batches, halving a batch once when the answer does not line up with the input. */
-async function translateAll(articleId: string, revision: number, parts: string[], system: string, attemptTag?: string): Promise<Array<string | null>> {
-  const out: Array<string | null> = new Array(parts.length).fill(null);
+async function translateAll(articleId: string, revision: number, parts: string[], system: string, work: TranslationWork, attemptTag?: string): Promise<TranslationPart[]> {
+  const out: TranslationPart[] = [];
   let start = 0;
   let index = 0;
   while (start < parts.length) {
@@ -98,14 +122,14 @@ async function translateAll(articleId: string, revision: number, parts: string[]
     let chars = 0;
     while (end < parts.length && (end === start || chars + parts[end]!.length <= BATCH_CHARS)) chars += parts[end++]!.length;
     const batch = parts.slice(start, end);
-    let done = await translateBatch(articleId, revision, index++, batch, system, attemptTag);
-    if (!done && batch.length > 1) {
+    let done = await translateBatch(articleId, revision, index++, batch, system, work, attemptTag);
+    if (!done.aligned && batch.length > 1) {
       const mid = Math.ceil(batch.length / 2);
-      const left = await translateBatch(articleId, revision, index++, batch.slice(0, mid), system, attemptTag);
-      const right = await translateBatch(articleId, revision, index++, batch.slice(mid), system, attemptTag);
-      done = left && right ? [...left, ...right] : null;
+      const left = await translateBatch(articleId, revision, index++, batch.slice(0, mid), system, work, attemptTag);
+      const right = await translateBatch(articleId, revision, index++, batch.slice(mid), system, work, attemptTag);
+      done = { parts: [...left.parts, ...right.parts], aligned: left.aligned && right.aligned };
     }
-    if (done) done.forEach((t, i) => (out[start + i] = t));
+    out.push(...done.parts);
     start = end;
   }
   return out;
@@ -155,13 +179,16 @@ export function unshield(translated: string, s: Shielded): string | null {
   return $.html().replace(/⟦(\d+)⟧/g, (_m, n: string) => s.tokens[Number(n)]!);
 }
 
-export async function translateArticle(articleId: string, expectedRevision?: number): Promise<TranslateResult> {
+async function prepareTranslation(articleId: string, expectedRevision: number | undefined, work: TranslationWork): Promise<TranslateResult> {
   const [row] = await sql<{ revision: number; channel: string; language: string | null; body_html: string | null; body_text: string | null; x_post: { text?: string } | null; title: string; selected: boolean; body_mode: string; visibility: string }[]>`
     SELECT a.revision, p.channel, a.language, a.body_html, a.body_text, a.x_post, p.title, p.selected, p.body_mode, p.visibility
     FROM publications p JOIN articles a ON a.id = p.article_id WHERE p.article_id = ${articleId}`;
   if (!row) return { articleId, status: "skipped", reason: "not published" };
   if (expectedRevision !== undefined && row.revision !== expectedRevision) return { articleId, revision: row.revision, status: "skipped", reason: "stale revision" };
-  const result = (r: Omit<TranslateResult, "articleId" | "revision">): TranslateResult => ({ articleId, revision: row.revision, ...r });
+  const result = (r: Omit<TranslateResult, "articleId" | "revision">): TranslateResult => ({
+    articleId, revision: row.revision, ...r, requests: { sent: work.requested ?? 0, reused: work.reused ?? 0 },
+  });
+  const unusable = (reason: string) => result({ status: "failed", reason });
   if (!row.selected || row.visibility !== "public" || row.body_mode !== "full") return result({ status: "skipped", reason: "not a selected full-text item" });
 
   if (row.channel === "x") {
@@ -169,15 +196,16 @@ export async function translateArticle(articleId: string, expectedRevision?: num
     const meaningful = collapseWhitespace(text.replace(/https?:\/\/\S+/g, ""));
     if (isChinese(row.language, text)) return result({ status: "skipped", reason: "already Chinese" });
     if (meaningful.length < X_MIN_CHARS) return result({ status: "skipped", reason: "short post" });
-    const [t] = await translateAll(articleId, row.revision, [text], SYSTEM_POST);
-    if (!t) return result({ status: "skipped", reason: "translation did not line up" });
-    await store(articleId, row.revision, row.title, textToHtml(t), t, true);
+    const [part] = await translateAll(articleId, row.revision, [text], SYSTEM_POST, work);
+    const t = part?.text;
+    if (!t) return unusable("translation did not line up");
+    work.write = { articleId, revision: row.revision, title: row.title, html: textToHtml(t), text: t, complete: true };
     return result({ status: "translated", segments: 1 });
   }
 
   if (!row.body_html || isChinese(row.language, row.body_text ?? "")) return result({ status: "skipped", reason: "no foreign-language body" });
   const $ = cheerio.load(row.body_html, null, false);
-  const blocks = segmentsOf($);
+  const blocks = segmentsOf($, row.language);
   if (!blocks.length) return result({ status: "skipped", reason: "no translatable text" });
   // Beyond the cap, only the leading blocks are translated; the rest keep the original text.
   let budget = MAX_CHARS;
@@ -188,14 +216,20 @@ export async function translateArticle(articleId: string, expectedRevision?: num
     budget -= html.length;
     chosen.push(el);
   }
+  if (!chosen.length) return result({ status: "skipped", reason: "no batch fits translation limit" });
   const shielded = chosen.map((el) => shield($(el).html() ?? ""));
-  const restore = (answers: Array<string | null>) => answers.map((t, i) => (t === null ? null : unshield(t, shielded[i]!)));
-  const translations = restore(await translateAll(articleId, row.revision, shielded.map((b) => b.html), SYSTEM_BODY));
+  const restore = (part: TranslationPart, original: Shielded) => {
+    const translated = part.text === null ? null : unshield(part.text, original);
+    if (translated === null) part.receipt.rejected = true;
+    return translated;
+  };
+  const answers = await translateAll(articleId, row.revision, shielded.map((b) => b.html), SYSTEM_BODY, work);
+  const translations = answers.map((part, i) => restore(part, shielded[i]!));
   // Blocks whose answer dropped a link or an image are asked once more, on their own receipt.
   const missing = translations.flatMap((t, i) => (t === null ? [i] : []));
   if (missing.length) {
-    const again = await translateAll(articleId, row.revision, missing.map((i) => shielded[i]!.html), SYSTEM_BODY, "retry");
-    missing.forEach((i, k) => (translations[i] = again[k] ? unshield(again[k]!, shielded[i]!) : null));
+    const again = await translateAll(articleId, row.revision, missing.map((i) => shielded[i]!.html), SYSTEM_BODY, work, "retry");
+    missing.forEach((i, k) => (translations[i] = restore(again[k]!, shielded[i]!)));
   }
   let done = 0;
   chosen.forEach((el, i) => {
@@ -205,16 +239,24 @@ export async function translateArticle(articleId: string, expectedRevision?: num
       done += 1;
     }
   });
-  if (!done) return result({ status: "skipped", reason: "no batch translated" });
+  if (!done) return unusable("no batch translated");
   const complete = done === blocks.length;
   const html = sanitizeBody($.html());
-  await store(articleId, row.revision, row.title, html, cheerio.load(html, null, false).root().text().trim(), complete);
+  work.write = { articleId, revision: row.revision, title: row.title, html, text: cheerio.load(html, null, false).root().text().trim(), complete };
   return result({ status: complete ? "translated" : "partial", segments: done });
 }
 
-async function store(articleId: string, revision: number, title: string, html: string, text: string, complete: boolean) {
+export async function translateArticle(articleId: string, expectedRevision?: number): Promise<TranslateResult> {
+  const [article] = await sql<{ revision: number }[]>`SELECT revision FROM articles WHERE id=${articleId}`;
+  const revision = expectedRevision ?? article?.revision;
+  if (revision === undefined) return { articleId, status: "skipped", reason: "not published" };
+  const processed = await processTranslation(articleId, revision);
+  return processed.result ?? { articleId, revision, status: "skipped", reason: processed.state };
+}
+
+async function store(db: Db, { articleId, revision, title, html, text, complete }: NonNullable<TranslationWork["write"]>) {
   // Never over a translation of a later revision (a slow run finishing after a newer one).
-  await sql`
+  await db`
     INSERT INTO translations (article_id, lang, revision, title, body_html, body_text, complete, origin)
     VALUES (${articleId}, 'zh', ${revision}, ${title}, ${html}, ${text}, ${complete}, 'model')
     ON CONFLICT (article_id, lang) DO UPDATE SET revision = EXCLUDED.revision, title = EXCLUDED.title, body_html = EXCLUDED.body_html,
@@ -225,7 +267,7 @@ async function store(articleId: string, revision: number, title: string, html: s
 /** A quoted post worth translating: at least a few letters beyond its links, and not already Chinese. */
 function quoteTranslatable(text: string): boolean {
   const words = collapseWhitespace(text.replace(/https?:\/\/\S+/g, " "));
-  return words.length >= 10 && (words.match(/\p{L}/gu) ?? []).length >= 2 && !/[一-鿿]/.test(words);
+  return words.length >= 10 && (words.match(/\p{L}/gu) ?? []).length >= 2 && !isChinese(null, words);
 }
 
 /**
@@ -365,7 +407,8 @@ export async function processTranslation(articleId: string, revision: number): P
       || (input.outcome === "waiting" && !input.retry_at) || input.retry_at > new Date()) return { state: "waiting" };
   let result: TranslateResult | undefined;
   let error: unknown;
-  try { result = await translateArticle(articleId, revision); }
+  const work: TranslationWork = { receipts: [] };
+  try { result = await prepareTranslation(articleId, revision, work); }
   catch (caught) {
     if (caught instanceof TranslationInterruptedError || shutdownSignal.signal.aborted) throw caught;
     error = caught;
@@ -374,32 +417,53 @@ export async function processTranslation(articleId: string, revision: number): P
   const wait = requestWait(error);
   const unknown = error instanceof ReceiptUnknownError ? error : null;
   const message = error instanceof Error ? error.message.slice(0,300) : String(error).slice(0,300);
-  const recorded = await recordTranslationAttempt(articleId, revision, result, error);
+  const recorded = await recordTranslationAttempt(articleId, revision, result, error, work);
   if (!recorded) return { state: "stale" };
   if (wait || unknown) return { state: "waiting", wait: unknown ? "unknown" : wait!.kind };
-  return { state: result?.status ?? "failed", result: result ?? { articleId,revision,status: "skipped",reason: message } };
+  return { state: result?.status ?? "failed", result: result ?? { articleId,revision,status: "failed",reason: message } };
 }
 
 /** Commit against the actual input; release recovery uses the same article → receipt lock order. */
-export async function recordTranslationAttempt(articleId: string, revision: number, result: TranslateResult | undefined, error?: unknown): Promise<boolean> {
+export async function recordTranslationAttempt(articleId: string, revision: number, result: TranslateResult | undefined, error?: unknown, work?: TranslationWork): Promise<boolean> {
   const wait = requestWait(error);
   const unknown = error instanceof ReceiptUnknownError ? error : null;
   const message = error instanceof Error ? error.message.slice(0,300) : String(error).slice(0,300);
   return sql.begin(async tx => {
     const [article] = await tx`SELECT revision FROM articles WHERE id=${articleId} FOR UPDATE`;
     if (!article || article.revision !== revision) return false;
+    const [previous] = await tx`SELECT attempts,outcome FROM translation_attempts WHERE article_id=${articleId} AND revision=${revision} FOR UPDATE`;
+    if (previous?.attempts >= 3 || ["skipped","translated","partial"].includes(previous?.outcome)) return false;
     let receiptStatus: string | undefined;
     if (unknown) {
       const [receipt] = await tx`SELECT status FROM receipts WHERE id=${unknown.receiptId} FOR UPDATE`;
       receiptStatus = receipt?.status;
     }
     const waiting = !!wait || !!unknown;
+    const failed = !waiting && (!!error || result?.status === "failed");
     const released = !!unknown && receiptStatus !== undefined && receiptStatus !== "unknown";
     const retryAt = waiting ? unknown && !released ? null : new Date(Date.now() + (wait?.retryAfterSeconds ?? (receiptStatus === "pending" ? 60 : 0)) * 1000)
-      : error ? new Date(Date.now() + 5 * 60_000) : null;
+      : failed ? new Date(Date.now() + 5 * 60_000) : null;
     const outcome = waiting ? "waiting" : result?.status ?? "failed";
     const reason = unknown ? `receipt ${unknown.receiptId} outcome unknown` : wait ? `waiting (${wait.kind}): ${message}` : result?.reason ?? (error ? message : null);
-    const failure = !waiting && !!error ? 1 : 0;
+    const failure = failed ? 1 : 0;
+    if (!waiting && work) {
+      const receipts = new Map<number, TranslationReceipt>();
+      for (const receipt of work.receipts) {
+        const existing = receipts.get(receipt.id);
+        receipts.set(receipt.id, { ...receipt, rejected: receipt.rejected || !!existing?.rejected });
+      }
+      // 拒绝响应、失败计数与业务写入同事务；不能在崩溃后留下不扣次数的付费重试入口。
+      for (const receipt of [...receipts.values()].sort((a, b) => a.id - b.id)) {
+        const [saved] = await tx`SELECT status,attempts FROM receipts WHERE id=${receipt.id} FOR UPDATE`;
+        if (!saved || saved.attempts !== receipt.attempt || !["received","completed"].includes(saved.status)) return false;
+      }
+      if (work.write && !error) await store(tx, work.write);
+      for (const receipt of receipts.values()) {
+        if (receipt.rejected) {
+          await rejectReceivedResponse(receipt.id, "翻译响应与批次或保留结构不匹配", tx, receipt.attempt);
+        } else if (work.write && !error) await completeReceipt(tx, receipt.id);
+      }
+    }
     await tx`INSERT INTO translation_attempts(article_id,revision,attempts,outcome,reason,retry_at,wait_receipt_id)
       VALUES(${articleId},${revision},${failure},${outcome},${reason},${retryAt},${unknown && !released ? unknown.receiptId : null})
       ON CONFLICT(article_id) DO UPDATE SET revision=EXCLUDED.revision,

@@ -32,6 +32,8 @@ const provider = await stub(async (_hit, request) => {
 });
 await useModelStubs({ DEEPSEEK: provider.url });
 for (const name of ["PREFILTER_MODEL", "SCORE_MODEL", "STRUCTURE_MODEL", "UNDERSTAND_MODEL"]) process.env[name] = "deepseek-flash";
+// 本文件验证评分与结构并行时的共享回执竞态；用真实不兼容配置选择分步路径。
+process.env.STRUCTURE_MODEL = "deepseek-flash-think";
 let budget: { per_minute: number; per_hour: number; per_day: number };
 let parkedJobs: Array<{ id: string; start_after: Date }> = [];
 before(async () => {

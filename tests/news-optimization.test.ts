@@ -64,7 +64,9 @@ process.env.LLM_MODEL = "news-fixture";
 for (const name of ["PREFILTER_MODEL", "SCORE_MODEL", "STRUCTURE_MODEL", "UNDERSTAND_MODEL", "SUMMARIZE_MODEL"]) process.env[name] = "default";
 before(async () => { await sql`INSERT INTO sources(id,name,kind,tier,participation_mode,next_fetch_at) VALUES(${sourceId},'固定合成材料','rss','T1','editorial','2100-01-01')`; });
 after(async () => { await provider.close(); await stopBoss(); await closeDb(); });
-function switches(enabled: boolean) { config.combinedUnderstand = enabled; config.combinedSummarize = enabled; }
+// 通过真实模型分配覆盖自动合并与不兼容的分步处理，不设置运行模式开关。
+function compatibleModels() { process.env.STRUCTURE_MODEL = "default"; }
+function separateModels() { process.env.STRUCTURE_MODEL = "deepseek-flash"; }
 async function article(sample: Sample = samples[0]!, extra: Record<string, unknown> = {}) {
   const identity = tag();
   return (await upsertMaterial({ sourceId, url: `https://example.test/${T}/${identity}`, title: `${sample.marker} ${sample.title} ${identity}`,
@@ -75,12 +77,12 @@ test("P0 固定五领域样本：两次评分与业务结果相同，P2a／P2b �
   const report = [];
   for (const sample of samples) {
     const id = await article(sample);
-    switches(false);
+    separateModels();
     const started = performance.now();
     await sql`UPDATE articles SET processing_attempt_tag='baseline' WHERE id=${id}`;
     const old = await analyzeArticle(id, { attemptTag: "baseline" });
     const baselineMs = performance.now() - started;
-    switches(true);
+    compatibleModels();
     const nextStarted = performance.now();
     await sql`UPDATE articles SET processing_attempt_tag='optimized' WHERE id=${id}`;
     const next = await analyzeArticle(id, { attemptTag: "optimized" });
@@ -102,12 +104,12 @@ test("P0 固定五领域样本：两次评分与业务结果相同，P2a／P2b �
   console.log(JSON.stringify({ kind: "synthetic-news-baseline", realModelQualityVerified: false, cases: report }));
 });
 
-test("P2a、P2b 独立开关；模型不兼容和中文短帖维持单项路径", async () => {
-  config.combinedUnderstand = true; config.combinedSummarize = false;
+test("兼容模型自动选择合并；模型不兼容和中文短帖维持单项路径", async () => {
+  compatibleModels();
   let start = requests.length;
   await analyzeArticle(await article(samples[2]));
-  assert.deepEqual(requests.slice(start).map(r => r.step).sort(), ["prefilter", "score", "score", "structure", "summarize"]);
-  switches(true);
+  assert.deepEqual(requests.slice(start).map(r => r.step), ["prefilter", "score", "score", "combinedSummarize"]);
+  compatibleModels();
   process.env.STRUCTURE_MODEL = "deepseek-flash";
   start = requests.length;
   await analyzeArticle(await article());
@@ -123,22 +125,22 @@ test("P2a、P2b 独立开关；模型不兼容和中文短帖维持单项路径"
 });
 
 test("部分旧结构结果升级后复用，只补原写作，不进入合并路径", async () => {
-  switches(false); fault = "legacy";
+  separateModels(); fault = "legacy";
   const id = await article();
   await assert.rejects(analyzeArticle(id), ModelOutputError);
   // 模拟升级前仅保存 userHash 的部分结构回执。
   await sql`UPDATE receipts SET request=request-'materialHash'-'modelKey' WHERE purpose='structure_article' AND subject=${`article:${id}@1`}`;
-  fault = "none"; switches(true);
+  fault = "none"; compatibleModels();
   const start = requests.length;
   const result = await analyzeArticle(id);
   assert.equal(result!.receiptIds.length, 5);
   assert.deepEqual(requests.slice(start).map(r => r.step), ["understand"]);
 });
 
-test("P2a 写作边界空成员或缺结束括号时四次请求完成，关闭后零新增请求消费", async () => {
+test("P2a 写作边界空成员或缺结束括号时四次请求完成，配置变化后零新增请求消费", async () => {
   try {
     for (const mode of ["emptyMember", "missingWriterClose"] as const) {
-      switches(true); fault = mode;
+      compatibleModels(); fault = mode;
       const id = await article(), start = requests.length;
       const first = await analyzeArticle(id);
       assert.deepEqual(requests.slice(start).map(r => r.step), ["prefilter", "score", "score", "combinedUnderstand"]);
@@ -146,24 +148,24 @@ test("P2a 写作边界空成员或缺结束括号时四次请求完成，关闭�
       assert.ok(first!.output!.summaryZh?.includes(samples[0]!.text));
       const [receipt] = await analysisHistory(`article:${id}@1`);
       assert.equal(receipt!.status, "completed");
-      switches(false); const hits = provider.hits();
+      separateModels(); const hits = provider.hits();
       assert.deepEqual((await analyzeArticle(id))!.output, first!.output);
       assert.equal(provider.hits(), hits);
     }
-  } finally { fault = "none"; switches(false); }
+  } finally { fault = "none"; separateModels(); }
 });
 
 test("空成员兼容后仍拒绝错误分类，不能拆成新付费请求", async () => {
-  switches(true); fault = "invalidStructureWithEmptyMember";
+  compatibleModels(); fault = "invalidStructureWithEmptyMember";
   try {
     const id = await article(), start = requests.length;
     await assert.rejects(analyzeArticle(id), ModelOutputError);
     assert.deepEqual(requests.slice(start).map(r => r.step), ["prefilter", "score", "score", "combinedUnderstand"]);
     assert.equal((await sql`SELECT count(*)::int AS n FROM analyses WHERE article_id=${id}`)[0]!.n, 0);
-    switches(false); const hits = provider.hits();
+    separateModels(); const hits = provider.hits();
     await assert.rejects(analyzeArticle(id), ProviderUnavailableError);
     assert.equal(provider.hits(), hits);
-  } finally { fault = "none"; switches(false); }
+  } finally { fault = "none"; separateModels(); }
 });
 
 test("P2a 解析保留正文中的 JSON 字面文本，拒绝其他位置和非空的无名成员", () => {
@@ -182,8 +184,8 @@ test("P2a 解析保留正文中的 JSON 字面文本，拒绝其他位置和非�
     '{"writing":{"titleZh":"文案","",""},"structure":{}}']) assert.throws(() => parseCombinedUnderstandJson(text), SyntaxError);
 });
 
-test("仅开 P2b：普通摘要省略不用的 bodyZh 仍四次请求完成，关闭后零付费复用", async () => {
-  config.combinedUnderstand = false; config.combinedSummarize = true; fault = "unusedBodyMissing";
+test("P2b 自动合并普通摘要，省略不用的 bodyZh 仍四次请求完成，配置变化后零付费复用", async () => {
+  compatibleModels(); fault = "unusedBodyMissing";
   try {
     const id = await article(samples[2]);
     const start = requests.length;
@@ -191,17 +193,17 @@ test("仅开 P2b：普通摘要省略不用的 bodyZh 仍四次请求完成，�
     assert.deepEqual(requests.slice(start).map(r => r.step), ["prefilter", "score", "score", "combinedSummarize"]);
     assert.equal(first!.receiptIds.length, 4);
     assert.ok(first!.output!.summaryZh?.includes(samples[2]!.text));
-    switches(false);
+    separateModels();
     const hits = provider.hits();
     const again = await analyzeArticle(id);
     assert.deepEqual(again!.output, first!.output);
     assert.equal(again!.reused, true);
     assert.equal(provider.hits(), hits);
-  } finally { fault = "none"; switches(false); }
+  } finally { fault = "none"; separateModels(); }
 });
 
 test("普通摘要缺少 summaryZh 仍拒绝整份合并结果，不拆成新付费请求", async () => {
-  config.combinedUnderstand = false; config.combinedSummarize = true; fault = "summaryMissing";
+  compatibleModels(); fault = "summaryMissing";
   try {
     const id = await article(samples[2]);
     const start = requests.length;
@@ -209,30 +211,30 @@ test("普通摘要缺少 summaryZh 仍拒绝整份合并结果，不拆成新付
     assert.deepEqual(requests.slice(start).map(r => r.step), ["prefilter", "score", "score", "combinedSummarize"]);
     assert.equal((await sql`SELECT count(*)::int AS n FROM analyses WHERE article_id=${id}`)[0]!.n, 0);
     assert.equal((await analysisHistory(`article:${id}@1`)).length, 1);
-  } finally { fault = "none"; switches(false); }
+  } finally { fault = "none"; separateModels(); }
 });
 
-test("缺失结构拒绝整份合并结果；关闭后不拆分，启用后沿原回执有限重试", async () => {
-  switches(true); fault = "missing";
+test("缺失结构拒绝整份合并结果；配置不兼容时不拆分，恢复后沿原回执有限重试", async () => {
+  compatibleModels(); fault = "missing";
   const id = await article();
   await assert.rejects(analyzeArticle(id), ModelOutputError);
   assert.equal((await sql`SELECT count(*)::int AS n FROM analyses WHERE article_id=${id}`)[0]!.n, 0);
-  switches(false); fault = "none";
+  separateModels(); fault = "none";
   const hits = provider.hits();
   await assert.rejects(analyzeArticle(id), ProviderUnavailableError);
   assert.equal(provider.hits(), hits);
-  switches(true);
+  compatibleModels();
   await analyzeArticle(id);
   const history = await analysisHistory(`article:${id}@1`);
   assert.equal(history.length, 1);
   assert.equal((await sql`SELECT attempts FROM receipts WHERE id=${history[0]!.id}`)[0]!.attempts, 2);
 });
 
-test("已保存合并结果在关闭开关和改变模型分配后仍零请求消费", async () => {
-  switches(true);
+test("已保存合并结果在改变模型分配后仍零请求消费", async () => {
+  compatibleModels();
   const id = await article();
   const first = await analyzeArticle(id);
-  switches(false);
+  separateModels();
   process.env.STRUCTURE_MODEL = "deepseek-flash";
   process.env.UNDERSTAND_MODEL = "deepseek-flash";
   const hits = provider.hits();
@@ -245,7 +247,7 @@ test("已保存合并结果在关闭开关和改变模型分配后仍零请求�
 });
 
 test("信源元数据变化但文章修订号不变时，材料指纹阻止复用过期合并结果", async () => {
-  switches(true);
+  compatibleModels();
   const id = await article();
   await analyzeArticle(id);
   const start = requests.length;
@@ -258,8 +260,8 @@ test("信源元数据变化但文章修订号不变时，材料指纹阻止复�
   } finally { await sql`UPDATE sources SET name='固定合成材料' WHERE id=${sourceId}`; }
 });
 
-test("未知合并回执关闭后等待，放行唤醒文章，启用后仅重试原合并请求", async () => {
-  switches(true);
+test("未知合并回执配置变化后等待，放行唤醒文章，恢复配置后仅重试原合并请求", async () => {
+  compatibleModels();
   const id = await article();
   await analyzeArticle(id);
   const [receipt] = await analysisHistory(`article:${id}@1`);
@@ -267,7 +269,7 @@ test("未知合并回执关闭后等待，放行唤醒文章，启用后仅重�
   await sql`UPDATE receipts SET status='unknown',response=NULL WHERE id=${receipt.id}`;
   await sql`UPDATE receipt_attempts SET status='unknown' WHERE receipt_id=${receipt.id}`;
   await sql`UPDATE articles SET processing_state='new',processing_attempt_tag=NULL WHERE id=${id}`;
-  switches(false);
+  separateModels();
   const hits = provider.hits();
   await assert.rejects(analyzeArticle(id), ReceiptUnknownError);
   assert.equal((await processArticle(id)).state, "unknown-receipt");
@@ -275,7 +277,7 @@ test("未知合并回执关闭后等待，放行唤醒文章，启用后仅重�
   assert.equal(receiptArticleSubject({ purpose: receipt.purpose, subject: `article:${id}@1` })!.articleId, id);
   assert.equal((await releaseReceipt(receipt.id, { billed: false, note: "备注提到 contentFilter，不代表供应商拒绝" }, "test"))!.requeued, true);
   await assert.rejects(analyzeArticle(id), ProviderUnavailableError);
-  switches(true);
+  compatibleModels();
   const start = requests.length;
   await analyzeArticle(id);
   assert.deepEqual(requests.slice(start).map(r => r.step), ["combinedUnderstand"]);
@@ -297,7 +299,7 @@ test("付费占位互斥覆盖跨用途、跨服务与已收到的旧结果", as
 });
 
 test("共享未知回执恢复全部当前消费者，新处理轮次不能绕过未知状态", async () => {
-  switches(true);
+  compatibleModels();
   const a = await article(); const b = await article();
   await analyzeArticle(a);
   const [receipt] = await analysisHistory(`article:${a}@1`);
@@ -318,7 +320,7 @@ test("共享未知回执恢复全部当前消费者，新处理轮次不能绕�
 });
 
 test("非精选英文短帖使用合并 JSON，并保留原 bodyZh 文案语义", async () => {
-  switches(true);
+  compatibleModels();
   await sql`UPDATE sources SET kind='x_search' WHERE id=${sourceId}`;
   const start = requests.length;
   const id = await article(samples[2], { xPost: { text: "CASE_TECH Test tool supports local deployment on Linux only." } });
@@ -330,7 +332,7 @@ test("非精选英文短帖使用合并 JSON，并保留原 bodyZh 文案语义"
 });
 
 test("合并内容过滤明确拒绝保留原摘要降级；能力用途只登记一次", async () => {
-  switches(true); fault = "filter";
+  compatibleModels(); fault = "filter";
   // 预设连接覆盖升级前 HTTP 错误的恢复兼容。
   process.env.STRUCTURE_MODEL = "deepseek-flash"; process.env.UNDERSTAND_MODEL = "deepseek-flash";
   const start = requests.length;
@@ -350,21 +352,21 @@ test("合并内容过滤明确拒绝保留原摘要降级；能力用途只登�
 });
 
 test("解析错误里的 contentFilter 文本不能改变本轮合并路径", async () => {
-  switches(true); fault = "malformedFilter";
+  compatibleModels(); fault = "malformedFilter";
   const id = await article();
   await assert.rejects(analyzeArticle(id), ModelOutputError);
   const [receipt] = await analysisHistory(`article:${id}@1`);
   assert.match(receipt!.error!, /contentFilter/);
   // 数据库允许旧回执缺少 request 元数据，恢复仍应固定原路径。
   await sql`UPDATE receipts SET request=NULL WHERE id=${receipt!.id}`;
-  switches(false); fault = "none";
+  separateModels(); fault = "none";
   const hits = provider.hits();
   await assert.rejects(analyzeArticle(id), ProviderUnavailableError);
   assert.equal(provider.hits(), hits, "不能拆成结构和摘要重复付费");
 });
 
 test("合并回答期间文章换修订，旧结果只留审计，不覆盖当前文章", async () => {
-  switches(true);
+  compatibleModels();
   const id = await article();
   const control = combinedGate = { asked: gate(), hold: gate() };
   const running = analyzeArticle(id);
@@ -389,7 +391,6 @@ test("保存连接的 low／medium 配置按能力生效，同一连接别名兼
   try {
     await selectModelConnection(medium.id);
     for (const name of ["PREFILTER_MODEL", "STRUCTURE_MODEL", "SUMMARIZE_MODEL"]) process.env[name] = `connection:${low.id}`;
-    switches(true);
     let start = requests.length;
     await analyzeArticle(await article());
     const separate = requests.slice(start);

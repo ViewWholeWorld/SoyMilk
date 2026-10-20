@@ -52,10 +52,12 @@ export async function withSearchCapacity<T>(fn: (db: Db) => Promise<T>): Promise
   }
 }
 
-/** Search terms: whitespace separated, lower-cased, LIKE metacharacters escaped. */
+/** 中英文相接时拆词，数字与汉字组合保留；最多六词并转义 LIKE。 */
 export function searchTerms(q: string): string[] {
   return q
     .toLowerCase()
+    .replace(/(\p{Script=Han})(?=[a-z])/gu, "$1 ")
+    .replace(/([a-z][a-z0-9]*)(?=\p{Script=Han})/gu, "$1 ")
     .split(/\s+/)
     .map((t) => t.trim())
     .filter(Boolean)
@@ -80,7 +82,8 @@ export function publicMatchCondition(terms: string[]) {
   // may hash every matching body in pool_search before serving even the first 40 recent items.
   return terms.reduce(
     (acc, t) => sql`${acc} AND (p.search_text LIKE ${"%" + t + "%"} OR EXISTS (
-      SELECT 1 FROM pool_search ps WHERE ps.article_id = p.article_id AND ps.body LIKE ${"%" + t + "%"} OFFSET 0))`,
+      SELECT 1 FROM pool_search ps WHERE ps.article_id = p.article_id AND ps.body LIKE ${"%" + t + "%"}
+        ${/^[a-z0-9]+$/.test(t) ? sql`AND ps.body ~ ${"(^|[^a-z0-9])" + t}` : sql``} OFFSET 0))`,
     sql``,
   );
 }
@@ -169,16 +172,17 @@ export async function loadPool(query: PoolQuery): Promise<PoolResponse> {
       type RankedRow = Omit<ItemRow, "id"> & { id: string | null; rel: number; total: number };
       const result = await db<RankedRow[]>`
         WITH matches AS ${splitFields ? sql`MATERIALIZED` : sql`NOT MATERIALIZED`} (${matches}), scored AS MATERIALIZED (
-          SELECT p.article_id, p.timeline_at, matches.part + (${titleScore}) AS rel
+          SELECT p.article_id, p.timeline_at, matches.part + (${titleScore}) AS rel,
+            CASE WHEN p.selected THEN 1 ELSE 0 END AS seated, coalesce(p.score, 0) AS quality
           FROM matches JOIN publications p ON p.article_id = matches.article_id JOIN sources s ON s.id = p.source_id
           WHERE ${listedCondition(now)} ${filters}
         ), page AS MATERIALIZED (
-          SELECT article_id, rel FROM scored ORDER BY rel DESC, timeline_at DESC, article_id DESC
+          SELECT article_id, rel, seated, quality FROM scored ORDER BY rel DESC, seated DESC, quality DESC, timeline_at DESC, article_id DESC
           LIMIT ${POOL_PAGE_SIZE} OFFSET ${offset}
         ), total AS (SELECT count(*) AS n FROM (SELECT 1 FROM scored LIMIT ${cap}) capped)
         SELECT hydrated.*, total.n AS total FROM total LEFT JOIN LATERAL (
-          SELECT ${ITEM_COLUMNS}, page.rel ${ITEM_FROM} JOIN page ON page.article_id = p.article_id
-        ) hydrated ON true ORDER BY hydrated.rel DESC, hydrated.timeline_at DESC, hydrated.id DESC`;
+          SELECT ${ITEM_COLUMNS}, page.rel, page.seated, page.quality ${ITEM_FROM} JOIN page ON page.article_id = p.article_id
+        ) hydrated ON true ORDER BY hydrated.rel DESC, hydrated.seated DESC, hydrated.quality DESC, hydrated.timeline_at DESC, hydrated.id DESC`;
       const rows = result.filter((r): r is ItemRow & { rel: number; total: number } => r.id !== null);
       return { rows, total: Number(result[0]!.total) };
     }

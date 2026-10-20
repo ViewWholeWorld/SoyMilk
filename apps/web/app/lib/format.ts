@@ -2,6 +2,12 @@ import { beijingDate, beijingTime, beijingWeekday } from "@aihot/contracts/time"
 
 export { beijingDate, beijingTime, beijingWeekday };
 
+/** 同年只显示月日，异年补年份；参数是北京时间日历键。 */
+export function monthDay(date: string, today = beijingDate(Date.now())): string {
+  const [y, m, d] = date.split("-").map(Number) as [number, number, number];
+  return `${y !== Number(today.slice(0, 4)) ? `${y}年` : ""}${m}月${d}日`;
+}
+
 export function dayLabel(date: string, today: string): string {
   const [y, m, d] = date.split("-").map(Number) as [number, number, number];
   const base = `${m}月${d}日`;

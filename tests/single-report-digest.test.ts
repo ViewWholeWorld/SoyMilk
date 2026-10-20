@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { sql, closeDb } from "@aihot/backend/db";
 import { stopBoss } from "@aihot/backend/jobs/queue";
-import { config } from "@aihot/backend/config";
 import { composeStoryDigest } from "@aihot/backend/events/digest";
 import { overrideFields, setVisibility } from "@aihot/backend/admin/content";
 import { loadStoryDetail } from "@aihot/backend/publication/stories";
@@ -17,7 +16,6 @@ const provider = await stub((_n, req) => {
   return { choices: [{ message: { content: JSON.stringify({ title: "多篇事件标题", digest: "综合当前两篇公开报道的新事件综述。", latest: "新增报道" }) } }] };
 });
 await useModelStubs({ DEEPSEEK: provider.url });
-config.singleReportDigestReuse = true;
 after(async () => { await provider.close(); await cleanup(); await stopBoss(); await closeDb(); });
 
 test("单篇概览零付费，重复任务幂等，第二篇沿有效上下文生成", async () => {
@@ -58,15 +56,13 @@ test("人工标题保留，更正和撤回同步清除旧概览", async () => {
   assert.equal(await loadStoryDetail(st.id), null);
 });
 
-test("关闭开关保留已有未变稿，缺少可用中文摘要沿原模型路径", async () => {
+test("已有输入未变稿保持幂等，缺少可用中文摘要沿模型路径", async () => {
   const a = await article(await source(), "合法中文报道标题及摘要");
   const st = await story([{ id: a }], "初始标题");
   await composeStoryDigest(st.id);
-  config.singleReportDigestReuse = false;
   const hits = provider.hits();
   assert.equal((await composeStoryDigest(st.id)).updated, false);
   assert.equal(provider.hits(), hits);
-  config.singleReportDigestReuse = true;
   const b = await article(await source(), "English title and summary");
   const other = await story([{ id: b }], "等待生成");
   await sql`UPDATE publications SET title='English title',summary='English only summary without Chinese' WHERE article_id=${b}`;
@@ -74,14 +70,14 @@ test("关闭开关保留已有未变稿，缺少可用中文摘要沿原模型�
   assert.equal(provider.hits(), hits + 1);
 });
 
-test("开启复用后保留输入未变的合法模型概览，不用单篇摘要覆盖", async () => {
+test("旧合法模型概览输入未变时保持原稿，不用单篇摘要覆盖", async () => {
   const a = await article(await source(), "单篇报道已生成更完整的模型概览");
   const st = await story([{ id: a }], "初始标题");
-  config.singleReportDigestReuse = false;
+  // 合法但超过复用上限的摘要走模型路径，模拟已持久化的旧模型稿。
+  await sql`UPDATE publications SET summary=${"中".repeat(2001)} WHERE article_id=${a}`;
   await composeStoryDigest(st.id);
   const saved = await loadStoryDetail(st.id);
   const hits = provider.hits();
-  config.singleReportDigestReuse = true;
   assert.equal((await composeStoryDigest(st.id)).updated, false);
   assert.equal(provider.hits(), hits);
   assert.equal((await loadStoryDetail(st.id))!.digest, saved!.digest);

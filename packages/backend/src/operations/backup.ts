@@ -74,13 +74,46 @@ async function upload(s: Store, key: string, file: string, sha: string, size: nu
   if (!res.ok) throw new Error(`backup upload ${key}: HTTP ${res.status} ${(await res.text()).slice(0, 300)}`);
 }
 
+/** 仅向 pg_dump 子进程传递凭据；其余 libpq 参数保留原始编码（+ 不是表单空格）。 */
+export function dumpConnection(databaseUrl: string): { url: string; env: Record<string, string> } {
+  try {
+    const url = new URL(databaseUrl);
+    if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") throw new Error("invalid protocol");
+    const env: Record<string, string> = {};
+    if (url.username) env.PGUSER = decodeURIComponent(url.username);
+    if (url.password) env.PGPASSWORD = decodeURIComponent(url.password);
+    url.username = "";
+    url.password = "";
+    const kept: string[] = [];
+    for (const part of url.search.slice(1).split("&").filter(Boolean)) {
+      const split = part.indexOf("=");
+      const key = decodeURIComponent(split < 0 ? part : part.slice(0, split));
+      if (key === "user" || key === "password") env[key === "user" ? "PGUSER" : "PGPASSWORD"] = decodeURIComponent(split < 0 ? "" : part.slice(split + 1));
+      else kept.push(part);
+    }
+    url.search = kept.length ? `?${kept.join("&")}` : "";
+    return { url: url.toString(), env };
+  } catch {
+    throw new Error("invalid database connection for backup");
+  }
+}
+
 export async function runBackup(now = new Date()) {
   const s = store();
   const dir = path.join(config.dataDir, "backups");
   await mkdir(dir, { recursive: true });
   const stamp = now.toISOString().slice(0, 16).replace(/[-:T]/g, "");
   const dump = path.join(dir, `aihot-${stamp}.dump`);
-  await run("pg_dump", ["--format=custom", "--compress=6", "--no-owner", "--file", dump, config.databaseUrl], { maxBuffer: 16 * 1024 * 1024 });
+  const connection = dumpConnection(config.databaseUrl);
+  try {
+    await run("pg_dump", ["--format=custom", "--compress=6", "--no-owner", "--file", dump, connection.url], {
+      env: { ...process.env, ...connection.env }, maxBuffer: 16 * 1024 * 1024,
+    });
+  } catch (error) {
+    // execFile 的错误附带 argv/stderr；子进程错误不得进入持久日志或管理页。
+    const code = (error as NodeJS.ErrnoException)?.code;
+    throw new Error(`database backup failed: pg_dump ${typeof code === "number" || (typeof code === "string" && /^[A-Z_]+$/.test(code)) ? code : "error"}`);
+  }
   // Verify before shipping: the archive must list cleanly.
   await run("pg_restore", ["--list", dump], { maxBuffer: 64 * 1024 * 1024 });
   const files = path.join(dir, `aihot-files-${stamp}.tar.gz`);
