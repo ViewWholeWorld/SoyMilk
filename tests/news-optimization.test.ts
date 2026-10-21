@@ -5,7 +5,7 @@ import { after, before, test } from "node:test";
 import { sql, closeDb } from "@aihot/backend/db";
 import { config } from "@aihot/backend/config";
 import { upsertMaterial } from "@aihot/backend/content/materials";
-import { analyzeArticle, parseCombinedUnderstandJson } from "@aihot/backend/editorial/analyze";
+import { analyzeArticle, parseCombinedUnderstandJson, COMPATIBLE_PROMPT_VERSIONS } from "@aihot/backend/editorial/analyze";
 import { analysisHistory, compatibleAnalysisModels, exclusiveAnalysisSteps } from "@aihot/backend/editorial/analysis-route";
 import { ModelOutputError } from "@aihot/backend/providers/llm";
 import { paidRequest, ProviderUnavailableError, ReceiptBusyError, ReceiptUnknownError } from "@aihot/backend/providers/receipts";
@@ -91,6 +91,11 @@ test("P0 固定五领域样本：两次评分与业务结果相同，P2a／P2b �
     assert.equal(old!.receiptIds.length, 5);
     assert.equal(next!.receiptIds.length, 4);
     assert.equal(new Set(next!.receiptIds).size, 4);
+    const combinedCall = requests.findLast(r => r.marker === sample.marker && r.step.startsWith("combined"))!;
+    const combinedSystem = combinedCall.body.messages as Array<{ role: string; content: string }>;
+    assert.equal(combinedSystem[0]!.content.includes("只输出一个 JSON 对象，字段：category, tags, subjects, fact"), false);
+    assert.equal(combinedSystem[0]!.content.includes("顶层必须且只能包含以下六个字段"), false);
+    assert.equal(JSON.stringify(combinedSystem.at(-1)!.content).includes("一次返回全部六个字段"), false);
     const history = await analysisHistory(`article:${id}@1`, "optimized");
     assert.equal(history.length, 1);
     const scores = await sql`SELECT r.id FROM receipts r JOIN receipt_attempts a ON a.receipt_id=r.id
@@ -258,6 +263,64 @@ test("信源元数据变化但文章修订号不变时，材料指纹阻止复�
     assert.ok(JSON.stringify(requests.at(-1)!.body).includes("来源元数据已更正"));
     assert.equal((await sql`SELECT revision FROM articles WHERE id=${id}`)[0]!.revision, 1);
   } finally { await sql`UPDATE sources SET name='固定合成材料' WHERE id=${sourceId}`; }
+});
+
+test("质量提示词升级后，旧合并与分步回执同材料零新增 attempts 消费；未知版本不重付费", async () => {
+  for (const combined of [true, false]) for (const sample of [samples[0]!, samples[2]!]) {
+    if (combined) compatibleModels(); else separateModels();
+    const id = await article(sample);
+    const first = await analyzeArticle(id);
+    const subject = `article:${id}@1`;
+    const oldPrefilter = COMPATIBLE_PROMPT_VERSIONS.prefilter[0];
+    await sql`UPDATE receipts SET request=jsonb_set(request,'{promptVersion}',${sql.json(oldPrefilter)}::jsonb)
+      WHERE purpose='prefilter_article' AND subject=${subject}`;
+    for (const r of await analysisHistory(subject)) {
+      const version = COMPATIBLE_PROMPT_VERSIONS[r.step][0];
+      if (version) await sql`UPDATE receipts SET request=jsonb_set(request,'{promptVersion}',${sql.json(version)}::jsonb) WHERE id=${r.id}`;
+    }
+    const attempts = (await sql`SELECT count(*)::int AS n FROM receipt_attempts WHERE receipt_id=ANY(${first!.receiptIds}::bigint[])`)[0]!.n;
+    const hits = provider.hits();
+    assert.deepEqual((await analyzeArticle(id))!.output, first!.output);
+    assert.equal(provider.hits(), hits);
+    assert.equal((await sql`SELECT count(*)::int AS n FROM receipt_attempts WHERE receipt_id=ANY(${first!.receiptIds}::bigint[])`)[0]!.n, attempts);
+    const [record] = await sql`SELECT prompt_version,output->'receiptPromptVersions' AS versions FROM analyses WHERE article_id=${id} ORDER BY id DESC LIMIT 1`;
+    assert.ok(record!.prompt_version.includes(oldPrefilter), "旧输出不能标成新提示词已生效");
+    assert.equal(record!.versions.length, first!.receiptIds.length);
+    assert.deepEqual(record!.versions.map((r: { receiptId: number }) => r.receiptId).sort((a: number, b: number) => a - b), first!.receiptIds.toSorted((a, b) => a - b));
+    const [writer] = (await analysisHistory(subject)).filter(r => r.step !== "structure");
+    assert.ok(writer);
+    await sql`UPDATE receipts SET request=jsonb_set(request,'{promptVersion}','"unsupported-quality-version"'::jsonb) WHERE id=${writer.id}`;
+    await assert.rejects(analyzeArticle(id), ProviderUnavailableError);
+    assert.equal(provider.hits(), hits);
+  }
+});
+
+test("旧预筛未知回执不能用新提示词或新轮次绕过，未增加模型请求", async () => {
+  compatibleModels();
+  const id = await article();
+  await analyzeArticle(id);
+  await sql`UPDATE receipts SET status='unknown',response=NULL,
+    request=jsonb_set(request,'{promptVersion}',${sql.json(COMPATIBLE_PROMPT_VERSIONS.prefilter[0])}::jsonb)
+    WHERE purpose='prefilter_article' AND subject=${`article:${id}@1`}`;
+  await sql`UPDATE articles SET processing_attempt_tag='new-quality-round' WHERE id=${id}`;
+  const hits = provider.hits();
+  await assert.rejects(analyzeArticle(id, { attemptTag: "new-quality-round" }), ReceiptUnknownError);
+  assert.equal(provider.hits(), hits);
+});
+
+test("P2b 模型实际收到清理后的正文年份及旧结构上限内条件，仍仅四次请求", async () => {
+  compatibleModels();
+  const register = "Registering is free , easy , and private . Discuss in the forum, contribute to the Encyclopedia, build your own MyAnime lists, and more.";
+  const id = await article(samples[2], { url: `https://www.animenewsnetwork.com/news/${T}/${tag()}`,
+    bodyText: `News News view full archive ${"Sample navigation ".repeat(550)} ${register} CASE_TECH ${"正文背景。".repeat(1250)} February 25, 2027; coupon required.` });
+  const start = requests.length;
+  const result = await analyzeArticle(id);
+  const calls = requests.slice(start);
+  assert.deepEqual(calls.map(r => r.step), ["prefilter", "score", "score", "combinedSummarize"]);
+  const sent = JSON.stringify(calls.at(-1)!.body.messages);
+  assert.ok(sent.includes("February 25, 2027; coupon required"));
+  assert.ok(!sent.includes("Sample navigation"));
+  assert.equal(result!.receiptIds.length, 4);
 });
 
 test("未知合并回执配置变化后等待，放行唤醒文章，恢复配置后仅重试原合并请求", async () => {

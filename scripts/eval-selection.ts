@@ -10,7 +10,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { REPO_ROOT } from "@aihot/backend/config";
-import { closeDb, sql } from "@aihot/backend/db";
+import { closeDb } from "@aihot/backend/db";
 import {
   SELECTION_PROMPT_VERSION,
   buildScoreInput,
@@ -23,7 +23,9 @@ import {
 } from "@aihot/backend/editorial/analyze";
 import { modelFor } from "@aihot/backend/editorial/models";
 import { importSelectBenchRun } from "@aihot/backend/admin/selectbench";
-import { parseSelectionGold, selectionSplit, type GoldRow } from "@aihot/backend/editorial/selection-evidence";
+import { parseSelectionGold, type GoldRow } from "@aihot/backend/editorial/selection-evidence";
+import { pmap, positiveInt, seedInt, sampleCases, safeReportNamePart, usageFor, byStratum } from "./eval-tools.ts";
+import { selectionMetrics, selectionAtThreshold } from "./eval-selection-core.ts";
 
 const { values } = parseArgs({
   options: {
@@ -38,24 +40,10 @@ const { values } = parseArgs({
   },
 });
 
-for (const key of ["n", "concurrency"] as const) {
-  if (!/^\d+$/.test(values[key]!) || !Number.isSafeInteger(Number(values[key])) || Number(values[key]) < 1) throw new Error(`--${key} must be a positive integer`);
-}
-if (!/^-?\d+$/.test(values.seed!) || !Number.isSafeInteger(Number(values.seed)) || Number(values.seed) < -2147483648 || Number(values.seed) > 2147483647) {
-  throw new Error("--seed must be a 32-bit integer");
-}
-
+const n = positiveInt(values.n!, "n"), concurrency = positiveInt(values.concurrency!, "concurrency");
+const seed = seedInt(values.seed!);
 const rows = parseSelectionGold(readFileSync(path.resolve(REPO_ROOT, values.gold!), "utf8"));
-
-// Deterministic stratified sample.
-function rng(seed: number) {
-  let s = seed >>> 0;
-  return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 2 ** 32);
-}
-const rand = rng(Number(values.seed));
-const pool = selectionSplit(rows, values.split!);
-const shuffled = pool.map((r) => ({ r, k: rand() })).sort((a, b) => a.k - b.k).map((x) => x.r);
-const sample = shuffled.slice(0, Number(values.n));
+const sample = sampleCases(rows, { split: values.split, n, seed });
 
 function toInput(r: GoldRow): AnalyzeInputArticle {
   const m = r.material;
@@ -77,39 +65,6 @@ function toInput(r: GoldRow): AnalyzeInputArticle {
   };
 }
 
-async function pmap<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): Promise<R[]> {
-  const out: R[] = new Array(items.length);
-  let i = 0;
-  await Promise.all(Array.from({ length: limit }, async () => {
-    while (i < items.length) {
-      const idx = i++;
-      out[idx] = await fn(items[idx]!);
-    }
-  }));
-  return out;
-}
-
-function safeReportNamePart(value: string): string {
-  const safe = value.trim().replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
-  return safe || "all";
-}
-
-async function usageFor(receiptIds: number[]) {
-  const ids = [...new Set(receiptIds)];
-  if (!ids.length) return { tokensIn: 0, tokensOut: 0, avgLatencyMs: 0 };
-  const [usage] = await sql<{ tin: number; tout: number; latency: number }[]>`
-    SELECT
-      sum(coalesce((usage->>'prompt_tokens')::int, (usage->>'input_tokens')::int, 0)) AS tin,
-      sum(coalesce((usage->>'completion_tokens')::int, (usage->>'output_tokens')::int, 0)) AS tout,
-      avg(latency_ms) AS latency
-    FROM receipt_attempts WHERE receipt_id IN ${sql(ids)}`;
-  return {
-    tokensIn: Number(usage?.tin ?? 0),
-    tokensOut: Number(usage?.tout ?? 0),
-    avgLatencyMs: Math.round(Number(usage?.latency ?? 0)),
-  };
-}
-
 const models = values.models
   ? values.models.split(",").map((model) => model.trim()).filter(Boolean)
   : [await modelFor("score")];
@@ -121,20 +76,20 @@ for (const model of models) {
   // Two gold cases can have different source metadata / thresholds while rendering the same score prompt.
   // Share only that score result (including a failure); prefilter and threshold semantics remain per case.
   const scoreRequests = new Map<string, Promise<{ scores: AnalysisRun["scores"]; receiptIds: number[]; error: string | null }>>();
-  const results = await pmap(sample, Number(values.concurrency), async (r) => {
+  const results = await pmap(sample, concurrency, async (r) => {
     const input = toInput(r);
     const receiptIds: number[] = [];
     try {
       const prefilter = await runSelectionPrefilter(input, {}, (id) => receiptIds.push(id));
       if (prefilter.label === "BLOCK") {
         const run: AnalysisRun = { prefilter, scores: null, writing: null, structure: null };
-        return { r, out: normalizeAnalysis(run), receiptIds, error: null as string | null };
+        return { r, out: normalizeAnalysis(run), scores: null, receiptIds, error: null as string | null };
       }
 
       const threshold = tierThreshold(input.source.tier);
       if (threshold === null) {
         const run: AnalysisRun = { prefilter, scores: null, writing: null, structure: null };
-        return { r, out: normalizeAnalysis(run), receiptIds, error: null as string | null };
+        return { r, out: normalizeAnalysis(run), scores: null, receiptIds, error: null as string | null };
       }
 
       const key = buildScoreInput(input);
@@ -149,54 +104,37 @@ for (const model of models) {
       }
       const shared = await request;
       receiptIds.push(...shared.receiptIds);
-      if (shared.error) return { r, out: null, receiptIds, error: shared.error };
+      if (shared.error) return { r, out: null, scores: null, receiptIds, error: shared.error };
 
       // Model output is independent of source tier; the decision threshold is not.
       const scores = shared.scores ? { ...shared.scores, threshold } : null;
       const run: AnalysisRun = { prefilter, scores, writing: null, structure: null };
-      return { r, out: normalizeAnalysis(run), receiptIds, error: null as string | null };
+      return { r, out: normalizeAnalysis(run), scores, receiptIds, error: null as string | null };
     } catch (error) {
-      return { r, out: null, receiptIds, error: String(error).slice(0, 200) };
+      return { r, out: null, scores: null, receiptIds, error: String(error).slice(0, 200) };
     }
   });
-  let tp = 0, fp = 0, fn = 0, tn = 0, either = 0, errors = 0;
+  const metricsFor = (group: typeof results) => selectionMetrics(group.map(x => ({ gold: x.r.gold.decision, selected: x.out?.selected ?? null })));
   const mistakes: Array<Record<string, unknown>> = [];
   for (const x of results) {
-    if (!x.out) { errors++; continue; }
+    if (!x.out) continue;
     const pred = x.out.selected ? "select" : "reject";
     const gold = x.r.gold.decision;
-    if (gold === "either") { either++; continue; }
-    if (pred === "select" && gold === "select") tp++;
-    else if (pred === "select" && gold === "reject") { fp++; mistakes.push({ kind: "FP", title: x.r.material.title, score: x.out.score, reason: x.out.reasonZh, stratum: x.r.samplingContext?.samplingStratum ?? null }); }
-    else if (pred === "reject" && gold === "select") { fn++; mistakes.push({ kind: "FN", title: x.r.material.title, score: x.out.score, relevance: x.out.relevance, stratum: x.r.samplingContext?.samplingStratum ?? null }); }
-    else tn++;
+    if (pred === "select" && gold === "reject") mistakes.push({ kind: "FP", title: x.r.material.title, score: x.out.score, reason: x.out.reasonZh, stratum: x.r.samplingContext?.samplingStratum ?? null });
+    else if (pred === "reject" && gold === "select") mistakes.push({ kind: "FN", title: x.r.material.title, score: x.out.score, relevance: x.out.relevance, stratum: x.r.samplingContext?.samplingStratum ?? null });
   }
   const usage = await usageFor(results.flatMap((x) => x.receiptIds));
-  const precision = tp / Math.max(1, tp + fp);
-  const recall = tp / Math.max(1, tp + fn);
-  const f1 = (2 * precision * recall) / Math.max(1e-9, precision + recall);
   const summary = {
-    model, n: sample.length, decisive: tp + fp + fn + tn, either, errors, tp, fp, fn, tn,
-    accuracy: +((tp + tn) / Math.max(1, tp + fp + fn + tn)).toFixed(3),
-    precision: +precision.toFixed(3), recall: +recall.toFixed(3), f1: +f1.toFixed(3),
-    selectedRate: +((tp + fp) / Math.max(1, tp + fp + fn + tn)).toFixed(3),
-    goldSelectRate: +((tp + fn) / Math.max(1, tp + fp + fn + tn)).toFixed(3),
+    model, ...metricsFor(results),
     ...usage,
     wallSeconds: Math.round((Date.now() - started) / 1000),
   };
   console.log(JSON.stringify(summary));
-  // Threshold sweep on the raw attention score (selection rule = relevance pass && score >= t).
+  // 阈值扫描与生产共享两次独立评分的判定，不使用展示分数。
   const sweep: Array<Record<string, number>> = [];
   for (let t = 40; t <= 90; t += 2) {
-    let a = 0, b = 0, c = 0, d = 0;
-    for (const x of results) {
-      if (!x.out || x.r.gold.decision === "either") continue;
-      const pred = x.out.relevance === "pass" && x.out.score !== null && x.out.score >= t;
-      const g = x.r.gold.decision === "select";
-      if (pred && g) a++; else if (pred) b++; else if (g) c++; else d++;
-    }
-    const P = a / Math.max(1, a + b), R = a / Math.max(1, a + c);
-    sweep.push({ t, acc: +((a + d) / Math.max(1, a + b + c + d)).toFixed(3), P: +P.toFixed(3), R: +R.toFixed(3), F1: +((2 * P * R) / Math.max(1e-9, P + R)).toFixed(3), sel: +((a + b) / Math.max(1, a + b + c + d)).toFixed(3) });
+    const m = selectionMetrics(results.map(x => ({ gold: x.r.gold.decision, selected: x.out ? selectionAtThreshold(x.out.relevance, x.scores, t) : null })));
+    sweep.push({ t, acc: m.accuracy, P: m.precision, R: m.recall, F1: m.f1, sel: m.selectedRate, coverage: m.decisiveCoverage, completeAccuracy: m.completeAccuracy });
   }
   console.log(sweep.map((s) => `  t=${s.t} acc=${s.acc} P=${s.P} R=${s.R} F1=${s.F1} sel=${s.sel}`).join("\n"));
   const cases = results.map((x) => ({
@@ -212,7 +150,7 @@ for (const model of models) {
     receiptId: x.receiptIds[0] ?? null,
     error: x.error,
   }));
-  report[model] = { summary, sweep, mistakes, cases };
+  report[model] = { summary, sweep, mistakes, cases, strata: byStratum(results, x => x.r.samplingContext?.samplingStratum, metricsFor) };
 }
 const outDir = path.join(REPO_ROOT, ".data/eval");
 mkdirSync(outDir, { recursive: true });

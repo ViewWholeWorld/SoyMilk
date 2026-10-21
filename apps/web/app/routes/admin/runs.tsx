@@ -54,7 +54,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
 
       <div className="grid gap-5 xl:grid-cols-2">
         <Card title="队列" pad={false}>
-          <DataTable
+          <DataTable scrollable
             dense
             rows={[...backlog.entries()]}
             rowKey={([name]) => name}
@@ -72,7 +72,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
           />
         </Card>
         <Card title="定时任务" pad={false}>
-          <DataTable
+          <DataTable scrollable
             dense
             rows={r.jobs}
             rowKey={(j) => j.job}
@@ -89,7 +89,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
 
       {r.failedJobs.length > 0 && (
         <Card className="mt-5" title="24 小时内失败的队列任务" pad={false}>
-          <DataTable
+          <DataTable scrollable
             dense
             rows={r.failedJobs}
             rowKey={(j) => j.name}

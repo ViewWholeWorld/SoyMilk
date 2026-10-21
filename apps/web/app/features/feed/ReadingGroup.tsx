@@ -8,6 +8,7 @@ import { IconArrowUpRight, IconChevronDown } from "../../components/icons";
 import { monthDayTime, shortSourceName } from "../../lib/format";
 import { isReload } from "./restore";
 import { sessionCache } from "./session-cache";
+import { useReadSet } from "../../lib/local-state";
 
 function filterParams(filters: TimelineFilters | undefined, cursor: string | null) {
   const sp = new URLSearchParams();
@@ -147,6 +148,7 @@ function LoadState({ loading, error, next, onMore, onRetry, empty }: { loading: 
 
 /** "另有 N 家信源报道": other reports of the fact the card stands for. */
 export function GroupSources({ group, filters, parentId }: { group: GroupInfo; filters?: TimelineFilters; parentId: string }) {
+  const read = useReadSet();
   const { open, setOpen, state, load } = useGroupState<GroupReport>(
     `sources|${group.factId}|${parentId}`,
     (cursor) => `/api/site/groups/${encodeURIComponent(group.factId)}/reports?${filterParams(filters, cursor)}`,
@@ -170,7 +172,7 @@ export function GroupSources({ group, filters, parentId }: { group: GroupInfo; f
           {others.map((r) => (
             <li key={r.id} className="flex items-baseline gap-2 py-1.5 text-[13px]">
               <span className="w-[108px] shrink-0 truncate text-ink-4">{shortSourceName(r.source.name)}</span>
-              <Link to={`/items/${r.id}`} className="min-w-0 flex-1 truncate text-ink-2 hover:text-accent">
+              <Link to={`/items/${r.id}`} className={`min-w-0 flex-1 truncate hover:text-accent ${read.has(r.id) ? "text-ink-4" : "text-ink-2"}`}>
                 {r.title}
               </Link>
               <a href={r.originalUrl} target="_blank" rel="noopener noreferrer" aria-label="打开原文" className="shrink-0 text-ink-4 hover:text-accent">
@@ -187,6 +189,7 @@ export function GroupSources({ group, filters, parentId }: { group: GroupInfo; f
 
 /** "展开 N 条进展": the other facts of the card's event, newest first. */
 export function GroupDevelopments({ group, filters, parentId }: { group: GroupInfo & { story: NonNullable<GroupInfo["story"]> }; filters?: TimelineFilters; parentId: string }) {
+  const read = useReadSet();
   const { open, setOpen, state, load } = useGroupState<Development>(
     `developments|${group.story.publicId}|${parentId}`,
     (cursor) => `/api/site/stories/${encodeURIComponent(group.story.publicId)}/developments?${filterParams(filters, cursor)}`,
@@ -208,7 +211,7 @@ export function GroupDevelopments({ group, filters, parentId }: { group: GroupIn
           {state.items.map((d) => (
             <li key={d.factId} className="relative">
               <span className={`absolute -left-[13.5px] top-[7px] size-[7px] rounded-full ring-2 ring-bg-sunk dark:ring-bg-muted ${d.representative.id === parentId ? "bg-accent" : "bg-line-strong"}`} />
-              <Link to={`/items/${d.representative.id}`} className="block text-[13px] leading-snug text-ink-2 hover:text-accent">
+              <Link to={`/items/${d.representative.id}`} className={`block text-[13px] leading-snug hover:text-accent ${read.has(d.representative.id) ? "text-ink-4" : "text-ink-2"}`}>
                 {d.title}
               </Link>
               <div className="mt-0.5 text-[11.5px] text-ink-4">

@@ -8,7 +8,7 @@ import { parseArgs } from "node:util";
 import { REPO_ROOT } from "@aihot/backend/config";
 import { closeDb, sql } from "@aihot/backend/db";
 import { modelFor } from "@aihot/backend/editorial/models";
-import { PAIR_SYSTEM, PairSchema, RELATE_PROMPT_VERSION, pairUser } from "@aihot/backend/events/relate";
+import { PAIR_SYSTEM, PairSchema, RELATE_PROMPT_VERSION, STORY_REVIEW_MIN_CONFIDENCE, TIE_MIN_CONFIDENCE, pairUser } from "@aihot/backend/events/relate";
 import { MODELS, ModelOutputError, chatJson } from "@aihot/backend/providers/llm";
 import { completeReceipt } from "@aihot/backend/providers/receipts";
 import {
@@ -21,6 +21,8 @@ import {
   type RelationPrediction,
 } from "./eval-relations-core.ts";
 
+import { pmap, positiveInt, seedInt, usageFor, byStratum } from "./eval-tools.ts";
+
 const { values } = parseArgs({
   options: {
     gold: { type: "string", default: ".data/relation-gold.jsonl" },
@@ -29,50 +31,16 @@ const { values } = parseArgs({
     split: { type: "string", default: "all" },
     concurrency: { type: "string", default: "6" },
     seed: { type: "string", default: "7" },
-    thresholds: { type: "string", default: "0.75,0.8" },
+    thresholds: { type: "string", default: [STORY_REVIEW_MIN_CONFIDENCE, TIE_MIN_CONFIDENCE].join(",") },
   },
 });
-
-async function pmap<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const out: R[] = new Array(items.length);
-  let next = 0;
-  await Promise.all(Array.from({ length: limit }, async () => {
-    while (next < items.length) {
-      const index = next++;
-      out[index] = await fn(items[index]!);
-    }
-  }));
-  return out;
-}
-
-function positiveInt(value: string, name: string): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`--${name} must be a positive integer`);
-  return parsed;
-}
-
-async function usageFor(receiptIds: number[]) {
-  const ids = [...new Set(receiptIds)];
-  if (!ids.length) return { tokensIn: 0, tokensOut: 0, avgLatencyMs: 0 };
-  const [usage] = await sql<{ tin: number; tout: number; latency: number }[]>`
-    SELECT
-      sum(coalesce((usage->>'prompt_tokens')::int, (usage->>'input_tokens')::int, 0)) AS tin,
-      sum(coalesce((usage->>'completion_tokens')::int, (usage->>'output_tokens')::int, 0)) AS tout,
-      avg(latency_ms) AS latency
-    FROM receipt_attempts WHERE receipt_id IN ${sql(ids)}`;
-  return {
-    tokensIn: Number(usage?.tin ?? 0),
-    tokensOut: Number(usage?.tout ?? 0),
-    avgLatencyMs: Math.round(Number(usage?.latency ?? 0)),
-  };
-}
 
 async function main() {
   const n = positiveInt(values.n!, "n");
   const concurrency = positiveInt(values.concurrency!, "concurrency");
-  const seed = Number(values.seed);
-  if (!Number.isInteger(seed)) throw new Error("--seed must be an integer");
-  const thresholds = values.thresholds!.split(",").map((value) => Number(value.trim()));
+  const seed = seedInt(values.seed!);
+  const thresholdParts = values.thresholds!.split(",");
+  const thresholds = thresholdParts.map(value => value.trim() ? Number(value.trim()) : NaN);
   if (!thresholds.length || thresholds.some((value) => !Number.isFinite(value) || value < 0 || value > 1)) {
     throw new Error("--thresholds must be comma-separated numbers between 0 and 1");
   }
@@ -143,12 +111,13 @@ async function main() {
       evaluated: metrics.evaluated,
       errors: metrics.errors,
       accuracy: metrics.accuracy,
+      coverage: metrics.coverage, completeAccuracy: metrics.completeAccuracy,
       macroF1: metrics.macroF1,
       reused: results.filter((result) => result.reused).length,
       ...usage,
       wallSeconds: Math.round((Date.now() - started) / 1000),
     };
-    const storyThresholds = thresholds.map((threshold) => storyTieMetrics(predictions, threshold));
+    const storyThresholds = thresholds.map((threshold) => storyTieMetrics(predictions, threshold, sample.length));
     console.log(JSON.stringify(summary));
     console.log(storyThresholds.map((metric) =>
       `  story t=${metric.threshold} P=${metric.precision} R=${metric.recall} F1=${metric.f1}`,
@@ -159,6 +128,11 @@ async function main() {
       confusionMatrix: metrics.confusionMatrix,
       perClass: metrics.perClass,
       storyThresholds,
+      strata: byStratum(results, result => result.row.samplingContext?.samplingStratum, group => {
+        const ids = new Set(group.map(result => result.row.caseId));
+        const answered = predictions.filter(prediction => ids.has(prediction.caseId));
+        return { ...relationMetrics(answered, group.length), storyThresholds: thresholds.map(threshold => storyTieMetrics(answered, threshold, group.length)) };
+      }),
       cases: results.map((result) => ({
         caseId: result.row.caseId,
         stratum: result.row.samplingContext?.samplingStratum ?? null,

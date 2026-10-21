@@ -346,10 +346,12 @@ export async function markReceiptsCompleted(ids: number[]): Promise<void> {
 
 /** 合并流程关闭后仍能消费已付费结果；不读取当前连接或发起网络请求。 */
 export async function reuseJsonReceipt<S extends z.ZodType>(id: number, schema: S, promptVersion: string,
-  opts: { parse?: (content: string) => unknown; materialHash?: string; userHash?: string } = {}): Promise<ChatJsonResult<z.infer<S>> | null> {
+  opts: { parse?: (content: string) => unknown; materialHash?: string; userHash?: string; compatiblePromptVersions?: readonly string[] } = {}): Promise<ChatJsonResult<z.infer<S>> | null> {
   const saved = await storedReceipt(id);
   if (!saved) return null;
-  if (!saved.request || saved.request.promptVersion !== promptVersion) throw new ProviderUnavailableError("configuration", "需要能消费该提示词版本的兼容程序，不能重新付费替代已有响应");
+  if (!saved.request || (saved.request.promptVersion !== promptVersion && !opts.compatiblePromptVersions?.includes(String(saved.request.promptVersion)))) {
+    throw new ProviderUnavailableError("configuration", "需要能消费该提示词版本的兼容程序，不能重新付费替代已有响应");
+  }
   if (saved.request.materialHash ? opts.materialHash !== saved.request.materialHash : opts.userHash && opts.userHash !== saved.request.userHash) return null;
   const response = saved.response as { choices?: Array<{ message?: { content?: string } }>; usage?: Record<string, unknown> };
   const content = response.choices?.[0]?.message?.content ?? "";

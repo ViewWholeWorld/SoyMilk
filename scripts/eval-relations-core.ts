@@ -1,4 +1,8 @@
-import { RELATIONS, type Relation, type ReportView } from "@aihot/backend/events/relate";
+import { RELATIONS, firmlyTied, type Relation, type ReportView } from "@aihot/backend/events/relate";
+
+import { z } from "zod";
+import { nonEmpty, nullableString, SamplingContext, parseCasesJsonl, sampleCases, binaryMetrics, round } from "@aihot/backend/lib/evaluation";
+export { safeReportNamePart } from "./eval-tools.ts";
 
 export interface RelationGoldReport {
   title: string;
@@ -27,93 +31,19 @@ export interface RelationPrediction {
 
 type RelationMatrix = Record<Relation, Record<Relation, number>>;
 
-function record(value: unknown, line: number, field: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`line ${line}: ${field} must be an object`);
-  return value as Record<string, unknown>;
-}
-
-function stringField(obj: Record<string, unknown>, key: string, line: number): string {
-  const value = obj[key];
-  if (typeof value !== "string" || !value.trim()) throw new Error(`line ${line}: ${key} must be a non-empty string`);
-  return value;
-}
-
-function nullableString(obj: Record<string, unknown>, key: string, line: number): string | null {
-  const value = obj[key];
-  if (value === undefined || value === null) return null;
-  if (typeof value !== "string") throw new Error(`line ${line}: ${key} must be a string or null`);
-  return value;
-}
-
-function relationField(value: unknown, line: number): Relation {
-  if (typeof value !== "string" || !RELATIONS.includes(value as Relation)) {
-    throw new Error(`line ${line}: gold.relation must be one of ${RELATIONS.join(", ")}`);
-  }
-  return value as Relation;
-}
-
-function parseFrame(value: unknown, line: number): RelationGoldReport["frame"] {
-  if (value === undefined || value === null) return null;
-  const obj = record(value, line, "frame");
-  return {
-    subject: nullableString(obj, "subject", line),
-    action: nullableString(obj, "action", line),
-    object: nullableString(obj, "object", line),
-    occurredAt: nullableString(obj, "occurredAt", line),
-  };
-}
-
-function parseReport(value: unknown, line: number, field: string): RelationGoldReport {
-  const obj = record(value, line, field);
-  const publishedAt = nullableString(obj, "publishedAt", line);
-  if (publishedAt && Number.isNaN(new Date(publishedAt).getTime())) throw new Error(`line ${line}: ${field}.publishedAt is not a valid date`);
-  if (obj.firstParty !== undefined && typeof obj.firstParty !== "boolean") throw new Error(`line ${line}: ${field}.firstParty must be a boolean`);
-  return {
-    title: stringField(obj, "title", line),
-    source: stringField(obj, "source", line),
-    firstParty: obj.firstParty === true,
-    publishedAt,
-    summary: nullableString(obj, "summary", line),
-    frame: parseFrame(obj.frame, line),
-  };
-}
+const ReportSchema = z.object({
+  title: nonEmpty, source: nonEmpty, firstParty: z.boolean().default(false),
+  publishedAt: nullableString.refine(value => !value || !Number.isNaN(new Date(value).getTime()), "publishedAt is not a valid date"),
+  summary: nullableString,
+  frame: z.object({ subject: nullableString, action: nullableString, object: nullableString, occurredAt: nullableString }).passthrough().nullish().transform(value => value ?? null),
+}).passthrough();
+const RelationGoldSchema = z.object({
+  caseId: nonEmpty, a: ReportSchema, b: ReportSchema, samplingContext: SamplingContext.optional(),
+  gold: z.object({ relation: z.enum(RELATIONS) }).passthrough(),
+}).passthrough();
 
 export function parseRelationGoldJsonl(text: string): RelationGoldRow[] {
-  const rows: RelationGoldRow[] = [];
-  const ids = new Set<string>();
-  for (const [index, raw] of text.split(/\r?\n/).entries()) {
-    const line = index + 1;
-    if (!raw.trim() || raw.trim().startsWith("//")) continue;
-    let value: unknown;
-    try {
-      value = JSON.parse(raw);
-    } catch (error) {
-      throw new Error(`line ${line}: invalid JSON: ${String(error)}`);
-    }
-    const obj = record(value, line, "row");
-    const caseId = stringField(obj, "caseId", line);
-    if (ids.has(caseId)) throw new Error(`line ${line}: duplicate caseId ${caseId}`);
-    ids.add(caseId);
-    const sampling = obj.samplingContext === undefined
-      ? undefined
-      : record(obj.samplingContext, line, "samplingContext");
-    const gold = record(obj.gold, line, "gold");
-    rows.push({
-      caseId,
-      a: parseReport(obj.a, line, "a"),
-      b: parseReport(obj.b, line, "b"),
-      ...(sampling
-        ? {
-            samplingContext: {
-              benchmarkSplit: nullableString(sampling, "benchmarkSplit", line) ?? undefined,
-              samplingStratum: nullableString(sampling, "samplingStratum", line) ?? undefined,
-            },
-          }
-        : {}),
-      gold: { relation: relationField(gold.relation, line) },
-    });
-  }
-  return rows;
+  return parseCasesJsonl(text, RelationGoldSchema);
 }
 
 export function toReportView(report: RelationGoldReport): ReportView {
@@ -127,31 +57,8 @@ export function toReportView(report: RelationGoldReport): ReportView {
   };
 }
 
-function rng(seed: number) {
-  let state = seed >>> 0;
-  return () => ((state = (state * 1664525 + 1013904223) >>> 0) / 2 ** 32);
-}
-
-export function sampleRelationGold(
-  rows: RelationGoldRow[],
-  opts: { split?: string; n?: number; seed?: number } = {},
-): RelationGoldRow[] {
-  const split = opts.split ?? "all";
-  const n = opts.n ?? rows.length;
-  const seed = opts.seed ?? 7;
-  const pool = split === "all" ? rows : rows.filter((row) => row.samplingContext?.benchmarkSplit === split);
-  const rand = rng(seed);
-  return pool
-    .map((row) => ({ row, key: rand() }))
-    .sort((a, b) => a.key - b.key)
-    .slice(0, Math.max(0, n))
-    .map(({ row }) => row);
-}
-
-/** A user-supplied split may contain path separators; report names must stay inside .data/eval. */
-export function safeReportNamePart(value: string): string {
-  const safe = value.trim().replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
-  return safe || "all";
+export function sampleRelationGold(rows: RelationGoldRow[], opts: { split?: string; n?: number; seed?: number } = {}): RelationGoldRow[] {
+  return sampleCases(rows, opts);
 }
 
 function emptyMatrix(): RelationMatrix {
@@ -160,11 +67,8 @@ function emptyMatrix(): RelationMatrix {
   ) as RelationMatrix;
 }
 
-function round(value: number): number {
-  return +value.toFixed(3);
-}
-
 export function relationMetrics(predictions: RelationPrediction[], totalCases = predictions.length) {
+  if (!Number.isSafeInteger(totalCases) || totalCases < predictions.length) throw new Error("评测总数不能小于已回答数");
   const confusionMatrix = emptyMatrix();
   for (const prediction of predictions) confusionMatrix[prediction.gold][prediction.relation]++;
   const perClass = Object.fromEntries(
@@ -187,35 +91,16 @@ export function relationMetrics(predictions: RelationPrediction[], totalCases = 
     errors: Math.max(0, totalCases - predictions.length),
     accuracy: round(correct / Math.max(1, predictions.length)),
     macroF1: round(macroF1),
+    coverage: round(predictions.length / Math.max(1, totalCases)),
+    completeAccuracy: round(correct / Math.max(1, totalCases)),
     confusionMatrix,
     perClass,
   };
 }
 
-const STORY_POSITIVE = new Set<Relation>(["SAME_OCCURRENCE", "SAME_STORY"]);
-
-export function storyTieMetrics(predictions: RelationPrediction[], threshold: number) {
-  let tp = 0, fp = 0, fn = 0, tn = 0;
-  for (const prediction of predictions) {
-    const gold = STORY_POSITIVE.has(prediction.gold);
-    const predicted = STORY_POSITIVE.has(prediction.relation) && prediction.confidence >= threshold;
-    if (predicted && gold) tp++;
-    else if (predicted) fp++;
-    else if (gold) fn++;
-    else tn++;
-  }
-  const precision = tp / Math.max(1, tp + fp);
-  const recall = tp / Math.max(1, tp + fn);
-  const f1 = (2 * precision * recall) / Math.max(1e-9, precision + recall);
-  return {
-    threshold,
-    tp,
-    fp,
-    fn,
-    tn,
-    precision: round(precision),
-    recall: round(recall),
-    f1: round(f1),
-    accuracy: round((tp + tn) / Math.max(1, tp + fp + fn + tn)),
-  };
+export function storyTieMetrics(predictions: RelationPrediction[], threshold: number, total = predictions.length) {
+  if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) throw new Error("故事阈值须在 0 到 1 之间");
+  return { threshold, ...binaryMetrics(predictions.map(row => ({
+    gold: firmlyTied(row.gold, 1), predicted: firmlyTied(row.relation, row.confidence, threshold),
+  })), total) };
 }

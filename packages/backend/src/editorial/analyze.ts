@@ -14,7 +14,7 @@ import { CATEGORIES } from "@aihot/industry/taxonomy";
 import { SELECTION } from "@aihot/industry/selection";
 import { sql } from "../db.ts";
 import { chatJson, extractJson, registeredModels, ModelOutputError, reuseJsonReceipt, type ContentPart } from "../providers/llm.ts";
-import { completeReceipt, ProviderRejectedError, ProviderUnavailableError, ReceiptUnknownError, storedReceipt, rejectedByContentFilter } from "../providers/receipts.ts";
+import { completeReceipt, ProviderRejectedError, ProviderUnavailableError, ReceiptUnknownError, storedReceipt, rejectedByContentFilter, receiptAttemptTag } from "../providers/receipts.ts";
 import { collapseWhitespace } from "../lib/text.ts";
 import { modelFor } from "./models.ts";
 import { buildMaterial, firstImagePart, loadAnalyzeInput, type AnalyzeInputArticle } from "./input.ts";
@@ -22,7 +22,7 @@ import { pageFetchable } from "../content/extract.ts";
 import { shutdownSignal } from "../jobs/queue.ts";
 import {
   buildArticlePrompt, buildLongTweetPrompt, buildShortTweetPrompt, finalizeCopy, isShortTweetInput, looksZh, MAX_BODY_CHARS, missingEvidence,
-  needsShortTweetTranslation, parseTranslateOutput, PREFILTER_SYSTEM, prefilterUser, translateInputOf, UNDERSTAND_SYSTEM, understandUser,
+  needsShortTweetTranslation, parseTranslateOutput, PREFILTER_SYSTEM, prefilterUser, translateInputOf, UNDERSTAND_SYSTEM, UNDERSTAND_RULES, understandUser,
   type IdentityGuard,
 } from "./writing.ts";
 import { CATEGORY_BY_ITEM_TYPE, CATEGORY_GUIDE, CATEGORY_TAGS, ENTITIES, ENTITY_TAGS, ITEM_TYPES, normalizeTags, TOPIC_TAGS } from "./vocabulary.ts";
@@ -43,9 +43,20 @@ export const PROMPT_VERSIONS = {
 export const SELECTION_PROMPT_VERSION = [PROMPT_VERSIONS.prefilter, PROMPT_VERSIONS.score].join("+");
 export const ANALYZE_PROMPT_VERSION = Object.values(PROMPT_VERSIONS).join("+");
 export const COMBINED_VERSIONS = {
-  combinedUnderstand: promptVersion("understand-structure", "understand", "structure"),
-  combinedSummarize: promptVersion("summarize-structure", "structure", "summarize-article", "summarize-article-empty", "summarize-short-post", "summarize-short-post-quoted", "summarize-long-post", "summarize-long-post-quoted", "identity-context"),
+  combinedUnderstand: promptVersion("understand-structure", "understand-rules", "structure-rules"),
+  combinedSummarize: promptVersion("summarize-structure", "structure-rules", "summarize-article", "summarize-article-empty", "summarize-short-post", "summarize-short-post-quoted", "summarize-long-post", "summarize-long-post-quoted", "identity-context"),
 };
+
+// 3.7.0 的输出 schema 未变，仅清理输入和收紧写作规则；允许消费已收到的结果。
+// 只列明确核验的版本，未知版本仍等待兼容程序，不能换提示词重复付费。
+export const COMPATIBLE_PROMPT_VERSIONS = {
+  prefilter: ["prefilter@3d2d544cbd"],
+  understand: ["understand@323747ba4b"],
+  summarize: ["summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@378efa398a"],
+  structure: ["structure@64db76620a"],
+  combinedUnderstand: ["understand-structure+understand+structure@f57fd087c3"],
+  combinedSummarize: ["summarize-structure+structure+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@4210decab2"],
+} as const;
 
 // ── Scoring ───────────────────────────────────────────────────────────────────────────────
 
@@ -193,14 +204,16 @@ const CombinedSummarizeSchema = z.object({ writing: SummarizeSchema.extend({ bod
 const ZH_COUNT = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"];
 
 /** The structure step's prompt (it writes nothing a reader sees), filled from the pack's vocabulary. */
-const STRUCTURE_SYSTEM = promptText("structure", {
+const STRUCTURE_VALUES = {
   categoryCount: ZH_COUNT[CATEGORIES.length] ?? String(CATEGORIES.length),
   categoryGuide: CATEGORY_GUIDE,
   categoryTags: CATEGORY_TAGS.join("、"),
   topicTags: TOPIC_TAGS.join("、"),
   entityTags: ENTITY_TAGS.join("、"),
   entities: Object.entries(ENTITIES).map(([id, e]) => `${id}（${e.aliases.slice(0, 3).join("/")}）`).join("，"),
-});
+};
+const STRUCTURE_SYSTEM = promptText("structure", STRUCTURE_VALUES);
+const STRUCTURE_RULES = promptText("structure-rules", STRUCTURE_VALUES);
 
 export interface AnalysisRun {
   combined?: "combinedUnderstand" | "combinedSummarize";
@@ -256,19 +269,28 @@ function materialHash(a: AnalyzeInputArticle) {
 async function savedStep<S extends z.ZodType>(a: AnalyzeInputArticle, opts: StepOpts, step: AnalysisStep, schema: S, version: string,
   user: string | ContentPart[], parse?: (text: string) => unknown) {
   const saved = (await analysisHistory(subjectOf(a), opts.attemptTag)).find(r => r.step === step);
-  return saved ? reuseJsonReceipt(saved.id, schema, version, { parse, materialHash: materialHash(a), userHash: sha256(typeof user === "string" ? user : JSON.stringify(user)) }) : null;
+  return saved ? reuseJsonReceipt(saved.id, schema, version, { parse, materialHash: materialHash(a), userHash: sha256(typeof user === "string" ? user : JSON.stringify(user)),
+    compatiblePromptVersions: COMPATIBLE_PROMPT_VERSIONS[step] }) : null;
 }
 
 async function runPrefilter(a: AnalyzeInputArticle, opts: StepOpts): Promise<AnalysisRun["prefilter"]> {
-  const model = await modelFor("prefilter");
   checkAnalysisRunning();
-  const res = await chatJson({
-    model,
+  const user = prefilterUser(a);
+  const rows = await sql<Array<{ id: number; logical_key: string; status: string }>>`
+    SELECT r.id,r.logical_key,r.status FROM receipts r
+    WHERE r.purpose='prefilter_article' AND (r.subject=${subjectOf(a)} OR EXISTS(
+      SELECT 1 FROM receipt_consumers c WHERE c.receipt_id=r.id AND c.subject=${subjectOf(a)})) ORDER BY r.id DESC`;
+  const saved = rows.find(r => ["pending", "unknown"].includes(r.status))
+    ?? rows.find(r => receiptAttemptTag(r.logical_key) === (opts.attemptTag ?? "0"));
+  const res = (saved ? await reuseJsonReceipt(saved.id, PrefilterSchema, PROMPT_VERSIONS.prefilter, {
+    userHash: sha256(user), compatiblePromptVersions: COMPATIBLE_PROMPT_VERSIONS.prefilter,
+  }) : null) ?? await chatJson({
+    model: await modelFor("prefilter"),
     purpose: "prefilter_article",
     subject: subjectOf(a),
     promptVersion: PROMPT_VERSIONS.prefilter,
     system: PREFILTER_SYSTEM,
-    user: prefilterUser(a),
+    user,
     schema: PrefilterSchema,
     temperature: 0,
     maxTokens: 512,
@@ -457,18 +479,19 @@ async function runCombined(a: AnalyzeInputArticle, opts: StepOpts, step: Combine
   const version = COMBINED_VERSIONS[step];
   const parse = step === "combinedUnderstand" ? parseCombinedUnderstandJson : undefined;
   // 先读已接收结果；连接分配变化及供应商暂不可用均不妨碍本地消费。
-  let res = savedId ? await reuseJsonReceipt(savedId, schema, version, { materialHash: materialHash(a), parse }) : null;
+  let res = savedId ? await reuseJsonReceipt(savedId, schema, version, { materialHash: materialHash(a), parse,
+    compatiblePromptVersions: COMPATIBLE_PROMPT_VERSIONS[step] }) : null;
   if (!res) {
     if (!(await canCombine(step))) throw new ProviderUnavailableError("configuration", "本轮已选择合并处理；需恢复兼容模型后重试");
     const model = await modelFor(combinedWriter(step));
     const t = translateInputOf(a);
     const short = isShortTweetInput(t);
-    const text = step === "combinedUnderstand" ? understandUser(a) : short ? buildShortTweetPrompt(t)
+    const text = step === "combinedUnderstand" ? understandUser(a, true) : short ? buildShortTweetPrompt(t)
       : t.sourceKind === "x_search" ? buildLongTweetPrompt(t) : buildArticlePrompt(t);
     // 主体正文只出现一次；补充原结构阶段单独读取的来源事实及已有译文。
     const user = `${text}\n\n【结构补充】来源类型=${a.source.kind}；分级=${a.source.tier}；一手来源=${a.source.firstParty ? "是" : "否"}${a.translationZh ? `\n已有中文译文：${a.translationZh.slice(0, 5000)}` : ""}\n最终输出格式以系统中的 writing／structure JSON 为准。`;
     const system = promptText(step === "combinedUnderstand" ? "understand-structure" : "summarize-structure", {
-      writingRules: UNDERSTAND_SYSTEM, structureRules: STRUCTURE_SYSTEM,
+      writingRules: UNDERSTAND_RULES, structureRules: STRUCTURE_RULES,
     });
     const call = (image: ContentPart | null) => {
       checkAnalysisRunning();
@@ -560,6 +583,12 @@ export async function runAnalysis(a: AnalyzeInputArticle, opts: StepOpts & { sta
   }
 }
 
+/** 生产与离线评测共用两次评分的判定，拒绝输出不视为可用评分。 */
+export function scoresSelect(scores: AnalysisRun["scores"], threshold = scores?.threshold): boolean {
+  return !!scores && !scores.refused && scores.values.length === SCORE_CALLS && threshold != null
+    && scores.values.reduce((sum, value) => sum + value, 0) >= threshold * SCORE_CALLS;
+}
+
 /** One judgement from the steps: the selection rule, the reader-facing copy and the structure. */
 export function normalizeAnalysis(run: AnalysisRun) {
   const label = run.prefilter.label;
@@ -574,7 +603,7 @@ export function normalizeAnalysis(run: AnalysisRun) {
   const sum = values?.length === SCORE_CALLS ? values.reduce((total, v) => total + v, 0) : null;
   const score = sum === null ? null : Math.floor(sum / SCORE_CALLS);
   const threshold = run.scores?.threshold ?? null;
-  const selected = relevance === "pass" && sum !== null && threshold !== null && sum >= threshold * SCORE_CALLS;
+  const selected = relevance === "pass" && scoresSelect(run.scores);
   const subjects = run.structure?.subjects ?? [];
   const tags = [...(run.writing?.tags ?? run.structure?.tags ?? [])];
   for (const s of subjects) {
@@ -626,6 +655,11 @@ export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Pr
   const receiptIds = [...new Set([
     run.prefilter.receiptId, ...(run.scores?.receiptIds ?? []), ...(run.writing?.receiptIds ?? []), ...(run.structure ? [run.structure.receiptId] : []),
   ])];
+  // 消费兼容旧响应时，记录实际生成版本，不能把旧稿标为已应用新质量规则。
+  const receiptPromptVersions = await sql<Array<{ receiptId: number; purpose: string; promptVersion: string | null }>>`
+    SELECT id AS "receiptId",purpose,request->>'promptVersion' AS "promptVersion" FROM receipts
+    WHERE id=ANY(${receiptIds}::bigint[]) ORDER BY id`;
+  const promptVersion = [...new Set(receiptPromptVersions.map(r => r.promptVersion ?? "unknown"))].join("+");
   const w = run.writing;
   const detail = {
     prefilter: { label: run.prefilter.label, reason: run.prefilter.reason },
@@ -634,6 +668,7 @@ export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Pr
     ...(w?.identityGuard?.outcome === "fallback" ? { identityGuard: w.identityGuard } : {}),
     fact: out.fact,
     ...(run.combined ? { combinedStep: run.combined } : {}),
+    receiptPromptVersions,
   };
   const committed = await sql.begin(async (tx) => {
     const [current] = await tx<{ revision: number; processing_attempt_tag: string | null }[]>`
@@ -642,7 +677,7 @@ export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Pr
     const [row] = await tx<{ id: number }[]>`
       INSERT INTO analyses (article_id, input_revision, origin, model, prompt_version, receipt_ids, relevance, category, tags,
         subjects, title_zh, summary_zh, reason_zh, score, selected, output)
-      VALUES (${articleId}, ${input.revision}, 'model', ${w?.model ?? run.prefilter.model}, ${run.combined ? `${ANALYZE_PROMPT_VERSION}+${COMBINED_VERSIONS[run.combined]}` : ANALYZE_PROMPT_VERSION}, ${receiptIds},
+      VALUES (${articleId}, ${input.revision}, 'model', ${w?.model ?? run.prefilter.model}, ${promptVersion}, ${receiptIds},
         ${out.relevance}, ${out.category}, ${out.tags}, ${out.subjects}, ${out.titleZh}, ${out.summaryZh}, ${out.reasonZh},
         ${out.score}, ${out.selected}, ${tx.json({ ...detail, attemptTag: opts.attemptTag ?? null, stale } as never)})
       RETURNING id`;
