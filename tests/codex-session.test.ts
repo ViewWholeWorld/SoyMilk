@@ -132,6 +132,73 @@ test("the worker reuses its connection across queued requests, rotates bounded l
   assert.equal(opens-initial, 3);
 });
 
+test("worker 在付费回执占位前平滑启动请求", async () => {
+  const pool = worker({ concurrency: 2, minStartIntervalMs: 100 });
+  const starts: number[] = [], first = gate(), release = gate(), service = "session-pacing-"+T;
+  const askPaced = (value: string) => pool.call(async (server) => {
+    starts.push(Date.now());
+    return paidRequest({ service, purpose: "pacing", identity: { T, value } }, async () => {
+      if (value === "first") { first.open(); await release.promise; }
+      return { response: await requestCodex(server,"fixture-model","",value,true,2000) };
+    });
+  });
+  const initial = askPaced("first");
+  try {
+    await first.promise;
+    const next = askPaced("second"), third = askPaced("third");
+    assert.equal((await sql`SELECT count(*)::int AS n FROM receipt_attempts WHERE service=${service}`)[0]!.n, 1);
+    release.open();
+    await Promise.all([initial, next, third]);
+  } finally { release.open(); await initial; await pool.close(); }
+  assert.equal(starts.length, 3);
+  for (let i=1; i<starts.length; i++) assert.ok(starts[i]! - starts[i-1]! >= 100, JSON.stringify(starts));
+  assert.equal(settled.turns, 3);
+  assert.equal(settled.active, 0);
+  assert.equal(pool.status.minStartIntervalMs, 100);
+});
+
+test("worker 跨连接批次保持启动间隔，关机不等待下一时段", async () => {
+  const pool = worker({ concurrency: 1, batchMs: 25, minStartIntervalMs: 300 });
+  const starts: number[] = [], initial = opens;
+  try {
+    await Promise.all(["one","two"].map(value => pool.call(server => {
+      starts.push(Date.now());
+      return requestCodex(server,"fixture-model","",value,true,2000);
+    })));
+  } finally { await pool.close(); }
+  assert.ok(opens - initial >= 2);
+  assert.ok(starts[1]! - starts[0]! >= 300, JSON.stringify(starts));
+
+  const stopping = worker({ concurrency: 1, minStartIntervalMs: 60_000 });
+  await turn(stopping,"sent");
+  const queued = turn(stopping,"not-sent"), rejected = assert.rejects(queued, { name:"AbortError" });
+  const before = Date.now();
+  await stopping.close(); await rejected;
+  assert.ok(Date.now() - before < 2000);
+  assert.equal(settled.turns, 1);
+});
+
+test("worker 在建立连接前拒绝非法启动间隔", () => {
+  for (const minStartIntervalMs of [-1, NaN, Infinity, 0.5, 60_001])
+    assert.throws(() => worker({minStartIntervalMs}), /start interval/);
+});
+
+test("节流等待中收到上游限流时不占用后续付费回执", async () => {
+  const service = "session-paced-limit-"+T;
+  const pool = worker({ concurrency: 2, minStartIntervalMs: 100 });
+  const send = (value: string) => pool.call(server => paidRequest({service, purpose:"paced-limit", identity:{T,value}},
+    async () => ({response: await requestCodex(server,"fixture-model","",value,true,2000)})));
+  try {
+    const [limited, queued] = await Promise.allSettled([send("rate"), send("not-sent")]);
+    assert.equal(limited!.status, "rejected");
+    if (limited!.status === "rejected") assert.ok(limited.reason instanceof ReceiptUnknownError);
+    assert.equal(queued!.status, "rejected");
+    if (queued!.status === "rejected") assert.ok(queued.reason instanceof BudgetExceededError);
+    assert.equal((await sql`SELECT count(*)::int AS n FROM receipt_attempts WHERE service=${service}`)[0]!.n, 1);
+  } finally { await pool.close(); }
+  assert.equal(settled.turns, 1);
+});
+
 test("management drains active turns, obtains the account lease and lets queued work resume", async () => {
   const pool = worker(), release = gate(), entered = gate(), before = opens;
   const running = turn(pool, "slow");

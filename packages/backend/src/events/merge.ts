@@ -32,7 +32,7 @@ export async function mergeStoryInto(fromId: number, intoId: number, reason: str
   });
   if (!articles) return null;
   for (const a of articles) await publishArticle(a.article_id);
-  await enqueue(QUEUES.digest, { storyId: intoId }, { singletonKey: `story:${intoId}` });
+  await enqueue(QUEUES.digest, { storyId: intoId, afterCorrection: true }, { singletonKey: `story:${intoId}:merge` });
   await audit(actor, "story.merge", `story:${fromId}`, reason, null, { into: intoId });
   return { moved: articles.length };
 }

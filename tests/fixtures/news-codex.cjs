@@ -27,7 +27,11 @@ readline.createInterface({ input: process.stdin }).on("line", line => {
       editorialJudgment: "仅支持 Linux，保留适用范围。", titleZh: "测试工具发布", summaryZh: "测试工具仅支持 Linux 平台，其他平台不在本次支持范围内。" };
     const structure = { category: "technology", tags: ["科技"], subjects: [],
       fact: { title: "测试工具发布", subject: "测试团队", action: "发布", object: "Linux 工具", occurredAt: null } };
-    const answer = step === "prefilter" ? { label: "PASS", reason: "固定合成材料" }
+    let batch;
+    try { batch = JSON.parse(m.params.input[0].text).items; } catch {}
+    const answer = step === "prefilter" ? Array.isArray(batch)
+      ? { items: batch.map(i => ({ articleId: i.articleId, revision: i.revision, label: "PASS", reason: "固定合成材料" })) }
+      : { label: "PASS", reason: "固定合成材料" }
       : step === "score" ? { attentionScore: JSON.stringify(m.params.input).includes("LOW_SCORE") ? 40 : 80 }
       : combined ? { writing, structure } : step === "structure" ? structure : writing;
     const id = `news-turn-${calls.length}`;

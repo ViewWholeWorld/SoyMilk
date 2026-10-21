@@ -6,7 +6,7 @@ import type { ReasoningEffort } from "@aihot/contracts/admin";
 import { config, credential } from "../config.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
 import { completeReceipt, paidRequest, ProviderRejectedError, ProviderUnavailableError, rejectReceivedResponse, requestWait, storedReceipt } from "./receipts.ts";
-import { sql } from "../db.ts";
+import { sql, type Db } from "../db.ts";
 import { chatGPTAccess } from "./chatgpt-auth.ts";
 import { chatGPTBody, requestChatGPT } from "./chatgpt.ts";
 import { codexIdentity, readModelConfig } from "./model-config.ts";
@@ -123,6 +123,22 @@ export async function registeredModels(): Promise<Record<string, ModelSpec>> {
 
 export type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 
+/** 只持久化摘要，不把连接密钥写入批次；复用 worker 排队后再核对一次。 */
+async function configurationHash(spec: ModelSpec): Promise<string> {
+  const auth = spec.connection?.type ?? (spec.key === "default" ? process.env.LLM_AUTH_MODE ?? "api-key" : "api-key");
+  return sha256(stableJson({ ...spec, auth,
+    endpoint: spec.connection?.baseUrl ?? credential("models", spec.baseUrlEnv),
+    keyHash: sha256(spec.connection?.apiKey ?? credential("models", spec.apiKeyEnv) ?? ""),
+    account: auth === "codex" ? await codexIdentity() : null,
+  }));
+}
+
+export async function modelConfigurationHash(model: string): Promise<string> {
+  const spec = (await registeredModels())[model];
+  if (!spec) throw new ProviderUnavailableError("configuration", "预筛模型配置不存在");
+  return configurationHash(spec);
+}
+
 export interface ChatJsonOptions<S extends z.ZodType> {
   model: string;
   purpose: string;
@@ -142,6 +158,10 @@ export interface ChatJsonOptions<S extends z.ZodType> {
   parse?: (content: string) => unknown;
   /** 翻译将不可用响应拒绝与持久失败次数在同一业务事务提交。 */
   deferOutputRejection?: boolean;
+  consumerSubjects?: string[];
+  configurationHash?: string;
+  onReserved?: (db: Db, receiptId: number) => Promise<void>;
+  expectedReceiptId?: number;
 }
 
 export interface ChatJsonResult<T> {
@@ -243,6 +263,9 @@ export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): P
 async function executeChatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>, spec: ModelSpec, baseUrl: string | null | undefined, apiKey: string | null | undefined,
   access: Awaited<ReturnType<typeof chatGPTAccess>> | null, codex: { server: CodexServer; generation: string } | null): Promise<ChatJsonResult<z.infer<S>>> {
 
+  if (opts.configurationHash && (await configurationHash(spec) !== opts.configurationHash || await modelConfigurationHash(opts.model) !== opts.configurationHash)) {
+    throw new ProviderUnavailableError("configuration", "批次冻结后模型配置改变，保留原批次等待兼容配置");
+  }
   const temperature = opts.temperature ?? 0.2;
   const maxTokens = Math.max(opts.maxTokens ?? 1500, 512) + (spec.key.endsWith("-think") ? 4000 : 0);
   const userText = typeof opts.user === "string" ? opts.user : JSON.stringify(opts.user);
@@ -272,6 +295,9 @@ async function executeChatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>, sp
       requestSummary: { promptVersion: opts.promptVersion, systemHash: sha256(opts.system), userHash: sha256(userText), userChars: userText.length, temperature, maxTokens, reasoningEffort: spec.reasoningEffort ?? null, modelKey: opts.model, providerScope, ...(opts.materialHash ? { materialHash: opts.materialHash } : {}) },
       attemptTag: opts.attemptTag,
       exclusiveWith: opts.exclusiveWith,
+      consumerSubjects: opts.consumerSubjects,
+      onReserved: opts.onReserved,
+      expectedReceiptId: opts.expectedReceiptId,
       billingContext,
       cooldown: providerScope,
     },

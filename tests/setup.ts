@@ -31,6 +31,8 @@ for (const provider of [...MODEL_PROVIDERS, "EMBEDDING"]) {
   process.env[`${provider}_API_KEY`] = "";
 }
 process.env.LLM_AUTH_MODE = "api-key";
+// 原有单篇流程用例显式采用立即预筛；批次套件单独验证生产默认的 5 篇／30 分钟。
+process.env.PREFILTER_BATCH_SIZE = "1";
 delete process.env.EGRESS_PROXY_URL;
 process.env.SESSION_SECRET ??= "test-session-secret-0123456789";
 process.env.IMG_PROXY_SIGN_SECRET ??= "test-img-secret-0123456789";

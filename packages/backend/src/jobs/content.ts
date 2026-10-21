@@ -14,6 +14,7 @@ import { ProviderRejectedError, ReceiptUnknownError, requestWait } from "../prov
 import { resumeTranslationAfterRelease } from "../editorial/translate.ts";
 import { ModelOutputError } from "../providers/llm.ts";
 import { enqueue, QUEUES, shutdownSignal, work } from "./queue.ts";
+import { stagePrefilter } from "./prefilter.ts";
 
 /** Minutes to wait after the n-th failed attempt; one more failure after the last ends in "failed". */
 const RETRY_MINUTES = [5, 10, 20, 40, 60, 120, 240, 360];
@@ -83,6 +84,8 @@ export async function queueProcessing(articleId: string, opts: { step?: Step; at
     return enqueue(QUEUES.group, { articleId, signalOnly: true }, { singletonKey: articleId, priority: r.historical ? PRIORITY.history : PRIORITY.liveSignal }, opts.db);
   }
   const tagged = !!attemptTag;
+  const prefilter = await stagePrefilter(articleId, db);
+  if (prefilter) return prefilter;
   return enqueue(QUEUES.analyze, tagged ? { articleId, attemptTag } : { articleId },
     { singletonKey: tagged ? `manual:analyze:${articleId}:${attemptTag}` : articleId, priority: r.bootstrap ? 1 : r.historical ? PRIORITY.history : PRIORITY.live }, opts.db);
 }
@@ -228,6 +231,8 @@ export async function registerContentJobs(boss: PgBoss, concurrency = Number(pro
     const row = await processingInput(articleId);
     if (!row) return { state: "missing" };
     try {
+      // 部署前已排队的文章也先进入待批入口；等批不会挂住分析槽。
+      if (await stagePrefilter(articleId)) return { state: "waiting-prefilter" };
       return await processRevision(articleId, row, { attemptTag });
     } catch (error) {
       return afterFailure(articleId, row.revision, attemptTag ?? null, error);
