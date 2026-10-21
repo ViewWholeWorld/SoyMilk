@@ -2,6 +2,7 @@
 import type { PgBoss } from "pg-boss";
 import { ensureQueue, recordRun } from "@aihot/backend/jobs/queue";
 import { sweepUnprocessed } from "@aihot/backend/jobs/content";
+import { sweepPrefilter } from "@aihot/backend/jobs/prefilter";
 import { translatePending } from "@aihot/backend/editorial/translate";
 import { adaptIntervals, scheduleDueSources } from "@aihot/backend/sources/collect";
 import { refreshSourceIcons } from "@aihot/backend/sources/icons";
@@ -28,6 +29,7 @@ const collecting = process.env.COLLECT_ENABLED !== "false";
 export const SCHEDULES: Scheduled[] = [
   { name: "budget.bootstrap", cron: "*/5 * * * *", run: reconcileBootstrapBudget },
   { name: "content.sweep", cron: "*/5 * * * *", run: sweepUnprocessed },
+  { name: "content.prefilter", cron: "* * * * *", run: sweepPrefilter },
   // Full-text translations of newly selected items (model calls; off with MODEL_CALLS_ENABLED=false).
   { name: "content.translate", cron: "*/5 * * * *", run: () => translatePending() },
   { name: "hot.rank", cron: "*/5 * * * *", run: () => computeHotRanking() },

@@ -1,6 +1,6 @@
 // What the judging steps read about an article: loaded once per analysis and rendered per step.
 import { beijingDate, beijingTime } from "@aihot/contracts/time";
-import { sql } from "../db.ts";
+import { sql, type Db } from "../db.ts";
 import { collapseWhitespace, truncate } from "../lib/text.ts";
 import { produceImage } from "../media/images.ts";
 import type { ContentPart } from "../providers/llm.ts";
@@ -46,8 +46,8 @@ export function withXArticle(xPost: Record<string, any> | null, article: { title
   return { ...xPost, text: parts.filter(Boolean).join("\n\n") };
 }
 
-export async function loadAnalyzeInput(articleId: string): Promise<AnalyzeInputArticle | null> {
-  const [row] = await sql<{
+export async function loadAnalyzeInput(articleId: string, db: Db = sql): Promise<AnalyzeInputArticle | null> {
+  const [row] = await db<{
     id: string; revision: number; processing_attempt_tag: string | null; title: string; url: string; author: string | null; published_at: Date | null; discovered_at: Date;
     body_text: string | null; excerpt: string | null; body_status: string; x_post: Record<string, any> | null; x_article: { title?: string; text?: string } | null;
     media: Array<Record<string, any>>; source_name: string; source_kind: string; tier: string; first_party: boolean; source_tags: string[]; owner_entity_id: string | null;

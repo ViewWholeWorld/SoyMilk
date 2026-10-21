@@ -29,6 +29,7 @@ import { CATEGORY_BY_ITEM_TYPE, CATEGORY_GUIDE, CATEGORY_TAGS, ENTITIES, ENTITY_
 import { promptText, promptVersion } from "./prompts.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
 import { ANALYSIS_PURPOSES, analysisHistory, analysisTag, compatibleAnalysisModels, exclusiveAnalysisSteps, type AnalysisStep } from "./analysis-route.ts";
+import { batchPrefilterFor } from "./prefilter-batch.ts";
 
 export { buildMaterial, loadAnalyzeInput, type AnalyzeInputArticle };
 
@@ -50,7 +51,7 @@ export const COMBINED_VERSIONS = {
 // 3.7.0 的输出 schema 未变，仅清理输入和收紧写作规则；允许消费已收到的结果。
 // 只列明确核验的版本，未知版本仍等待兼容程序，不能换提示词重复付费。
 export const COMPATIBLE_PROMPT_VERSIONS = {
-  prefilter: ["prefilter@3d2d544cbd"],
+  prefilter: ["prefilter@3d2d544cbd", "prefilter@4778c7b014"],
   understand: ["understand@323747ba4b"],
   summarize: ["summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@378efa398a"],
   structure: ["structure@64db76620a"],
@@ -275,6 +276,8 @@ async function savedStep<S extends z.ZodType>(a: AnalyzeInputArticle, opts: Step
 
 async function runPrefilter(a: AnalyzeInputArticle, opts: StepOpts): Promise<AnalysisRun["prefilter"]> {
   checkAnalysisRunning();
+  const batch = await batchPrefilterFor(a, opts.attemptTag);
+  if (batch) return batch;
   const user = prefilterUser(a);
   const rows = await sql<Array<{ id: number; logical_key: string; status: string }>>`
     SELECT r.id,r.logical_key,r.status FROM receipts r
