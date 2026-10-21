@@ -102,9 +102,14 @@ test("story-level threshold metrics match the production tie semantics", () => {
   ];
 
   assert.deepEqual(storyTieMetrics(predictions, 0.75), {
-    threshold: 0.75, tp: 2, fp: 1, fn: 0, tn: 1, precision: 0.667, recall: 1, f1: 0.8, accuracy: 0.75,
+    threshold: 0.75, total: 4, answered: 4, errors: 0, coverage: 1, completeAccuracy: 0.75,
+    tp: 2, fp: 1, fn: 0, tn: 1, precision: 0.667, recall: 1, f1: 0.8, accuracy: 0.75,
   });
   assert.deepEqual(storyTieMetrics(predictions, 0.8), {
-    threshold: 0.8, tp: 1, fp: 1, fn: 1, tn: 1, precision: 0.5, recall: 0.5, f1: 0.5, accuracy: 0.5,
+    threshold: 0.8, total: 4, answered: 4, errors: 0, coverage: 1, completeAccuracy: 0.5,
+    tp: 1, fp: 1, fn: 1, tn: 1, precision: 0.5, recall: 0.5, f1: 0.5, accuracy: 0.5,
   });
+  const partial = storyTieMetrics(predictions, 0.8, 5);
+  assert.deepEqual([partial.errors, partial.coverage, partial.completeAccuracy], [1, 0.8, 0.4]);
+  assert.equal(storyTieMetrics([{ caseId: "edge", gold: "SAME_STORY", relation: "SAME_STORY", confidence: 0.8 }], 0.8).tp, 1);
 });

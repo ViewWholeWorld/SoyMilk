@@ -1,5 +1,5 @@
 import { SITE } from "@aihot/industry/site";
-import { motion } from "motion/react";
+import { motion, MotionConfig } from "motion/react";
 import { NavLink, Outlet, useLocation, useNavigation, type ShouldRevalidateFunction } from "react-router";
 import type { Route } from "./+types/layout";
 import { RingMark } from "../../components/Logo";
@@ -63,7 +63,7 @@ export default function AdminLayout({ loaderData }: Route.ComponentProps) {
   const location = useLocation();
   const flat = NAV.flatMap((g) => g.items);
   return (
-    <div className="flex min-h-dvh bg-bg">
+    <MotionConfig reducedMotion="user"><div className="flex min-h-dvh bg-bg">
       <NavigationProgress active={navigation.state === "loading"} />
       <aside className="sticky top-0 hidden h-dvh w-[216px] shrink-0 flex-col border-r border-line bg-bg-sunk/50 px-3 py-4 lg:flex">
         <a href="/" className="mb-5 flex items-center gap-2 px-2">
@@ -117,6 +117,6 @@ export default function AdminLayout({ loaderData }: Route.ComponentProps) {
         </main>
       </div>
       <Toaster />
-    </div>
+    </div></MotionConfig>
   );
 }

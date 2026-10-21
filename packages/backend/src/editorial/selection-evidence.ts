@@ -1,5 +1,6 @@
 // Validate the entire gold file / comparison before sampling, paid work or database writes.
 import { z } from "zod";
+import { parseCasesJsonl } from "../lib/evaluation.ts";
 
 const text = z.string().trim().min(1);
 const decision = z.enum(["select", "reject", "either"]);
@@ -21,21 +22,7 @@ const Gold = z.object({
 export type GoldRow = z.infer<typeof Gold>;
 
 export function parseSelectionGold(jsonl: string): GoldRow[] {
-  const ids = new Set<string>();
-  const rows: GoldRow[] = [];
-  for (const [index, line] of jsonl.split(/\r?\n/).entries()) {
-    if (!line.trim() || line.trim().startsWith("//")) continue;
-    try {
-      const row = Gold.parse(JSON.parse(line));
-      if (ids.has(row.caseId)) throw new Error(`duplicate caseId ${row.caseId}`);
-      ids.add(row.caseId);
-      rows.push(row);
-    } catch (error) {
-      throw new Error(`Gold line ${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  if (!rows.length) throw new Error("Gold file has no cases");
-  return rows;
+  return parseCasesJsonl(jsonl, Gold, "Gold");
 }
 
 export function selectionSplit(rows: GoldRow[], split: string): GoldRow[] {

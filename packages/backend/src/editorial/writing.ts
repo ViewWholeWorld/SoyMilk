@@ -4,6 +4,8 @@
 import { IDENTITY_CONTEXT_ALIASES, IDENTITY_LEXICON, PUBLISHER_DOMAINS } from "@aihot/industry/taxonomy";
 import type { AnalyzeInputArticle } from "./input.ts";
 import { promptText } from "./prompts.ts";
+import { articlePromptBody, cleanArticleTextForLLM } from "../content/article-text.ts";
+export { cleanArticleTextForLLM } from "../content/article-text.ts";
 
 // 历史 X 长文只有链接而缺少正文时，仍保持无法确认内容的边界。
 function onlyXArticleLink(text: string | null | undefined): boolean {
@@ -13,6 +15,8 @@ function onlyXArticleLink(text: string | null | undefined): boolean {
 
 export const PREFILTER_SYSTEM = promptText("prefilter");
 export const UNDERSTAND_SYSTEM = promptText("understand");
+// 合并路径只复用字段规则，唯一 JSON 输出格式由合并模板定义。
+export const UNDERSTAND_RULES = promptText("understand-rules");
 
 /** A body longer than this is cut (whole bodies are sent; a few run past the context). */
 export const MAX_BODY_CHARS = 60_000;
@@ -37,25 +41,6 @@ export function isShortTweet(text: string): boolean {
   if (!text) return false;
   const cjk = (text.match(/[一-鿿]/g) || []).length;
   return text.length < (cjk > text.length * 0.3 ? 100 : 500);
-}
-
-/** HTML, URLs (whose /2025/ paths models took for years) and entities out of article text. */
-export function cleanArticleTextForLLM(s: string): string {
-  if (!s) return "";
-  return s
-    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/https?:\/\/\S+/gi, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/[ \t]+/g, " ")
-    .replace(/[ \t]*\n[ \t]*/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
 }
 
 function chineseDensity(s: string): number {
@@ -116,7 +101,8 @@ export function renderContext(a: AnalyzeInputArticle, opts: { annotateQuoted?: b
   }
   lines.push("");
   lines.push(opts.annotateQuoted && quoted ? "【正文（作者自己的内容）】" : "【正文】");
-  lines.push(capBody(a.xPost ? String(a.xPost.text ?? a.title) : (a.bodyText ?? a.excerpt ?? "(无正文)")));
+  const body = a.xPost ? String(a.xPost.text ?? a.title) : (a.bodyText ?? a.excerpt ?? "(无正文)");
+  lines.push(capBody(opts.annotateQuoted && !a.xPost ? cleanArticleTextForLLM(body, a.url) : body));
   lines.push("");
   lines.push(`【材料质量】${materialQuality(a)}`);
   return lines.join("\n");
@@ -130,8 +116,8 @@ export function missingEvidence(a: AnalyzeInputArticle): boolean {
   return !a.bodyText?.trim() && !a.excerpt?.trim() && !String(a.xPost?.text ?? "").trim() && !String(a.xPost?.quoted?.text ?? "").trim();
 }
 
-export const understandUser = (a: AnalyzeInputArticle) =>
-  ["请按系统规则理解以下单篇材料，一次返回全部六个字段。", renderContext(a, { annotateQuoted: true })].join("\n\n");
+export const understandUser = (a: AnalyzeInputArticle, combined = false) =>
+  [combined ? "请按系统规则同时完成以下单篇材料的 writing 和 structure。" : "请按系统规则理解以下单篇材料，一次返回全部六个字段。", renderContext(a, { annotateQuoted: true })].join("\n\n");
 
 // ── Identity context and guard ────────────────────────────────────────────────────────────────
 
@@ -235,44 +221,11 @@ export function enforceIdentity(input: TranslateInput, copy: { titleZh: string; 
   };
 }
 
-// ── Answer-first summary length ──────────────────────────────────────────────────────────────
-
-export function compactAnswerFirstSummary(summary: string, maxChars = 190): string {
-  const text = summary.trim().replace(/\s*\n+\s*/g, " ");
-  if (text.length <= maxChars) return text;
-  const sentences = text.match(/[^。！？!?]+[。！？!?]?/gu) ?? [text];
-  let result = "";
-  for (const sentence of sentences) {
-    if ((result + sentence).length > maxChars) break;
-    result += sentence;
-    if (result.length >= 80) break;
-  }
-  if (result.length >= 50) return result.trim();
-  // The first sentence alone is too long: cut at a clause boundary, never inside a name or number.
-  const clauses = text.match(/[^，；：、,;:]+[，；：、,;:]?/gu) ?? [text];
-  result = "";
-  for (const clause of clauses) {
-    if ((result + clause).length + 1 > maxChars) break;
-    result += clause;
-    if (result.length >= 80) break;
-  }
-  return result.length >= 50 ? `${result.replace(/[，；：、,;:]$/u, "")}。` : text;
-}
-
-function answerFirstSummaryLengthOk(summary: string, input: TranslateInput): boolean {
-  const trimmed = summary.trim();
-  const sourceLength = (input.sourceKind === "x_search" ? input.text : cleanArticleTextForLLM(input.text)).trim().length;
-  const sentences = trimmed.split(/[。！？!?]+/u).map((p) => p.trim()).filter(Boolean).length;
-  const rich = sourceLength >= 500;
-  return trimmed.length <= 200 && trimmed.length >= (rich ? 80 : 50) && sentences <= 3 && (!rich || sentences >= 2);
-}
-
 export const isShortTweetInput = (input: TranslateInput) => input.sourceKind === "x_search" && isShortTweet(input.mainText || input.title);
 
-/** The length rule (compacted without another call) and the identity guard, for any writing model. */
+/** 长度交给写作规则约束；本地不能为缩短摘要删掉后置条件，也不另发修复请求。 */
 export function finalizeCopy(input: TranslateInput, copy: { titleZh: string; summaryZh: string }) {
-  let summaryZh = copy.summaryZh;
-  if (!isShortTweetInput(input) && summaryZh && !answerFirstSummaryLengthOk(summaryZh, input)) summaryZh = compactAnswerFirstSummary(summaryZh);
+  const summaryZh = isShortTweetInput(input) ? copy.summaryZh : copy.summaryZh.trim().replace(/\s*\n+\s*/g, " ");
   return enforceIdentity(input, { titleZh: copy.titleZh, summaryZh });
 }
 
@@ -292,7 +245,7 @@ export function buildArticlePrompt(input: TranslateInput): string {
     sourceName: sourceName(input.sourceName),
     identity: identityPrompt(input),
     title: input.title,
-    body: input.text ? clampText(cleanArticleTextForLLM(input.text), 6000) : promptText("summarize-article-empty"),
+    body: input.text ? articlePromptBody(input.text, input.documentUrl) : promptText("summarize-article-empty"),
   });
 }
 

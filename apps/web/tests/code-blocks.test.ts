@@ -22,16 +22,16 @@ test("代码复制不等待高亮，视口外不下载，返回后不重复增�
   let clean = enhanceCodeBlocks(root,loader);
   try {
     assert.equal(loads,0);
-    root.querySelector("button")!.click(); await Promise.resolve();
+    root.querySelector("button")!.click(); await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(copies,1); assert.equal(root.querySelector("button")!.textContent,"已复制");
     intersect!([{ isIntersecting:true,target:root.querySelector("pre")! } as unknown as IntersectionObserverEntry],{} as IntersectionObserver);
     assert.equal(loads,1);
-    clean(); resolve({ highlightCode:() => '<span>late</span>' }); await Promise.resolve();
+    clean(); resolve({ highlightCode:() => '<span>late</span>' }); await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(root.querySelector("code")!.textContent,"<literal> & text","离开后不修改正文");
     clean = enhanceCodeBlocks(root,loader);
     assert.equal(root.querySelectorAll(".code-block-head").length,1);
-    root.querySelector("button")!.click(); await Promise.resolve(); assert.equal(copies,2);
-    clean(); root.querySelector("button")!.click(); await Promise.resolve(); assert.equal(copies,2);
+    root.querySelector("button")!.click(); await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(copies,2);
+    clean(); root.querySelector("button")!.click(); await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(copies,2);
     assert.equal(disconnects,2);
     // HTTP 没有 clipboard API 时的传统复制及临时节点清理。
     Object.defineProperty(globalThis,"navigator",{ configurable:true,value:{} });
@@ -44,8 +44,12 @@ test("代码复制不等待高亮，视口外不下载，返回后不重复增�
       if (name==='textarea') Object.assign(element,{ select:() => {} });
       return element;
     }) as typeof document.createElement;
-    root.querySelector("button")!.click(); await Promise.resolve();
+    root.querySelector("button")!.click(); await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(copied,"<literal> & text"); assert.equal(document.querySelector("textarea"),null);
+    Object.assign(document,{ execCommand:() => false });
+    root.querySelector("button")!.click(); await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(root.querySelector("button")!.textContent,"请手动复制");
+    assert.equal(document.querySelector("textarea"),null);
   } finally { clean(); keys.forEach((key,i) => original[i] ? Object.defineProperty(globalThis,key,original[i]!) : Reflect.deleteProperty(globalThis,key)); }
 });
 test("高亮保留原始文字，不执行字面脚本，过短与超长输入保持纯文本", () => {
