@@ -1,80 +1,165 @@
-# 给 Agent 的说明
+# AGENTS.md — SoyMilk 协作指南
 
-这是 SoyMilk，从 AIHOT 框架 Fork 后定制的私网资讯站：采集信源、用模型筛选和写作、归组事件、出日报，并通过网站、RSS、公开 API 和 MCP 对外提供。当前行业包覆盖游戏、AI、科技、经济、娱乐，含 42 个 RSS 信源和 44 个主题。先读 README，再读 `docs/运维部署/站点维护说明.md` 和本次任务对应的文档；上游示例与历史实测不能当作当前部署状态。
+SoyMilk 是覆盖游戏、AI、科技、经济、娱乐的私网资讯站，负责采集、模型筛选与写作、事件归组及刊物生成。先读 [README](README.md)，再按[文档索引](docs/文档索引.md)查阅任务资料；维护 NAS 先读[站点维护说明](docs/运维部署/站点维护说明.md)。使用中文沟通与编写说明，代码沿用相邻风格。
 
-## 当前已授权的配置
+## 第一章：技术栈声明
 
-- **3.7.0 已于北京时间 2026-10-20 13:00:59 手动部署**，setup/API/worker/web 均为 `sha256:5364485c8722e4b521bf99891c03227e937717f166d5729d3f611b708b48759e`。移除飞书整套集成、反馈、关于页联系二维码／作者社群推广、IndexNow、X／公众号专用采集；保留日报／周报／月报与补生成、分享海报／动态分享卡片／文章二维码、RSS／API／MCP、密码登录及新闻与付费保护。新代码不读取旧集成开关，历史数据、迁移和附件保留。后端 806、HTTP 133、网页 77 与正式双入口各 29 项冒烟、公开 MCP、版本、鉴权及心跳检查通过；无新迁移，应用累计 47、队列 schema 43，账号／模型／强度、预算、复用和并发 2 不变。切换前后 11 条既有 unknown 回执及 ID 摘要相同，未手工放行或重开历史终态。实施、备份与验收见 `docs/系统优化/2026-10-20-单人私用功能精简.md` 和维护说明；下方 3.6.0 及更早条目是带日期的历史部署记录。
+| 层次 | 技术与约定 |
+| --- | --- |
+| 运行时与语言 | Node.js **24.11+**、TypeScript、ESM；后端直接运行 `.ts`，不单独构建 |
+| 包管理 | npm workspaces：`apps/*`、`packages/*`、`industry`；使用 `npm ci` 和现有锁文件 |
+| 网页 | React 19、React Router 8（SSR）、Vite 8、Tailwind CSS 4 |
+| API | Fastify 5；共享类型与 HTTP 约定放在 `packages/contracts` |
+| 数据与任务 | PostgreSQL 17、`postgres` 客户端、pg-boss 12 队列 |
+| 部署 | Docker Compose；NAS 使用 `deploy/nas/Dockerfile`（Bookworm）手动构建和发布 |
 
-- `3.6.0` 已于北京时间 **2026-10-20 11:41:41** 手动部署，完成上游 N1—N8 及新闻优化自动采用，见 `docs/问题修复/2026-10-20-上游移植实施计划与验收.md`。setup/API/worker/web 均为 `sha256:2fd27ccd44a226a4ee22d75e030fa3c38c48cbd33c3871a1805d377a2ce5d881`。翻译恢复、信源／事故证据和资金拒绝冷却直接采用新机制；单篇摘要复用和兼容的结构／写作合并自动采用，六项切换开关均已移除，正式最后覆盖已清理三项 NEWS 变量。采集、模型调用与飞书等安全阀保留。
-- 本轮隔离后端 861、HTTP 142、网页 77 及正式双入口冒烟、公开 MCP、版本、鉴权和心跳检查通过。账号、模型、强度、预算、复用及并发 2 不变，6 条既有 unknown 回执未变，不重开历史翻译终态、不自动换模型或批量放行 unknown。无新增迁移或基础 Compose 改动，应用累计 47、队列 schema 43；当前适用的 N11／N12 与 A 类保留台账边界，反馈和 X 专用采集候选已因 3.7.0 下线移除。北京时间 10:56:53 的 3.5.6／三项 NEWS=true 只读核对是切换前历史快照。回退须兼容新译文状态、消费者、冷却和迟到结果过滤，不恢复旧库或删除付费记录。
+必须保持的边界：
 
-- 站名已确定为 SoyMilk，上述兴趣、信源和分类已由使用者授权。继续维护时保留这些决定；只有提出新的行业或内容策略变更时才需要澄清。
-- 站点聚焦新闻信息流。Tibo 重置监控与模型排行榜已按使用者要求移除，后续移植不重新引入；新闻处理需要的后台模型配置、账号授权、预算和回执保护继续保留。
-- NAS 上通过 HTTP 内网或 Tailscale IP 加端口访问；使用者明确不要求本站 HTTPS。管理员使用 `/admin/models` 配置模型，Codex 网页授权无需 SSH 回调隧道。
-- 生产采集和模型调用已由使用者授权开启；飞书及 IndexNow 已于 3.7.0 移除，旧环境变量不再生效。开发、测试使用独立环境关闭现存安全阀，不要为了跑测试修改生产开关。
-- 正式 worker 已启用 Codex 连接复用，模型与文章分析并发上限为 2。保持账号、模型和推理强度设置，不通过新增请求身份、重评或提高预算来加速。
-- 首轮捕获 745 篇的临时预算与自动恢复已部署。实时状态以 `bootstrapBudgetStatus()`、预算实际限额及 `modelsOverview().tokenSummary` 为准；历史快照中的剩余数、用量与镜像标签不代表现在。
-- 条款与隐私页仍为私网试用模板；公开上线前需要使用者本人确认。
-- `3.5.6` 于北京时间 2026-10-19 22:59:01 手动部署，完成本轮审查八项修复，详见 `docs/问题修复/2026-10-19-代码审查问题修复计划.md`。隔离后端 803、HTTP 137、网页 76 项及正式两入口冒烟通过；无新增迁移，应用累计 47、队列 schema 43。账号、模型、强度、预算、复用、并发 2 及 P1／P2a／P2b 均保持，历史失败未自动补排、原有 unknown 回执未放行。分析历史以 `output.stale` 排除迟到结果，应用回退须保留该过滤、轮次保护及新版回执消费者；不能恢复旧库或删除付费记录。发布源码以 553 文件冻结清单核验，提交／合并不会自动改变运行镜像；镜像与备份见维护说明。下列较早版本为历史部署快照，其已授权配置继续适用。
-- 模型定价 `3.5.1` 于北京时间 2026-10-16 已部署，应用迁移 `0045`—`0047` 和 pg-boss schema 43 已核验，操作见 `docs/功能升级/模型配置统计与费用指南.md`。按连接和请求型号保留 USD／CNY 原币种及不可变快照，订阅等价金额单列。历史补算写独立表，`MODEL_COST_BACKFILL_ENABLED=false` 只停用新预览和执行，已有结果与新请求定价继续可用；后续新增迁移仍按手动部署规则确认；本次参考目录已初始化，未自动进行历史补算。
-- `3.5.2` 于北京时间 2026-10-16 17:22:49 从 `develop@965cb6e` 手动部署，应用迁移 `0048`—`0049` 已具体确认并完成，累计 46 个迁移，队列 schema 43 未变。配置页 `/admin/models` 和统计页 `/admin/model-stats` 按标签按需加载，调用与费用共用供应商／请求型号分组。`0048` 新增供应商与 attempt 归属，`0049` 对齐统计时间索引；连接保存自动／手动归属模式，历史不按当前连接回填，显式空归属保持未知。`modelsOverview().tokenSummary` 维护查询仍保留。镜像、回退点与验证见 `docs/运维部署/站点维护说明.md`，后续迁移仍按手动部署规则确认。
-- `3.5.5` 于北京时间 2026-10-19 14:20:19 从 `feature/news-usage-optimization@7818a2b` 手动部署，P1／P2a／P2b 均开启。使用者明确保留后台配置：P2a 仅在同账号 Codex、同型号／输入能力／供应商的结构 low 与理解默认或 medium 组合下兼容，合并沿用理解配置；P2b 继续要求完整配置一致，单项结构仍 low。实际默认不伪称已解析为 medium。最终后端 789、HTTP 136、网页 74、真实材料 20 条及正式冒烟通过；已知质量边界和完整日待观察项见原计划。无新增迁移，累计 47、队列 schema 43；账号、预算、复用及并发 2 不变。回退先关闭相应合并入口，保留 3.5.5 的解析器、提示词、用途消费者及恢复能力，不回退旧库或删除回执，详见 `docs/运维部署/站点维护说明.md`。本轮发布前已备份并同步主机运行源码，不能仅凭主机文件推断生产版本；后续迁移仍另行确认。
-- 3.5.4 为此前 P2b 单独启用阶段：北京时间 2026-10-19 13:23:43 从 `39c0f2c` 部署，P1=true、P2b=true、P2a=false。修复普通摘要未使用正文空字段兼容及核心领域／具体计划抽取，最终真实材料 20 条、后端 783、HTTP 136、网页 74 项通过。该条为历史快照，当前开关与回退按上方 3.5.5 说明。
+- 网页只通过 HTTP 访问 API，不访问数据库、模型或密钥。网站、RSS、公开 API、MCP 统一从 `packages/backend/src/publication/` 读取。
+- 页面访问不调用模型；模型处理在 worker 中执行。付费调用经过 `providers/receipts.ts` 和预算熔断，保留请求身份、消费者及 unknown 保护。
+- 公开内容匿名且不因管理员身份改变；后台仅限管理员。信源默认公开摘要和原文链接，`site_fulltext` 须有明确许可。
+- 页面和定时任务使用北京时间；模型完成时间不改变时间轴，不能重复加八小时。排序与归档遵循[时间轴与时区](docs/内容管理/时间轴与时区.md)。
 
-## 最常见的任务：改成另一个行业
+## 第二章：目录结构
 
-按 `docs/内容管理/行业定制指南.md` 的顺序做。行业相关的一切都在 `industry/`：站名文案（`site.ts`）、分类标签（`taxonomy.ts`）、主题（`topics.json`）、示范信源（`sources.json`）、提示词（`prompts/`）、门槛（`selection.ts`）、品牌（`brand/`）、条款页（`pages/`）。通常不需要改 `apps/` 和 `packages/`。
+- 项目目录或代码结构发生新增、删除、移动、重命名或职责调整时，须在同一次变更中同步更新 `AGENTS.md` 的目录结构、路径及相关说明，保持与实际项目结构一致。
 
-更换行业时，这些尚未确定的配置要问使用者本人，不要替他决定，也不要重复询问已有决定：站名；要盯哪些信源；什么消息重要、什么是噪声；分类怎么分；条款和隐私说明的内容（`industry/pages/` 是模板，公开上线前需要他本人确认）。
+```text
+apps/
+  api/src/                 # Fastify 入口、routes/、HTTP 响应与分享图
+  worker/src/              # worker 入口 main.ts、定时任务 schedules.ts
+  web/
+    app/routes/            # 公开页面与 admin/ 后台路由
+    app/features/          # 信息流、文章、刊物、模型配置等功能组件
+    app/components/        # 公共 UI 与页面外壳
+    app/lib/               # HTTP 客户端、格式化、浏览器状态、复制和正文锚点滚动
+    tests/                 # 网页回归
+packages/
+  contracts/src/           # 跨应用类型、HTTP 策略与 MCP 合约
+  backend/src/
+    sources/               # 信源采集、解析与健康诊断
+    content/               # 原文提取、清洗与材料管理；article-text.ts 统一模型文章输入边界
+    editorial/             # 预筛、评分、理解、写作与翻译
+    events/                # 事件归组、关系、热度与综述
+    reports/               # 日报、周报、月报生成
+    providers/             # 模型适配、授权、回执、定价与限流
+    publication/           # 所有公开出口的统一读取层
+    jobs/                  # 队列与任务处理
+    admin/                 # 后台业务与鉴权
+    operations/            # 预算恢复、诊断、备份与心跳
+    media/                 # 图片与媒体处理
+    lib/                   # 纯工具与规则，包括 JSONL 校验、固定种子抽样和评测指标
+    db.ts                  # 数据库连接
+    config.ts              # 后端配置
+industry/                  # 行业配置、提示词、品牌与条款
+database/migrations/       # 按编号追加的数据库增量迁移
+scripts/                   # 初始化、迁移、种子、冒烟、HTTP 验收；eval-tools/评测 core 复用生产规则
+tests/                     # 后端回归；http/ 为真实 HTTP 验收，fixtures/ 为夹具
+deploy/nas/                # NAS Dockerfile、Compose 入口及私有覆盖位置
+integrations/              # 可选接入示例，不代表生产已部署
+assets/                    # 字体等静态资源
+docs/                      # 中文操作文档、计划和历史证据
+```
 
-改评分标准时保留原有结构（内容类型、五个维度加权、噪声压制、安全边界），替换的是“什么算重要”“什么算噪声”的例子。门槛要用使用者标注的样本重新校准（`docs/内容管理/精选评分与校准.md`），不要凭感觉改数字。
+行业定制按[行业定制指南](docs/内容管理/行业定制指南.md)修改 `industry/`：`site.ts`、`taxonomy.ts`、`topics.json`、`sources.json`、`prompts/`、`selection.ts`、`brand/`、`pages/`。保留已确认的站名、领域、信源及分类，新策略再确认。评分保留内容类型、五维加权、噪声压制和安全边界，用标注样本[校准门槛](docs/内容管理/精选评分与校准.md)。条款／隐私模板公开上线前需用户确认；对外只使用 SoyMilk 品牌。
 
-## 运行与检查
+`industry/prompts/understand-rules.md` 与 `structure-rules.md` 只定义字段语义，单项和合并模板分别定义自己的输出格式；合并路径在 `rules-cross-field-evidence.md` 统一约束条件价格、日期精度与事实归属，避免嵌套互相冲突的顶层格式。
 
-- Node.js 24 直接运行 TypeScript，后端没有构建步骤。npm workspaces：`apps/*`、`packages/*`、`industry`。
-- 本机运行和 Docker 见 `docs/运维部署/首次部署指南.md`。
-- NAS 的额外 Compose 覆盖由 `deploy/nas/compose.sh` 统一加载。更新时保留 worker 复用与预算恢复覆盖，先核对运行服务，不能只运行根目录的 Compose 而丢失 NAS 设置。
-- Hermes 接入见 `docs/运维部署/助手接入指南.md`：保留私有 `compose.web-time.yml` 中 web 的固定内部网络连接及 Hermes 的现有 MCP；SoyMilk 仅白名单五个匿名只读工具，技能源在 `integrations/hermes/skills/soymilk-news/`，不授予后台、数据库或模型调用能力。
-- NAS 更新见 `docs/运维部署/生产环境手动部署.md`：已取消 GitHub CI、自动发布镜像和自动部署，上游改动在独立分支手动移植并完成隔离验证。保留现有 `compose.release.yml` 作为最后的手动镜像覆盖，每次更新核对 setup/API/worker/web 的实际镜像与 setup 的 `--topics-only` 命令。迁移、基础 Compose 和受保护定制变更需要人工确认；失败只回退应用，不恢复旧数据库或删除付费回执。
-- 检查上游先读 `docs/问题修复/上游审查台账.md`：按完整 SHA 续接审核，同时复查未关闭待办；已审核不等于已移植或已部署。完整检查范围并记录逐项结论后才推进审核游标，实现与部署另记状态。
-- 改完至少跑：
-  ```bash
-  npm run typecheck
-  DATABASE_URL=postgres://127.0.0.1:5432/<名字>_test npm test   # 空库，名字必须以 _test 或 _ci 结尾，先 node scripts/migrate.ts
-  npm run build -w @aihot/web && node --test apps/web/tests/*.test.ts
-  node scripts/smoke.ts --base http://localhost:3000             # 站点跑起来以后
-  ```
-- 新增或变更 HTTP API 时，还须在另一未迁移空库运行 `DATABASE_URL=postgres://127.0.0.1:5432/<名字>_http_test npm run test:http`。同步 `tests/http/routes.ts` 和实际 HTTP 业务用例，覆盖鉴权／CSRF、正常与空结果、输入边界及涉及的筛选、分页、冲突与幂等；需要数据时用合成夹具或脱敏冻结样本。仅验证匿名 401 或返回 200 不算业务验收，外部依赖例外必须登记并报告，具体见 `docs/开发指南/接口验收指南.md`。
-- `tests/` 里部分测试用的是示例行业的分类、标签和公司，改了 `industry/taxonomy.ts` 后把这些例子换成新行业的对应项。
-- 核对完整后端套件本次日志与之前基线，明确报告失败原因和复核结果，不能把相关测试通过写成全套通过，也不能默认忽略历史失败。测试库与网络必须隔离，不访问生产库、真实模型或外部付费服务，具体见 `docs/开发指南/隔离回归测试.md`。
+## 第三章：环境搭建与开发流程
 
-## 要守住的规则
+### 本地开发
 
-- 前端（`apps/web`）只通过 HTTP 读 `apps/api`，数据库、模型调用和密钥只在后端。
-- 所有公开出口都从 `packages/backend/src/publication/` 这一个读取层读，新增公开出口也一样。
-- 读者打开页面不触发模型调用；模型只在 worker 的任务里调用。
-- 付费请求都经过回执（`providers/receipts.ts`）和预算熔断，不要绕开。
-- 开发和测试时保持安全阀关闭：`COLLECT_ENABLED`、`MODEL_CALLS_ENABLED`。测试不访问任何外部服务。
-- 模型回归使用 `tests/setup.ts` 的 `stub()` 与 `useModelStubs()` 显式绑定本进程的本地替身，只临时放行内存中的模型入口；环境开关仍关闭。用独立临时数据目录、虚构密钥和隔离网络，不加载生产连接。子进程的模型用例也必须明确绑定本地替身，见 `docs/开发指南/隔离回归测试.md`。
-- 信源默认只展示摘要和原文链接（`site_fulltext` 关）；只有来源明确允许时才打开全文。
-- 公开内容匿名，管理员和访客看到的一样；后台只允许管理员。
-- 数据库迁移只做向后兼容的增量，新迁移按编号加在 `database/migrations/` 末尾。
-- 不要提交 `.env`、密钥和 `.data/`。
-- 排查 NAS 时不读取或输出 `.env`、API Key、Codex `auth.json`、授权令牌；使用应用提供的状态接口，只输出必要统计。不要输出完整 Docker inspect、Compose config 或未筛选的生产日志。
-- 不要使用 AIHOT 的名字和 Logo。
-- 页面与定时任务按北京时间。左侧为收录或事件进展时间，历史资料按可信原文时间归档；模型完成时间不改变时间轴。排查先核对原文、收录和锚点字段，不能因为显示凌晨就改时区或给记录再加八小时，见 `docs/内容管理/时间轴与时区.md`。
+准备 Node.js 24.11+、npm 和独立 PostgreSQL，以下命令仅用于新开发环境：
 
-## 提交与文档
+```bash
+npm ci
+node scripts/init-env.ts     # 仅首次运行，拒绝覆盖已有 .env
+createdb soymilk_dev
+```
 
-- 开始任务前阅读并遵守 [Git 规范](docs/开发指南/版本控制协作规范.md)，包括分支、提交、验证、推送与发布规则；本文及仓库专用部署规范优先，Git 规范补充未覆盖的部分。
-- 不同 feature 分开实现和提交；仅在使用者明确要求提交时，每项完成对应验证后先提交 Git，再开始下一项。该功能的文档同步更新，保留使用者已有改动。
-- README 和 `docs/运维部署/站点维护说明.md` 说明当前使用方式；实测和部署历史明确标注日期与阶段。配置变化时同步更新相关文档和本文件，删除已经失效的操作建议。
-- 文档统一从 `docs/文档索引.md` 查找，按功能升级、问题修复、系统优化、运维部署、开发指南、内容管理和历史记录分类，文件名使用中文；移动时同步链接与引用路径，保留计划和历史记录的状态边界。
-- 用户可见的功能、内容规则或功能下线同步记录到 `industry/changelog.json`，最新条目放在最前面并同步 `latestVersion`。该文件是网页更新日志的数据源，不能只更新开发文档；仅维护配置或测试调整记录在 `docs/历史记录/维护变更记录.md` 即可。
-- 应用 SemVer 同步根 `package.json`、锁文件根包、`PUBLIC_VERSIONS.v1OpenApi`、网站日志顶层及最新条目的 `version`，运行 `npm run check:version` 核验。导航使用的 `latestVersion` 仍为北京时间日期时间，历史公告不补造版本。
-- 运行中的计数、首轮剩余和订阅窗口属于实时数据，文档只记录带时间的核验快照，并提供只读查询方法，不能把某次读数写成永久现况。
+在本地 `.env` 配置数据库和访问地址，并显式关闭采集与模型安全阀：
 
-## 写代码
+```dotenv
+DATABASE_URL=postgres://127.0.0.1:5432/soymilk_dev
+API_BASE_URL=http://127.0.0.1:3001
+SITE_URL=http://localhost:3000
+COLLECT_ENABLED=false
+MODEL_CALLS_ENABLED=false
+```
 
-匹配周围代码的写法、命名和注释密度。选能清楚解决问题的简单方案，只定义正在使用的抽象。验证改动涉及的重要行为，不为简单的样式改动写测试。
+执行迁移和种子初始化，再将三个 `dev` 命令分别放在独立终端运行：
+
+```bash
+node --env-file=.env scripts/migrate.ts
+node --env-file=.env scripts/seed.ts
+npm run dev:api              # API：3001
+npm run dev:worker           # 队列与定时任务
+npm run dev:web              # 网页：http://localhost:3000
+```
+
+修改相关模块和文档后完成第四章检查。迁移必须向后兼容、按编号追加，不重写既有迁移。Docker 安装见[首次部署指南](docs/运维部署/首次部署指南.md)。
+
+### NAS 维护与发布
+
+- 通过 HTTP 内网或 Tailscale IP 加端口访问，不要求 HTTPS。模型在 `/admin/models` 管理，Codex 设备授权无需 SSH 回调隧道。
+- 生产采集和模型调用已授权开启；保持账号、模型、强度、预算、Codex 复用及模型／文章分析并发 **2**。不通过改请求身份、重评、换账号或提高预算加速，不为测试修改生产开关。
+- 入口为 `ssh beans-nas`，部署目录 `/share/homes/tromso/apps/soymilk` 不是 Git checkout。统一用 `sh deploy/nas/compose.sh`，保留私有覆盖及最后的 `compose.release.yml`，核对 setup/API/worker/web 镜像和 setup 的 `--topics-only`。
+- 已取消 CI、自动镜像发布和自动部署。发布、新增迁移、基础 Compose 及受保护定制变更须有具体授权；按[手动部署流程](docs/运维部署/生产环境手动部署.md)验证、排空 worker、备份、切换和验收。仅回退兼容应用，保留新状态、迟到分析过滤、轮次及回执消费者；不恢复旧库、删除付费记录或批量重开历史终态。
+- **Hermes 已不在 NAS 部署**。旧文档的固定网络、启动与原生客户端验收要求不再适用；仓库示例仅供可选接入，公开 MCP 五个匿名只读工具继续保留。
+- 不读取或输出生产 `.env`、密钥、Codex `auth.json`、令牌、完整 Docker inspect／Compose config 或未筛选日志。通过 `bootstrapBudgetStatus()`、`modelsOverview().tokenSummary` 等状态接口输出必要统计，运行计数和预算标注查询时间。
+
+## 第四章：测试规范
+
+- 使用独立数据库、数据目录、虚构密钥和隔离网络，不访问生产库、真实模型或外部服务。库名以 `_test` 或 `_ci` 结尾，`COLLECT_ENABLED`、`MODEL_CALLS_ENABLED` 保持关闭。
+- 模型用例用 `tests/setup.ts` 的 `stub()` 与 `useModelStubs()` 绑定本进程的本地替身，仅临时放行内存入口；子进程也须显式绑定。隔离方法见[隔离回归测试](docs/开发指南/隔离回归测试.md)。
+- 功能改动至少完成以下检查。纯文档检查内容、路径和差异；简单样式不额外编写测试。
+
+```bash
+npm run typecheck
+# 在隔离 PostgreSQL 实例中新建空库，迁移后运行后端套件
+createdb soymilk_test
+DATABASE_URL=postgres://127.0.0.1:5432/soymilk_test node scripts/migrate.ts
+DATABASE_URL=postgres://127.0.0.1:5432/soymilk_test npm test
+npm run build -w @aihot/web
+node --test apps/web/tests/*.test.ts
+# 启动隔离站点后，以实际配置的访问主机验收
+node scripts/smoke.ts --base http://localhost:3000
+node scripts/mcp-check.ts http://localhost:3000/api/mcp
+```
+
+新增或变更 HTTP API，须同步 `tests/http/routes.ts` 和业务用例，并在**另一个未迁移空库**运行：
+
+```bash
+createdb soymilk_http_test
+DATABASE_URL=postgres://127.0.0.1:5432/soymilk_http_test npm run test:http
+```
+
+HTTP 验收自行迁移，重跑另建空库。按[接口验收指南](docs/开发指南/接口验收指南.md)用合成或脱敏夹具覆盖鉴权／CSRF、正常与空结果、边界、筛选分页、冲突和幂等；仅断言 401／200 不算业务验收，外部依赖例外须登记。
+
+后端套件按文件串行；修改分类时同步行业测试样例。报告本次通过、失败、取消、跳过及复核结果，与基线比较；不忽略历史失败，不把部分检查或历史结果写成全套通过。
+
+## 第五章：Git 规范
+
+详细规则见[版本控制协作规范](docs/开发指南/版本控制协作规范.md)，本文及仓库部署规范优先。
+
+- 先检查 `git status`、`git branch -a` 和所有未提交／未跟踪改动，保留用户工作。从最新 `develop` 切 `feature/`、`bugfix/`、`refactor/`、`docs/`、`test/` 或 `chore/` 分支，不在 `main`、`develop` 直接提交。
+- 一个任务一个分支。**仅在用户明确要求时提交**；分项提交获授权后，每项验证并提交再开始下一项。使用 Conventional Commits，逐文件暂存，检查 `git diff --staged` 与 `git diff --check`；不提交 `.env`、密钥、授权缓存、`.data/` 和日志。
+- 日常 PR 指向 `develop`；`release/vX.Y.Z` 从 `develop` 发往 `main`，`hotfix/` 从 `main` 切出，发布后回合 `develop`。合并、推送受保护分支、标签／发版、删除远程分支或改写已推送历史须有明确授权，不跳过钩子或强推共享分支。
+- 上游改动手动移植，先读[上游审查台账](docs/问题修复/上游审查台账.md)，按完整 SHA 续查、复核待办，逐项记录后推进游标。审核、实现和部署分别记录，不重新引入下线功能。
+- 同步相关中文文档和索引链接。用户可见变更更新 `industry/changelog.json`，最新条目置顶；维护配置或测试调整记入[维护变更记录](docs/历史记录/维护变更记录.md)。
+- 发版按 SemVer，同步根 `package.json`、锁文件根包、`PUBLIC_VERSIONS.v1OpenApi`、网站日志顶层及最新条目的 `version`，运行 `npm run check:version`。`latestVersion` 为北京时间日期时间；纯文档不升应用版本，不补造历史公告。
+- 交付说明验证、分支、提交、推送、PR、合并与部署的实际状态；提交或合并不等于 NAS 已更新。
+
+## 第六章：最近的更改
+
+仅保留近期摘要；镜像、备份、测试计数及历史发布见[站点维护说明](docs/运维部署/站点维护说明.md)，生产状态须现场核对。
+
+| 日期 | 更改与后续约束 |
+| --- | --- |
+| 2026-10-21 · 3.7.1 | 已于北京时间 12:42:29 部署 P2 质量修复、N11 阅读交互与 N12 评测工具。新提示词配合 medium，最终写作 20/20 加未变预筛 5/5 符合定向标准；双入口各 29 项冒烟、MCP、版本、鉴权及不变量通过。见[质量记录](docs/系统优化/2026-10-21-P2质量修复.md)和[实施记录](docs/问题修复/2026-10-21-N11与N12实施验收.md)。 |
+| 2026-10-21 · 模型配置 | 使用者授权新闻理解、摘要、结构专用 medium 连接，P2a／P2b 兼容；预筛保持 low，默认连接、其余能力、账号、型号、预算、复用及两项并发 2 保留。修复后完整日质量、总 token 和延迟继续观察。 |
+| 2026-10-20 | 本指南重组为六章；按用户确认清理 Hermes 在 NAS 部署的过时要求。 |
+| 2026-10-20 · 3.7.0 | 已部署：移除飞书、反馈、联系二维码／作者推广、IndexNow、X／公众号专用采集；保留三类刊物、补生成、分享图、文章二维码、RSS／API／MCP、密码登录和付费保护，保留历史数据。见[精简记录](docs/系统优化/2026-10-20-单人私用功能精简.md)。 |
+| 2026-10-20 · 3.6.0 | 已部署：上游 N1—N8、恢复诊断及新闻优化自动采用；六项切换开关已移除，仍遵守配置兼容条件、两次独立评分和回执保护。见[实施验收](docs/问题修复/2026-10-20-上游移植实施计划与验收.md)。 |
+
+最新的[P2 完整日复核](docs/系统优化/2026-10-21-P2完整日复核.md)保留修复前质量与时效失败结论；[质量修复](docs/系统优化/2026-10-21-P2质量修复.md)已通过冻结材料定向复验并随 3.7.1 发布，修复后的自然日质量、总 token 和延迟尚待观察。收益只看总 token（输入＋输出）下降，不再核算费用或以账单缺失阻塞。更早下线的 Tibo 重置监控和模型排行榜不恢复。

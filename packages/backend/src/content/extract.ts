@@ -35,6 +35,16 @@ export function readable(html: string, url: string): ExtractedBody | null {
   }
   settleInlineVisibility(document);
   describeFigureDrawings(document);
+  document.querySelectorAll('nav, [role="navigation"]').forEach((node: { remove(): void }) => node.remove());
+  const host = URL.parse(url)?.hostname;
+  if (host === "animenewsnetwork.com" || host === "www.animenewsnetwork.com") {
+    // 该站旧版页面的目录被 Readability 合并进正文；明确正文容器存在时才收窄。
+    const bodies = document.querySelectorAll("#maincontent .meat");
+    if (bodies.length === 1 && (bodies[0]!.textContent ?? "").trim().length >= MIN_BODY_CHARS) {
+      const body = bodies[0]!.cloneNode(true);
+      document.body.replaceChildren(body);
+    }
+  }
   const article = new Readability(document as unknown as ConstructorParameters<typeof Readability>[0], { charThreshold: MIN_BODY_CHARS, keepClasses: false }).parse();
   if (!article?.content) return null;
   const clean = trimTrailingChrome(sanitizeBody(article.content, url));

@@ -35,7 +35,7 @@ function dropPromotions(html: string): string {
 const DROP_WHOLE = [
   "script", "style", "noscript", "textarea", "option", "iframe", "object", "embed", "applet", "form", "input", "select",
   "button", "label", "fieldset", "legend", "svg", "link", "meta", "base", "title", "head", "template", "audio",
-  "map", "area", "frame", "frameset", "track", "source", "param",
+  "map", "area", "frame", "frameset", "track", "source", "param", "nav",
   // MathML is unwrapped to its text; its LaTeX source and embedded markup are not text.
   "annotation", "annotation-xml", "mglyph",
 ];

@@ -5,6 +5,7 @@ import { officialSupplierId } from "@aihot/contracts/model-supplier";
 import { useAdminAction } from "./action";
 import { CONNECTION_PROVIDERS as PROVIDERS, connectionDraftFor, connectionPayload, updateConnectionDraft, type ConnectionDraft as Draft } from "./model-connection-form";
 import { Badge, Button, Card, Field, Input, Select } from "./ui";
+import { copyText } from "../../lib/clipboard";
 
 const ROOT = "/api/admin/model-config";
 
@@ -142,7 +143,10 @@ export function ModelConnections({ configuration: c, suppliers, onCodexModels }:
         </div>}
         {login?.state === "pending" && <div className="mt-4 rounded-control bg-bg-sunk p-4">
           <p className="text-[13px] leading-6">复制验证码，前往 OpenAI 确认授权。完成后此页会自动更新。</p>
-          <div className="my-3 flex gap-2"><Input ref={code} aria-label="授权验证码" readOnly value={login.userCode} onFocus={(e) => e.target.select()} className="font-mono tracking-widest" /><Button onClick={() => { code.current?.select(); setCopied(document.execCommand("copy")); }}>{copied ? "已复制" : "复制"}</Button></div>
+          <div className="my-3 flex gap-2"><Input ref={code} aria-label="授权验证码" readOnly value={login.userCode} onFocus={(e) => e.target.select()} className="font-mono tracking-widest" /><Button onClick={async () => {
+            try { await copyText(login.userCode); setCopied(true); setError(""); }
+            catch { setCopied(false); setError("复制失败，请手动复制授权验证码"); }
+          }}>{copied ? "已复制" : "复制"}</Button></div>
           <div className="flex flex-wrap items-center gap-3"><a href={login.verificationUrl} target="_blank" rel="noopener noreferrer" className="rounded-control bg-ink px-3 py-2 text-[13px] text-bg">打开 OpenAI 授权页面 ↗</a><Button size="sm" disabled={!!pending} onClick={async () => { const r = await run<AdminCodexLogin>("POST", `${ROOT}/codex/login/${login.id}/cancel`, {}, { revalidate: false }); if (r) { setLogin(r); setAccount((a) => a ? { ...a, loginInProgress: false, pendingLogin: null } : a); } }}>取消</Button></div>
           <p className="mt-3 text-[12px] text-ink-4">验证码约 10 分钟有效。首次使用可能需要在 ChatGPT 的安全设置中允许设备代码登录。</p>
         </div>}

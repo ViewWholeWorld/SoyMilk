@@ -1,3 +1,5 @@
+import { copyText } from "../../lib/clipboard.ts";
+
 // 正文和复制立即可用；语法解析器只在代码接近视口时加载。
 export function enhanceCodeBlocks(root: HTMLElement, load = () => import("./highlight.ts")) {
   let disposed = false;
@@ -32,14 +34,7 @@ export function enhanceCodeBlocks(root: HTMLElement, load = () => import("./high
     let timer: ReturnType<typeof setTimeout> | undefined;
     const onCopy = async () => {
       let ok = true;
-      try { await navigator.clipboard.writeText(source); } catch {
-        // 私网 HTTP 使用传统复制方式，失败时也清理临时节点。
-        const ta = document.createElement("textarea"); ta.value = source;
-        ta.style.position = "fixed"; ta.style.opacity = "0";
-        document.body.append(ta);
-        try { ta.select(); ok = document.execCommand("copy"); } catch { ok = false; }
-        finally { ta.remove(); copy.focus({ preventScroll: true }); }
-      }
+      try { await copyText(source); } catch { ok = false; }
       if (disposed) return;
       copy.textContent = ok ? "已复制" : "请手动复制";
       clearTimeout(timer); timer = setTimeout(() => { copy.textContent = "复制"; }, 1800);

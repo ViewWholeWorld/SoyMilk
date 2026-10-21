@@ -7,27 +7,21 @@ import { sql } from "@aihot/backend/db";
 import { modelFor } from "@aihot/backend/editorial/models";
 import { sha256, stableJson } from "@aihot/backend/lib/ids";
 import type { DigestReport } from "@aihot/backend/events/derived-content";
+import { parseCasesJsonl, nonEmpty } from "@aihot/backend/lib/evaluation";
 
 const CaseSchema = z.object({
-  caseId: z.string().min(1),
+  caseId: nonEmpty,
   previousDigest: z.string().nullable().default(null),
   knownArticleIds: z.array(z.string()).default([]),
   reports: z.array(z.object({ id: z.string().min(1), title: z.string().min(1), summary: z.string().nullable(), source: z.string().min(1), firstParty: z.boolean(), publishedAt: z.iso.datetime({ offset: true }) })).min(1),
 });
 export type DigestEvalCase = z.infer<typeof CaseSchema>;
 export function parseDigestCases(text: string): DigestEvalCase[] {
-  const cases: DigestEvalCase[] = [];
-  const seen = new Set<string>();
-  for (const [i, line] of text.split(/\r?\n/).entries()) {
-    if (!line.trim() || line.trim().startsWith("//")) continue;
-    try {
-      const item = CaseSchema.parse(JSON.parse(line));
-      if (seen.has(item.caseId)) throw new Error("caseId 重复");
-      seen.add(item.caseId); cases.push(item);
-    } catch (error) { throw new Error(`第 ${i + 1} 行：${error instanceof Error ? error.message : String(error)}`); }
+  try {
+    return parseCasesJsonl(text, CaseSchema);
+  } catch (error) {
+    throw new Error((error instanceof Error ? error.message : String(error)).replace(/^line (\d+): /, "第 $1 行："));
   }
-  if (!cases.length) throw new Error("没有可用评测案例");
-  return cases;
 }
 export function caseFromReports(caseId: string, reports: DigestReport[]): DigestEvalCase {
   return CaseSchema.parse({ caseId, reports: reports.map(r => ({ id: r.id, title: r.title, summary: r.summary, source: r.source_name, firstParty: r.first_party, publishedAt: r.at.toISOString() })) });

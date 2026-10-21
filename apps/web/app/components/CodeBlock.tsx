@@ -1,32 +1,34 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { IconCheck, IconCopy } from "./icons";
+import { copyText } from "../lib/clipboard";
 
 export function CopyButton({ text, label = "复制", className = "" }: { text: string; label?: string; className?: string }) {
   const [copied, setCopied] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
   return (
     <button
       type="button"
       onClick={async () => {
         try {
-          await navigator.clipboard.writeText(text);
+          await copyText(text);
+          setCopied(true);
+          setFailed(false);
         } catch {
-          const ta = document.createElement("textarea");
-          ta.value = text;
-          document.body.appendChild(ta);
-          ta.select();
-          document.execCommand("copy");
-          ta.remove();
+          setCopied(false);
+          setFailed(true);
         }
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
+        clearTimeout(timer.current);
+        timer.current = setTimeout(() => { setCopied(false); setFailed(false); }, 1500);
       }}
       className={`inline-flex h-7 items-center gap-1 rounded-mark border border-line bg-surface px-2 text-[12px] transition-colors ${copied ? "text-ok" : "text-ink-3 hover:border-line-strong hover:text-ink"} ${className}`}
-      aria-label={copied ? "已复制" : label}
+      aria-label={copied ? "已复制" : failed ? "请手动复制" : label}
     >
       <span key={copied ? "ok" : "copy"} className={copied ? "anim-swap-in" : ""}>
         {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
       </span>
-      {copied ? "已复制" : label}
+      {copied ? "已复制" : failed ? "请手动复制" : label}
     </button>
   );
 }
