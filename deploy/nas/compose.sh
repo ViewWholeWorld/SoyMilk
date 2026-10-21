@@ -2,8 +2,7 @@
 set -eu
 cd "$(dirname "$0")/../.."
 export DOCKER_CONFIG="$PWD/.docker"
-export HTTP_PROXY="${HTTP_PROXY:-http://127.0.0.1:17890}"
-export HTTPS_PROXY="${HTTPS_PROXY:-http://127.0.0.1:17890}"
+# 使用 NAS 已配置的网络出口；需要显式代理时由调用方传入环境变量。
 mkdir -p "$DOCKER_CONFIG"
 chmod 700 "$DOCKER_CONFIG"
 if [ -f deploy/nas/compose.release.yml ]; then
