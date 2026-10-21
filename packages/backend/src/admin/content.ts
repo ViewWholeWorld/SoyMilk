@@ -99,7 +99,8 @@ export async function setVisibility(id: string, input: { visibility: "public" | 
       hot = await inHotRanking(id, tx);
       const stories = await tx<{ story_id: number }[]>`
         SELECT DISTINCT f.story_id FROM fact_articles fa JOIN facts f ON f.id = fa.fact_id WHERE fa.article_id = ${id} AND f.story_id IS NOT NULL`;
-      for (const s of stories) await enqueue(QUEUES.digest, { storyId: s.story_id }, { singletonKey: `story:${s.story_id}` }, tx);
+      for (const s of stories) await enqueue(QUEUES.digest, { storyId: s.story_id, afterCorrection: true },
+        { singletonKey: `story:${s.story_id}:visibility` }, tx);
     }
     await audit(actor, "content.visibility", `content:${id}`, input.reason, { visibility: before.visibility }, { visibility: input.visibility }, { db: tx });
     return { hot, published };

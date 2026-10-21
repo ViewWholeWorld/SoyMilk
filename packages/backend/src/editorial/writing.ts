@@ -73,11 +73,17 @@ function materialQuality(a: AnalyzeInputArticle): string {
   return "无有效文本";
 }
 
-/** The material as the prefilter and the content understanding read it. */
-export function renderContext(a: AnalyzeInputArticle, opts: { annotateQuoted?: boolean } = {}): string {
+/** 来源上下文可在批次中共享；只有全部字段一致时才合并。 */
+export function renderSourceContext(a: AnalyzeInputArticle): string {
   const lines: string[] = [];
   lines.push(`【来源】${a.source.name}（${a.source.kind}，tier=${a.source.tier || "未分级"}）`);
   if (a.source.tags?.length) lines.push(`【来源标签】${a.source.tags.join(", ")}`);
+  return lines.join("\n");
+}
+
+/** The material as the prefilter and the content understanding read it. */
+export function renderContext(a: AnalyzeInputArticle, opts: { annotateQuoted?: boolean; omitSource?: boolean } = {}): string {
+  const lines: string[] = opts.omitSource ? [] : [renderSourceContext(a)];
   const name = a.xPost?.authorName || a.author;
   const handle = a.xPost?.handle;
   if (name || handle) lines.push(`【作者】${[name, handle ? `@${handle}` : null].filter(Boolean).join(" · ")}`);

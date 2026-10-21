@@ -89,6 +89,10 @@ export interface ReceiptRequest {
   /** Non-secret model ownership used for immutable cost snapshots. */
   billingContext?: BillingContext;
   cooldown?: ProviderCooldownScope;
+  /** 批次在发送前原子登记全部文章消费者。 */
+  consumerSubjects?: string[];
+  onReserved?: (db: Db, receiptId: number) => Promise<void>;
+  expectedReceiptId?: number;
 }
 
 export interface ReceiptResult {
@@ -180,6 +184,9 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
   const logicalKey = logicalKeyFor(req);
 
   const claimed = await sql.begin(async (tx) => {
+    const prefilter = ["prefilter_article", "prefilter_batch"].includes(req.purpose);
+    const subjects = [...new Set([req.subject, ...(req.consumerSubjects ?? [])].filter((s): s is string => !!s?.startsWith("article:")))].sort();
+    if (prefilter) for (const subject of subjects) await tx`SELECT pg_advisory_xact_lock(hashtext(${"prefilter:" + subject}))`;
     // 不持锁等待网络；同一文章不同用途／服务的路径选择必须先于付费占位串行。
     if (req.subject?.startsWith("article:") && req.exclusiveWith?.length) {
       await tx`SELECT pg_advisory_xact_lock(hashtext(${"analysis-path:" + req.subject}))`;
@@ -188,8 +195,32 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
     await tx`SELECT pg_advisory_xact_lock(hashtext(${"budget:" + req.service}))`;
     const [existing] = await tx<ReceiptRow[]>`
       SELECT id, attempts, subject, status, response, created_at, updated_at FROM receipts WHERE logical_key = ${logicalKey} FOR UPDATE`;
-    if (existing) await registerConsumers(tx, existing.id, [existing.subject, req.subject]);
+    if (req.expectedReceiptId !== undefined && existing?.id !== req.expectedReceiptId) {
+      throw new ProviderUnavailableError("configuration", "原批次回执身份不匹配，等待原配置恢复");
+    }
+    if (existing) {
+      await registerConsumers(tx, existing.id, [existing.subject, req.subject, ...(req.consumerSubjects ?? [])]);
+      await req.onReserved?.(tx, existing.id);
+    }
     if (existing?.status === "received" || existing?.status === "completed") return { kind: "reuse" as const, row: existing };
+    if (prefilter) {
+      const [unresolved] = await tx<ReceiptRow[]>`SELECT r.id,r.attempts,r.subject,r.status,r.response,r.created_at,r.updated_at
+        FROM receipts r WHERE r.purpose IN ('prefilter_article','prefilter_batch') AND r.logical_key<>${logicalKey}
+          AND r.status IN ('pending','unknown') AND (r.subject=ANY(${subjects}::text[]) OR EXISTS(
+            SELECT 1 FROM receipt_consumers c WHERE c.receipt_id=r.id AND c.subject=ANY(${subjects}::text[])))
+        ORDER BY r.id LIMIT 1 FOR UPDATE OF r`;
+      if (unresolved) {
+        if (unresolved.status==='pending' && Date.now()-unresolved.updated_at.getTime()<PENDING_STALE_MS) return { kind: "busy" as const, row: unresolved };
+        if (unresolved.status==='pending') await markUnknown(tx, unresolved.id, "placeholder went stale without a recorded result");
+        return { kind: "unknown" as const, row: unresolved };
+      }
+      if (req.purpose === "prefilter_article") {
+        const member = await tx`SELECT m.batch_id FROM prefilter_batch_members m JOIN prefilter_batches b ON b.id=m.batch_id
+          WHERE 'article:'||m.article_id||'@'||m.revision=ANY(${subjects}::text[])
+            AND m.attempt_tag=${req.attemptTag ?? ''} AND m.state<>'cancelled' AND b.state<>'cancelled' LIMIT 1`;
+        if (member.length) throw new ReceiptBusyError("已有冻结预筛批次，请沿原批次恢复");
+      }
+    }
     if (req.subject?.startsWith("article:") && req.exclusiveWith?.length) {
       const conflicts = await tx<Array<{ logical_key: string; purpose: string; status: string; error: string | null; request: Record<string, unknown> | null }>>`
         SELECT r.logical_key,r.purpose,r.status,r.error,r.request FROM receipts r
@@ -252,7 +283,8 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
       VALUES (${logicalKey}, ${req.service}, ${req.model ?? null}, ${req.purpose}, ${req.subject ?? null}, 'pending',
               ${tx.json({ ...(req.requestSummary ?? {}), ...(req.cooldown ? { providerScope: req.cooldown } : {}) } as never)}, 1)
       RETURNING id`;
-    await registerConsumers(tx, row!.id, [req.subject]);
+    await registerConsumers(tx, row!.id, [req.subject, ...(req.consumerSubjects ?? [])]);
+    await req.onReserved?.(tx, row!.id);
     const attemptId = await startAttempt(tx, row!.id, 1, req);
     await bindCooldownProbe(tx, cooldown, row!.id);
     return { kind: "call" as const, id: row!.id, attemptId, attempt: 1, cooldown };

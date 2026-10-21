@@ -6,13 +6,18 @@ import { settleNonEditorial } from "./content.ts";
 import { deferJob, enqueue, QUEUES, shutdownSignal, work, type JobData } from "./queue.ts";
 import { requestWait } from "../providers/receipts.ts";
 
+/** 固定窗口从第一次入队计时；singleton 冲突不移动既有到期时间。 */
+export function queueStoryDigest(storyId: number) {
+  return enqueue(QUEUES.digest, { storyId }, { singletonKey: `story:${storyId}`, startAfter: 300 });
+}
+
 export async function processGroupingJob(data: JobData["events.group"], jobId: string, retryCount: number) {
   const { articleId, signalOnly, force } = data;
   try {
     if (signalOnly && !force && !(await settleNonEditorial(articleId)).group) return { verdict: "skipped" };
     const result = await groupArticle(articleId, { signalOnly, force });
     if (result.storyId && !result.verdict.startsWith("signal")) {
-      await enqueue(QUEUES.digest, { storyId: result.storyId }, { singletonKey: `story:${result.storyId}`, startAfter: 60 });
+      await queueStoryDigest(result.storyId);
     }
     return result;
   } catch (error) {
@@ -28,7 +33,7 @@ export async function processGroupingJob(data: JobData["events.group"], jobId: s
 export async function registerEventJobs(boss: PgBoss) {
   // Serial on purpose: two reports of the same new fact must not both create it.
   await work(boss, QUEUES.group, { localConcurrency: 1, pollingIntervalSeconds: 0.5 }, processGroupingJob);
-  await work(boss, QUEUES.digest, { localConcurrency: 3, pollingIntervalSeconds: 5 }, processDigestJob);
+  await work(boss, QUEUES.digest, { localConcurrency: 1, pollingIntervalSeconds: 5 }, processDigestJob);
 }
 
 /** 预算、账号忙碌和关机只延迟同一综述；未知回执仍走独立的释放流程。 */

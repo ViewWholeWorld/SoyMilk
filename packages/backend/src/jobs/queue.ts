@@ -12,6 +12,7 @@ let starting: Promise<PgBoss> | null = null;
 
 export interface JobData {
   "content.analyze": { articleId: string; attemptTag?: string };
+  "content.prefilter": { batchId?: string };
   "content.extract-body": { articleId: string };
   "content.translate-body": { articleId: string; revision: number };
   "events.group": { articleId: string; signalOnly?: boolean; force?: boolean };
@@ -24,6 +25,7 @@ export type QueueName = keyof JobData;
 
 export const QUEUES = {
   analyze: "content.analyze",
+  prefilter: "content.prefilter",
   extractBody: "content.extract-body",
   translateBody: "content.translate-body",
   group: "events.group",
@@ -38,6 +40,7 @@ type QueueOptions = NonNullable<Parameters<PgBoss["createQueue"]>[1]>;
 /** Queue definitions in one place; created on first use by any process. */
 const QUEUE_OPTIONS: Record<QueueName, QueueOptions> = {
   [QUEUES.analyze]: { policy: "short", retryLimit: 4, retryDelay: 30, retryBackoff: true, expireInSeconds: 600 },
+  [QUEUES.prefilter]: { policy: "short", retryLimit: 4, retryDelay: 60, retryBackoff: true, expireInSeconds: 600 },
   [QUEUES.extractBody]: { policy: "short", retryLimit: 2, retryDelay: 120, expireInSeconds: 300 },
   [QUEUES.translateBody]: { policy: "short", retryLimit: 2, retryDelay: 120, expireInSeconds: 3600 },
   [QUEUES.group]: { policy: "short", retryLimit: 4, retryDelay: 20, retryBackoff: true, expireInSeconds: 600 },

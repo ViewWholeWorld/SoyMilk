@@ -3,6 +3,7 @@ import { assertProductionSecrets } from "@aihot/backend/config";
 import { closeDb } from "@aihot/backend/db";
 import { getBoss, retireQueuedJobs, stopBoss } from "@aihot/backend/jobs/queue";
 import { registerContentJobs } from "@aihot/backend/jobs/content";
+import { registerPrefilterJobs } from "@aihot/backend/jobs/prefilter";
 import { registerTranslationJobs } from "@aihot/backend/jobs/translate";
 import { registerSourceJobs } from "@aihot/backend/jobs/sources";
 import { registerEventJobs } from "@aihot/backend/jobs/events";
@@ -14,11 +15,12 @@ import { startCodexWorker, stopCodexWorker } from "@aihot/backend/providers/code
 import { shutdownSignal } from "@aihot/backend/lib/shutdown";
 
 assertProductionSecrets([["auth", "IMG_PROXY_SIGN_SECRET"]]);
-if (process.env.CODEX_REUSE_ENABLED === "true") startCodexWorker(Number(process.env.CODEX_CONCURRENCY || 2));
+if (process.env.CODEX_REUSE_ENABLED === "true") startCodexWorker(Number(process.env.CODEX_CONCURRENCY || 1));
 
 const boss = await getBoss();
 await retireQueuedJobs(boss);
 await registerContentJobs(boss);
+await registerPrefilterJobs(boss);
 await registerTranslationJobs(boss);
 if (process.env.COLLECT_ENABLED !== "false") await registerSourceJobs(boss);
 await registerEventJobs(boss);

@@ -73,6 +73,8 @@ interface WorkerOptions {
   batchMs?: number;
   idleMs?: number;
   adminWaitMs?: number;
+  /** 同一 worker 相邻请求工作的最小启动间隔，跨连接批次保留。 */
+  minStartIntervalMs?: number;
   open?: () => Promise<CodexServer>;
 }
 
@@ -83,16 +85,20 @@ export class CodexWorker {
   private active = 0;
   private blockedUntil = 0;
   private singleUntil = 0;
+  private nextStartAt = 0;
   private windows: Window[] = [];
   private options: Required<WorkerOptions>;
   constructor(options: WorkerOptions) {
     if (![1, 2].includes(options.concurrency)) throw new Error("Codex concurrency must be 1 or 2");
-    this.options = { batchMs: 120_000, idleMs: 2000, adminWaitMs: 15_000, open: openCodexServer, ...options };
+    this.options = { batchMs: 120_000, idleMs: 2000, adminWaitMs: 15_000, minStartIntervalMs: 0, open: openCodexServer, ...options };
     if (!(this.options.batchMs > 0 && this.options.batchMs <= 10 * 60_000 && this.options.idleMs > 0)) throw new Error("invalid bounded Codex batch duration");
+    if (!(Number.isSafeInteger(this.options.minStartIntervalMs) && this.options.minStartIntervalMs >= 0 && this.options.minStartIntervalMs <= 60_000))
+      throw new Error("invalid Codex start interval");
   }
   get status() {
     return { active: this.active, queued: this.queue.length, concurrency: this.limit,
-      blockedUntil: this.blockedUntil || null, reducedUntil: this.singleUntil || null };
+      blockedUntil: this.blockedUntil || null, reducedUntil: this.singleUntil || null,
+      minStartIntervalMs: this.options.minStartIntervalMs };
   }
   private get limit() { return Date.now() < this.singleUntil ? 1 : this.options.concurrency; }
   private guard() {
@@ -168,8 +174,10 @@ export class CodexWorker {
       while (!this.closed && !broken && Date.now() - started < this.options.batchMs) {
         try { this.guard(); } catch (error) { this.rejectWaiting(error); break; }
         if (await codexAdminPending()) break;
-        while (this.queue.length && this.active < this.limit && !this.closed && !broken) {
+        // 在付费回执占位之前平滑启动；等待时继续轮询关机、账号管理和上游限制。
+        while (this.queue.length && this.active < this.limit && !this.closed && !broken && Date.now() >= this.nextStartAt) {
           const item = this.queue.shift()!;
+          this.nextStartAt = Date.now() + this.options.minStartIntervalMs;
           this.active++; calls++; peak = Math.max(peak, this.active);
           const task = withCodexServer(item.work).then(item.resolve, (error: unknown) => {
             const limited = codexLimit(error);
@@ -195,8 +203,9 @@ export class CodexWorker {
   }
 }
 
-export function startCodexWorker(concurrency = 2) {
+export function startCodexWorker(concurrency = 1) {
   if (worker) throw new Error("Codex worker already started");
-  worker = new CodexWorker({ concurrency });
+  const minStartIntervalMs = Number(process.env.CODEX_MIN_START_INTERVAL_MS || 3000);
+  worker = new CodexWorker({ concurrency, minStartIntervalMs });
 }
 export async function stopCodexWorker() { await worker?.close(); }
