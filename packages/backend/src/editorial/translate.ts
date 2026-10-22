@@ -19,6 +19,7 @@ import { modelFor } from "./models.ts";
 import { enqueue, QUEUES, shutdownSignal } from "../jobs/queue.ts";
 import { completeReceipt, ReceiptUnknownError, rejectReceivedResponse, requestWait } from "../providers/receipts.ts";
 import { promptText, promptVersion } from "./prompts.ts";
+import { observeRequest } from "../operations/request-observation.ts";
 
 export const TRANSLATE_PROMPT_VERSION = promptVersion("translate-body", "translate-post");
 const BATCH_CHARS = 3500;
@@ -53,6 +54,11 @@ interface TranslationReceipt { id: number; attempt: number; rejected: boolean }
 interface TranslationPart { text: string | null; receipt: TranslationReceipt }
 interface TranslationWork {
   receipts: TranslationReceipt[];
+  sourceKind?: string;
+  model?: string;
+  segments?: number;
+  translated?: number;
+  placeholderFailures?: number;
   requested?: number;
   reused?: number;
   write?: { articleId: string; revision: number; title: string; html: string; text: string; complete: boolean };
@@ -79,9 +85,10 @@ function segmentsOf($: cheerio.CheerioAPI, language: string | null): Element[] {
   return out;
 }
 
-async function translateBatch(articleId: string, revision: number, index: number, parts: string[], system: string, work: TranslationWork, attemptTag?: string): Promise<{ parts: TranslationPart[]; aligned: boolean }> {
+async function translateBatch(articleId: string, revision: number, index: number, parts: string[], system: string, work: TranslationWork, attemptTag?: string, split = false): Promise<{ parts: TranslationPart[]; aligned: boolean }> {
   if (shutdownSignal.signal.aborted) throw new TranslationInterruptedError("worker shutting down");
   const model = await modelFor("translate");
+  work.model = model;
   if (shutdownSignal.signal.aborted) throw new TranslationInterruptedError("worker shutting down");
   const res = await chatJson({
     model,
@@ -97,6 +104,10 @@ async function translateBatch(articleId: string, revision: number, index: number
     attemptTag,
     deferOutputRejection: true,
   }).catch(error => {
+    observeRequest({ event: "translation_batch", subject: `article:${articleId}@${revision}#${index}`, purpose: "translate_body",
+      model, sourceKind: work.sourceKind, outcome: "error", phase: split ? "split" : attemptTag ? "retry" : "primary",
+      segments: parts.length, chars: parts.join("").length,
+      failure: requestWait(error)?.kind ?? (error instanceof Error ? error.constructor.name : "unknown_error") });
     if (error instanceof ModelOutputError && error.receiptId !== null && error.receiptAttempt !== null) {
       work.receipts.push({ id: error.receiptId, attempt: error.receiptAttempt, rejected: true });
     }
@@ -109,6 +120,10 @@ async function translateBatch(articleId: string, revision: number, index: number
   work.receipts.push(receipt);
   work.requested = (work.requested ?? 0) + (res.reused ? 0 : 1);
   work.reused = (work.reused ?? 0) + (res.reused ? 1 : 0);
+  observeRequest({ event: "translation_batch", subject: `article:${articleId}@${revision}#${index}`, purpose: "translate_body",
+    model: res.model, sourceKind: work.sourceKind, receiptId: res.receiptId, attempt: res.receiptAttempt, reused: res.reused,
+    outcome: aligned ? "aligned" : "misaligned", phase: split ? "split" : attemptTag ? "retry" : "primary",
+    segments: parts.length, chars: parts.join("").length });
   return { parts: parts.map((_part, i) => ({ text: aligned ? res.data.t[i]! : null, receipt })), aligned };
 }
 
@@ -125,9 +140,12 @@ async function translateAll(articleId: string, revision: number, parts: string[]
     let done = await translateBatch(articleId, revision, index++, batch, system, work, attemptTag);
     if (!done.aligned && batch.length > 1) {
       const mid = Math.ceil(batch.length / 2);
-      const left = await translateBatch(articleId, revision, index++, batch.slice(0, mid), system, work, attemptTag);
-      const right = await translateBatch(articleId, revision, index++, batch.slice(mid), system, work, attemptTag);
+      const left = await translateBatch(articleId, revision, index++, batch.slice(0, mid), system, work, attemptTag, true);
+      const right = await translateBatch(articleId, revision, index++, batch.slice(mid), system, work, attemptTag, true);
       done = { parts: [...left.parts, ...right.parts], aligned: left.aligned && right.aligned };
+      observeRequest({ event: "translation_split", subject: `article:${articleId}@${revision}`, purpose: "translate_body",
+        model: work.model, sourceKind: work.sourceKind, outcome: done.aligned ? "aligned" : "misaligned",
+        phase: attemptTag ? "retry" : "primary", segments: batch.length, chars });
     }
     out.push(...done.parts);
     start = end;
@@ -180,10 +198,11 @@ export function unshield(translated: string, s: Shielded): string | null {
 }
 
 async function prepareTranslation(articleId: string, expectedRevision: number | undefined, work: TranslationWork): Promise<TranslateResult> {
-  const [row] = await sql<{ revision: number; channel: string; language: string | null; body_html: string | null; body_text: string | null; x_post: { text?: string } | null; title: string; selected: boolean; body_mode: string; visibility: string }[]>`
-    SELECT a.revision, p.channel, a.language, a.body_html, a.body_text, a.x_post, p.title, p.selected, p.body_mode, p.visibility
-    FROM publications p JOIN articles a ON a.id = p.article_id WHERE p.article_id = ${articleId}`;
+  const [row] = await sql<{ revision: number; channel: string; source_kind: string; language: string | null; body_html: string | null; body_text: string | null; x_post: { text?: string } | null; title: string; selected: boolean; body_mode: string; visibility: string }[]>`
+    SELECT a.revision, p.channel, s.kind AS source_kind, a.language, a.body_html, a.body_text, a.x_post, p.title, p.selected, p.body_mode, p.visibility
+    FROM publications p JOIN articles a ON a.id = p.article_id LEFT JOIN sources s ON s.id=p.source_id WHERE p.article_id = ${articleId}`;
   if (!row) return { articleId, status: "skipped", reason: "not published" };
+  work.sourceKind = row.source_kind ?? undefined;
   if (expectedRevision !== undefined && row.revision !== expectedRevision) return { articleId, revision: row.revision, status: "skipped", reason: "stale revision" };
   const result = (r: Omit<TranslateResult, "articleId" | "revision">): TranslateResult => ({
     articleId, revision: row.revision, ...r, requests: { sent: work.requested ?? 0, reused: work.reused ?? 0 },
@@ -196,7 +215,9 @@ async function prepareTranslation(articleId: string, expectedRevision: number | 
     const meaningful = collapseWhitespace(text.replace(/https?:\/\/\S+/g, ""));
     if (isChinese(row.language, text)) return result({ status: "skipped", reason: "already Chinese" });
     if (meaningful.length < X_MIN_CHARS) return result({ status: "skipped", reason: "short post" });
+    work.segments = 1;
     const [part] = await translateAll(articleId, row.revision, [text], SYSTEM_POST, work);
+    work.translated = part?.text ? 1 : 0;
     const t = part?.text;
     if (!t) return unusable("translation did not line up");
     work.write = { articleId, revision: row.revision, title: row.title, html: textToHtml(t), text: t, complete: true };
@@ -206,6 +227,7 @@ async function prepareTranslation(articleId: string, expectedRevision: number | 
   if (!row.body_html || isChinese(row.language, row.body_text ?? "")) return result({ status: "skipped", reason: "no foreign-language body" });
   const $ = cheerio.load(row.body_html, null, false);
   const blocks = segmentsOf($, row.language);
+  work.segments = blocks.length;
   if (!blocks.length) return result({ status: "skipped", reason: "no translatable text" });
   // Beyond the cap, only the leading blocks are translated; the rest keep the original text.
   let budget = MAX_CHARS;
@@ -221,6 +243,7 @@ async function prepareTranslation(articleId: string, expectedRevision: number | 
   const restore = (part: TranslationPart, original: Shielded) => {
     const translated = part.text === null ? null : unshield(part.text, original);
     if (translated === null) part.receipt.rejected = true;
+    if (part.text !== null && translated === null) work.placeholderFailures = (work.placeholderFailures ?? 0) + 1;
     return translated;
   };
   const answers = await translateAll(articleId, row.revision, shielded.map((b) => b.html), SYSTEM_BODY, work);
@@ -239,6 +262,7 @@ async function prepareTranslation(articleId: string, expectedRevision: number | 
       done += 1;
     }
   });
+  work.translated = done;
   if (!done) return unusable("no batch translated");
   const complete = done === blocks.length;
   const html = sanitizeBody($.html());
@@ -418,6 +442,10 @@ export async function processTranslation(articleId: string, revision: number): P
   const unknown = error instanceof ReceiptUnknownError ? error : null;
   const message = error instanceof Error ? error.message.slice(0,300) : String(error).slice(0,300);
   const recorded = await recordTranslationAttempt(articleId, revision, result, error, work);
+  observeRequest({ event: "translation_result", subject: `article:${articleId}@${revision}`, purpose: "translate_body",
+    sourceKind: work.sourceKind, model: work.model, outcome: !recorded ? "stale" : wait || unknown ? "waiting" : result?.status ?? "failed",
+    ...(error ? { failure: unknown ? "unknown" : wait?.kind ?? (error instanceof Error ? error.constructor.name : "unknown_error") } : {}),
+    segments: work.segments, translated: work.translated ?? 0, placeholderFailures: work.placeholderFailures ?? 0 });
   if (!recorded) return { state: "stale" };
   if (wait || unknown) return { state: "waiting", wait: unknown ? "unknown" : wait!.kind };
   return { state: result?.status ?? "failed", result: result ?? { articleId,revision,status: "failed",reason: message } };

@@ -16,6 +16,7 @@ import { guardedFetch, type GuardedResponse } from "../lib/http-fetch.ts";
 import { shutdownSignal } from "../lib/shutdown.ts";
 import { modelBillingContext } from "./model-billing.ts";
 import { spendingRefusal, type ProviderCooldownScope } from "./provider-cooldown.ts";
+import { observeRequest } from "../operations/request-observation.ts";
 
 export interface ModelSpec {
   key: string;
@@ -224,6 +225,19 @@ function isConnectFailure(error: unknown): boolean {
 }
 
 export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): Promise<ChatJsonResult<z.infer<S>>> {
+  try {
+    const result = await chatJsonUnobserved(opts);
+    observeRequest({ event: "call", subject: opts.subject, purpose: opts.purpose, model: result.model,
+      outcome: "success", receiptId: result.receiptId, attempt: result.receiptAttempt, reused: result.reused });
+    return result;
+  } catch (error) {
+    observeRequest({ event: "call", subject: opts.subject, purpose: opts.purpose, model: opts.model,
+      outcome: "error", failure: requestWait(error)?.kind ?? (error instanceof Error ? error.constructor.name : "unknown_error") });
+    throw error;
+  }
+}
+
+async function chatJsonUnobserved<S extends z.ZodType>(opts: ChatJsonOptions<S>): Promise<ChatJsonResult<z.infer<S>>> {
   if (!config.modelCallsEnabled) throw new ProviderUnavailableError("disabled", "Model calls are disabled (MODEL_CALLS_ENABLED=false)");
   const spec = (await registeredModels())[opts.model];
   if (!spec) throw new ProviderUnavailableError("configuration", `Unknown model ${opts.model}`);
@@ -372,19 +386,36 @@ export async function markReceiptsCompleted(ids: number[]): Promise<void> {
 
 /** 合并流程关闭后仍能消费已付费结果；不读取当前连接或发起网络请求。 */
 export async function reuseJsonReceipt<S extends z.ZodType>(id: number, schema: S, promptVersion: string,
-  opts: { parse?: (content: string) => unknown; materialHash?: string; userHash?: string; compatiblePromptVersions?: readonly string[] } = {}): Promise<ChatJsonResult<z.infer<S>> | null> {
-  const saved = await storedReceipt(id);
+  opts: { parse?: (content: string) => unknown; materialHash?: string; userHash?: string; compatiblePromptVersions?: readonly string[];
+    observation?: { subject: string; purpose: string } } = {}): Promise<ChatJsonResult<z.infer<S>> | null> {
+  const context = { event: "saved_reuse" as const, subject: opts.observation?.subject ?? `receipt:${id}`,
+    purpose: opts.observation?.purpose ?? "saved_receipt", receiptId: id };
+  const saved = await storedReceipt(id).catch(error => {
+    observeRequest({ ...context, outcome: "error", failure: requestWait(error)?.kind ?? (error instanceof Error ? error.constructor.name : "unknown_error") });
+    throw error;
+  });
   if (!saved) return null;
   if (!saved.request || (saved.request.promptVersion !== promptVersion && !opts.compatiblePromptVersions?.includes(String(saved.request.promptVersion)))) {
+    observeRequest({ ...context, outcome: "error", failure: "configuration" });
     throw new ProviderUnavailableError("configuration", "需要能消费该提示词版本的兼容程序，不能重新付费替代已有响应");
   }
-  if (saved.request.materialHash ? opts.materialHash !== saved.request.materialHash : opts.userHash && opts.userHash !== saved.request.userHash) return null;
+  const observation = { event: "saved_reuse" as const, subject: opts.observation?.subject ?? `receipt:${id}`,
+    purpose: opts.observation?.purpose ?? "saved_receipt", receiptId: id, attempt: saved.attempts,
+    model: typeof saved.request.modelKey === "string" ? saved.request.modelKey : saved.model };
+  if (saved.request.materialHash ? opts.materialHash !== saved.request.materialHash : opts.userHash && opts.userHash !== saved.request.userHash) {
+    observeRequest({ ...observation, outcome: "mismatch", hashKind: saved.request.materialHash ? "material" : "user",
+      userHashEqual: opts.userHash && typeof saved.request.userHash === "string" ? opts.userHash === saved.request.userHash : null });
+    return null;
+  }
   const response = saved.response as { choices?: Array<{ message?: { content?: string } }>; usage?: Record<string, unknown> };
   const content = response.choices?.[0]?.message?.content ?? "";
   try {
-    return { data: schema.parse(opts.parse ? opts.parse(content) : extractJson(content)), receiptId: id, receiptAttempt: saved.attempts, reused: true,
+    const data = schema.parse(opts.parse ? opts.parse(content) : extractJson(content));
+    observeRequest({ ...observation, outcome: "hit", reused: true });
+    return { data, receiptId: id, receiptAttempt: saved.attempts, reused: true,
       model: typeof saved.request.modelKey === "string" ? saved.request.modelKey : saved.model, usage: response.usage ?? null };
   } catch (error) {
+    observeRequest({ ...observation, outcome: "error", failure: "invalid_output" });
     await rejectReceivedResponse(id, `unusable output: ${String(error).slice(0, 500)}`, sql, saved.attempts);
     throw new ModelOutputError(`已保存响应 ${id} 无法解析`, id);
   }
