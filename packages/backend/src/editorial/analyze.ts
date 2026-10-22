@@ -271,6 +271,7 @@ async function savedStep<S extends z.ZodType>(a: AnalyzeInputArticle, opts: Step
   user: string | ContentPart[], parse?: (text: string) => unknown) {
   const saved = (await analysisHistory(subjectOf(a), opts.attemptTag)).find(r => r.step === step);
   return saved ? reuseJsonReceipt(saved.id, schema, version, { parse, materialHash: materialHash(a), userHash: sha256(typeof user === "string" ? user : JSON.stringify(user)),
+    observation: { subject: subjectOf(a), purpose: ANALYSIS_PURPOSES[step] },
     compatiblePromptVersions: COMPATIBLE_PROMPT_VERSIONS[step] }) : null;
 }
 
@@ -287,6 +288,7 @@ async function runPrefilter(a: AnalyzeInputArticle, opts: StepOpts): Promise<Ana
     ?? rows.find(r => receiptAttemptTag(r.logical_key) === (opts.attemptTag ?? "0"));
   const res = (saved ? await reuseJsonReceipt(saved.id, PrefilterSchema, PROMPT_VERSIONS.prefilter, {
     userHash: sha256(user), compatiblePromptVersions: COMPATIBLE_PROMPT_VERSIONS.prefilter,
+    observation: { subject: subjectOf(a), purpose: "prefilter_article" },
   }) : null) ?? await chatJson({
     model: await modelFor("prefilter"),
     purpose: "prefilter_article",
@@ -483,6 +485,7 @@ async function runCombined(a: AnalyzeInputArticle, opts: StepOpts, step: Combine
   const parse = step === "combinedUnderstand" ? parseCombinedUnderstandJson : undefined;
   // 先读已接收结果；连接分配变化及供应商暂不可用均不妨碍本地消费。
   let res = savedId ? await reuseJsonReceipt(savedId, schema, version, { materialHash: materialHash(a), parse,
+    observation: { subject: subjectOf(a), purpose: ANALYSIS_PURPOSES[step] },
     compatiblePromptVersions: COMPATIBLE_PROMPT_VERSIONS[step] }) : null;
   if (!res) {
     if (!(await canCombine(step))) throw new ProviderUnavailableError("configuration", "本轮已选择合并处理；需恢复兼容模型后重试");
