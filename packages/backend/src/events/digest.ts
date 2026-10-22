@@ -8,6 +8,7 @@ import { digestReports, digestInputsHash } from "./derived-content.ts";
 import { promptText, promptVersion } from "../editorial/prompts.ts";
 import { buildDigestInput, DigestSchema } from "./digest-input.ts";
 import { looksZh } from "../editorial/writing.ts";
+import { observeDigestInputs } from "../operations/digest-observation.ts";
 
 export const DIGEST_PROMPT_VERSION = promptVersion("story-digest");
 
@@ -41,6 +42,7 @@ export async function composeStoryDigest(storyId: number, opts: { afterCorrectio
     last.context_article_ids.every(id => known.has(id));
   if (!opts.afterCorrection && proven && last!.inputs_hash === inputsHash) return { updated: false };
   const incremental = proven && !opts.afterCorrection;
+  await observeDigestInputs(storyId, reports, known, incremental, story.origin === "manual");
   const { user, windowIds } = buildDigestInput(reports, incremental ? story.digest : null, known);
   const contextIds = [...new Set([...(incremental ? last!.context_article_ids! : []), ...windowIds])].sort();
   const single = reports.length === 1 ? reports[0]! : null;
