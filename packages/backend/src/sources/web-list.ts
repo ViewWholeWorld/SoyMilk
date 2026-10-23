@@ -4,7 +4,7 @@ import { sql } from "../db.ts";
 import { guardedFetch } from "../lib/http-fetch.ts";
 import { normalizeUrl } from "../lib/url.ts";
 import { collapseWhitespace, stripTags } from "../lib/text.ts";
-import { readable, type ExtractedBody } from "../content/extract.ts";
+import { isSignInRedirect, isSignInUrl, readable, type ExtractedBody } from "../content/extract.ts";
 import { sanitizeBody } from "../content/sanitize.ts";
 import { jinaRead } from "../providers/jina.ts";
 import { FetchError, type Candidate, type SourceRow } from "./types.ts";
@@ -126,7 +126,7 @@ function listingItself(url: string, listing: string): boolean {
  * author and pagination pages.
  */
 function navigationLink(url: string, listing: string): boolean {
-  if (listingItself(url, listing)) return true;
+  if (listingItself(url, listing) || isSignInUrl(url)) return true;
   const u = new URL(url);
   return /\/(label|labels|tag|tags|category|categories|author|authors|page)(\/|$)/i.test(u.pathname) || /\/(19|20)\d{2}(\/\d{1,2})?\/?$/.test(u.pathname);
 }
@@ -164,6 +164,7 @@ async function fetchListingText(source: SourceRow): Promise<{ text: string; viaJ
   }
   const res = await guardedFetch(url, { headers: { accept: "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8" }, timeoutMs: 25_000 });
   if (res.status !== 200) throw new FetchError(`HTTP ${res.status}`, res.status);
+  if (isSignInRedirect(url, res.url)) throw new FetchError("Listing redirected to a sign-in page");
   if (/html/i.test(res.headers.get("content-type") ?? "")) contentDocument(res.text());
   return { text: res.text(), viaJina: false, base: source.config.baseUrl ?? url };
 }
@@ -211,6 +212,7 @@ export function fromHtml(html: string, base: string, source: SourceRow): Candida
     const linkEl = c.linkSelector ? (el.is(c.linkSelector) ? el : el.find(c.linkSelector).first()) : el.is("a") ? el : el.find("a[href]").first();
     const url = absolute(linkEl.attr("href"), base);
     if (!url || seen.has(url) || !allowed(url, source)) continue;
+    if (isSignInUrl(url)) continue;
     if (!sectionsArePosts && listingItself(url, listing)) continue;
     const titleEl = c.titleSelector ? (el.is(c.titleSelector) ? el : el.find(c.titleSelector).first()) : linkEl;
     const title = collapseWhitespace(titleEl.text() || linkEl.attr("title") || "");
@@ -395,6 +397,7 @@ export async function fetchDetail(url: string, source: SourceRow, need: DetailNe
   if ((need.date && !dateInJina) || (need.title && !titleInJina) || need.summary) {
     const res = await guardedFetch(url, { timeoutMs: 20_000 });
     if (res.status !== 200) throw new FetchError(`HTTP ${res.status}`, res.status);
+    if (isSignInRedirect(url, res.url)) throw new FetchError("Detail redirected to a sign-in page");
     html = res.text();
     if (need.body && /html/.test(res.headers.get("content-type") ?? "")) {
       try { body = readable(html, res.url); }

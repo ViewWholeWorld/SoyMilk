@@ -1,6 +1,6 @@
 {
   "name": "aihot",
-  "version": "3.8.3",
+  "version": "3.9.0",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -9,7 +9,7 @@
     "industry"
   ],
   "engines": {
-    "node": ">=24.11"
+    "node": ">=24.22.1"
   },
   "scripts": {
     "check:version": "node scripts/check-release-version.ts",

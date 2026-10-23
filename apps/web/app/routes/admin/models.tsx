@@ -1,13 +1,12 @@
 import { SITE } from "@aihot/industry/site";
 import { useState } from "react";
 import { Link, redirect } from "react-router";
-import type { AdminCodexModel, AdminModelPriceCatalog, AdminModelConfiguration, AdminModelConnection, AdminModelPricing, AdminModelAssignments, AdminModelSupplier, ReasoningEffort } from "@aihot/contracts/admin";
+import type { AdminCodexModel, AdminModelConfiguration, AdminModelConnection, AdminModelAssignments, AdminModelSupplier, ReasoningEffort } from "@aihot/contracts/admin";
 import type { Route } from "./+types/models";
 import { adminGet } from "../../lib/admin.server";
 import { useAdminAction } from "../../features/admin/action";
 import { bj } from "../../features/admin/format";
 import { AdminPage, Badge, Button, Card, DataTable, Empty, Field, ReasonDialog, Select } from "../../features/admin/ui";
-import { ModelPricing } from "../../features/admin/model-pricing";
 import { ModelConnections, ReasoningEffortField } from "../../features/admin/model-connections";
 import { legacyModelsLocation } from "../../features/admin/model-stats-query";
 
@@ -15,21 +14,12 @@ export async function loader({ request }: Route.LoaderArgs) {
   const params = new URL(request.url).searchParams;
   const legacy = legacyModelsLocation(params);
   if (legacy) throw redirect(legacy);
-  const prices = params.get("tab") === "prices";
-  const priceQuery = params.get("priceQuery") || "";
-  if (prices) {
-    const [pricing, priceCatalog] = await Promise.all([
-      adminGet<AdminModelPricing>(request, "/api/admin/model-pricing"),
-      adminGet<AdminModelPriceCatalog>(request, `/api/admin/model-price-catalog?q=${encodeURIComponent(priceQuery)}&page=${encodeURIComponent(params.get("pricePage") || "1")}`),
-    ]);
-    return { tab: "prices", pricing, priceCatalog, priceQuery, assignments: null, configuration: null, suppliers: [] };
-  }
   const [assignments, configuration, suppliers] = await Promise.all([
     adminGet<AdminModelAssignments>(request, "/api/admin/model-assignments"),
     adminGet<AdminModelConfiguration>(request, "/api/admin/model-config"),
     adminGet<AdminModelSupplier[]>(request, "/api/admin/model-suppliers"),
   ]);
-  return { tab: "models", assignments, configuration, suppliers, pricing: null, priceCatalog: null, priceQuery };
+  return { assignments, configuration, suppliers };
 }
 export const meta: Route.MetaFunction = () => [{ title: `大模型配置 · ${SITE.name} 后台` }];
 const SOURCE_LABEL = { admin: "后台切换", env: "环境变量", default: "代码默认" } as const;
@@ -53,13 +43,8 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
 
 
   return (
-    <AdminPage title="大模型配置" subtitle="管理账号、连接、能力模型与价格。配置只影响之后的新任务。"
+    <AdminPage title="大模型配置" subtitle="管理账号、连接与能力模型。配置只影响之后的新任务。"
       actions={<Link to="/admin/model-stats" className="text-accent">查看模型统计</Link>}>
-      <nav aria-label="配置标签" className="mb-5 flex gap-4 text-[14px]">
-        <Link aria-current={m.tab === "models" ? "page" : undefined} className={m.tab === "models" ? "font-medium text-accent" : "text-ink-3"} to="/admin/models">模型与能力</Link>
-        <Link aria-current={m.tab === "prices" ? "page" : undefined} className={m.tab === "prices" ? "font-medium text-accent" : "text-ink-3"} to="/admin/models?tab=prices">模型价格</Link>
-      </nav>
-      {m.pricing && m.priceCatalog ? <ModelPricing pricing={m.pricing} catalog={m.priceCatalog} query={m.priceQuery} /> : null}
       {m.configuration && m.assignments && <>
         <ModelConnections configuration={m.configuration} suppliers={m.suppliers} onCodexModels={setCatalog} />
         <h2 className="mb-4 text-[16px] font-medium">能力模型分配</h2>

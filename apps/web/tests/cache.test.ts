@@ -20,6 +20,9 @@ const api = createServer((req, res) => {
   const url = new URL(req.url!, "http://api.local");
   apiCookies.push(req.headers.cookie);
   res.setHeader("Content-Type", "application/json");
+  if (url.pathname === "/api/admin/me" && req.headers.cookie?.includes("aihot_admin=fixture")) {
+    return res.end(JSON.stringify({ name: "Fixture admin", csrf: "fixture", dev: false }));
+  }
   if (url.pathname === "/api/site/meta") {
     const respond = () => res.end(JSON.stringify({ changelogVersion: "2026-09-28T12:00" }));
     return metaDelayMs ? setTimeout(respond, metaDelayMs) : respond();
@@ -225,6 +228,28 @@ test("browser caching preserves noindex and private sign-in responses", async ()
 test("a visitor cannot name its own address to the api without a trusted proxy in front", async () => {
   const res = await fetch(`${origin}/api/site/echo-client`, { headers: { "X-Forwarded-For": "6.6.6.6", "X-Real-IP": "6.6.6.6" } });
   assert.deepEqual(await res.json(), { forwarded: "127.0.0.1", real: "127.0.0.1" });
+});
+
+test("已登录访客跳过登录页，跳转限制在后台且不会回到登录页自身", async () => {
+  const targets = [
+    ["/admin/model-stats?range=7d", "/admin/model-stats?range=7d"],
+    ["javascript:alert(1)", "/admin"], ["//evil.example/admin", "/admin"],
+    ["https://evil.example/admin", "/admin"], ["/administrator", "/admin"],
+    ["/admin/../outside", "/admin"], ["/admin/login", "/admin"],
+    ["/admin/login?return=/admin/login", "/admin"],
+  ];
+  for (const [target, location] of targets) {
+    const response = await fetch(`${origin}/admin/login?return=${encodeURIComponent(target!)}`, {
+      headers: { cookie: "aihot_admin=fixture" }, redirect: "manual",
+    });
+    assert.equal(response.status, 302, target);
+    assert.equal(response.headers.get("location"), location, target);
+    assert.equal(response.headers.get("cache-control"), "private, no-store");
+    await response.text();
+  }
+  const anonymous = await fetch(`${origin}/admin/login?return=/admin/model-stats`, { redirect: "manual" });
+  assert.equal(anonymous.status, 200);
+  assert.match(await anonymous.text(), /管理员密码/);
 });
 
 // 主题目录与详情沿用API的绝对截止，HTML和导航数据不额外延长窗口。

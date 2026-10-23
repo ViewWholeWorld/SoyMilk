@@ -9,7 +9,8 @@
 import { sql, type Db } from "../db.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
 import { shutdownSignal } from "../lib/shutdown.ts";
-import { estimateModelCost, pricingSnapshotFor, type BillingContext, type PricingSnapshot } from "./model-pricing.ts";
+import type { BillingContext } from "./model-billing.ts";
+import { normalizeModelUsage } from "./model-usage.ts";
 import { bindCooldownProbe, claimProviderCooldown, ProviderCooldownError, PROVIDER_COOLDOWN_SECONDS, settleProviderCooldown, type ProviderCooldownScope } from "./provider-cooldown.ts";
 
 export class BudgetExceededError extends Error {
@@ -86,7 +87,7 @@ export interface ReceiptRequest {
   attemptTag?: string;
   /** 同一文章处理轮次的互斥路径；检查与付费占位在同一事务内完成。 */
   exclusiveWith?: Array<{ purpose: string; attemptTag: string }>;
-  /** Non-secret model ownership used for immutable cost snapshots. */
+  /** 请求发生时的模型、连接和供应商归属，不参与逻辑键计算。 */
   billingContext?: BillingContext;
   cooldown?: ProviderCooldownScope;
   /** 批次在发送前原子登记全部文章消费者。 */
@@ -319,9 +320,7 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
   }
 
   await sql.begin(async (tx) => {
-    // The claim snapshot is immutable. Reading it must not change the receipt/attempt lock order.
-    const [attempt] = req.billingContext ? await tx<{ pricing_snapshot: PricingSnapshot | null }[]>`SELECT pricing_snapshot FROM receipt_attempts WHERE id=${attemptId}` : [];
-    const estimate = req.billingContext ? estimateModelCost(attempt?.pricing_snapshot ?? null, outcome.usage) : null;
+    const usage = req.billingContext ? normalizeModelUsage(outcome.usage) : null;
     await tx`
       UPDATE receipts SET
         status = 'received',
@@ -339,9 +338,7 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
         status = 'received', request_id = ${outcome.requestId ?? null}, usage = ${outcome.usage ? tx.json(outcome.usage as never) : null},
         reported_model = ${typeof outcome.reportedModel === "string" ? outcome.reportedModel : outcome.response && typeof outcome.response === "object" && typeof (outcome.response as Record<string, unknown>).model === "string" ? (outcome.response as Record<string, unknown>).model as string : null},
         cost = ${outcome.cost?.amount ?? null}, currency = ${outcome.cost?.currency ?? null}, cost_basis = ${outcome.cost?.basis ?? null},
-        normalized_usage = ${estimate ? tx.json(estimate.normalized as never) : null},
-        estimated_cost = ${estimate?.amount ?? null}, estimated_currency = ${estimate?.currency ?? null},
-        estimate_status = ${estimate?.status ?? null}, estimate_detail = ${estimate ? tx.json(estimate.detail as never) : null},
+        normalized_usage = ${usage ? tx.json(usage as never) : null},
         latency_ms = ${Date.now() - started}, finished_at = now()
       WHERE id = ${attemptId}`;
     await settleProviderCooldown(tx, cooldown, "success");
@@ -368,19 +365,18 @@ export async function consumersForRelease(db: Db, id: number): Promise<{ purpose
 }
 
 async function startAttempt(tx: Db, receiptId: number, attempt: number, req: ReceiptRequest): Promise<number> {
-  // 非模型服务也冻结拒绝身份；保持完整 unpriced 形状，不为其生成模型费用估算。
-  const unpriced: PricingSnapshot | null = req.cooldown ? {
-    configured: false, providerKey: req.cooldown.providerKey, providerLabel: req.service, billingKind: "api", requestedModel: req.model ?? "-",
-    supplierId: req.cooldown.supplierId, mode: null, revision: null, referenceProviderId: null, referenceModelId: null,
-    source: "unpriced", sourceUpdatedAt: null, priceHash: null, stale: false, supported: false, calculatorVersion: "v1",
-    currency: "USD", inputPerMtok: null, outputPerMtok: null, cacheReadPerMtok: null, cacheWritePerMtok: null,
-  } : null;
-  const basePricing = req.billingContext ? { ...await pricingSnapshotFor(tx, req.billingContext), supplierId: req.billingContext.supplierId ?? null } : unpriced;
-  const pricing = basePricing ? { ...basePricing, ...(req.cooldown ? { providerScope: req.cooldown } : {}) } : null;
+  // 沿用历史 JSON 列保存最小归属及冷却证据；显式 supplierId:null 不能被旧订阅归属推断覆盖。
+  // 旧价格快照保留在原行，新请求不再查询价格规则或生成金额。
+  const ownership = req.billingContext ? {
+    providerKey: req.billingContext.providerKey, providerLabel: req.billingContext.providerLabel,
+    billingKind: req.billingContext.billingKind, requestedModel: req.billingContext.requestedModel,
+    supplierId: req.billingContext.supplierId ?? null,
+  } : req.cooldown ? { supplierId: req.cooldown.supplierId } : null;
+  const snapshot = ownership ? { ...ownership, ...(req.cooldown ? { providerScope: req.cooldown } : {}) } : null;
   const [row] = await tx<{ id: number }[]>`
     INSERT INTO receipt_attempts (receipt_id, attempt, service, model, provider_key, provider_label_snapshot, billing_kind, requested_model, pricing_snapshot, supplier_id, status)
     VALUES (${receiptId}, ${attempt}, ${req.service}, ${req.model ?? null}, ${req.billingContext?.providerKey ?? null}, ${req.billingContext?.providerLabel ?? null},
-            ${req.billingContext?.billingKind ?? null}, ${req.billingContext?.requestedModel ?? null}, ${pricing ? tx.json(pricing as never) : null}, ${req.billingContext?.supplierId ?? null}, 'pending')
+            ${req.billingContext?.billingKind ?? null}, ${req.billingContext?.requestedModel ?? null}, ${snapshot ? tx.json(snapshot as never) : null}, ${req.billingContext?.supplierId ?? null}, 'pending')
     RETURNING id`;
   return row!.id;
 }

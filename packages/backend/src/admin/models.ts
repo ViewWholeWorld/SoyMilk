@@ -1,9 +1,5 @@
-// Admin "模型与评测": the model each capability uses and where that choice comes from,
-// the prompt versions in use, quality / latency / cost of the last days per model, the switch history
-// and the SelectBench runs that compare models on the same batch. A switch is audited and applies to
-// new work only.
-import type { AdminModelAssignments, AdminModels, AdminTokenSummary, BeforeJson, ModelBillingKind, ModelEstimateStatus } from "@aihot/contracts/admin";
-import { ACTUAL_CURRENCY, MODEL_COST_FIELDS } from "./model-costs.ts";
+// 管理各能力的模型、用量与延迟，并保留切换审计和同批材料的 SelectBench 结果。
+import type { AdminModelAssignments, AdminModels, AdminTokenSummary, BeforeJson, ModelBillingKind } from "@aihot/contracts/admin";
 import { sql } from "../db.ts";
 import { CAPABILITIES, invalidateModelCache, modelSources, type Capability, type CapabilityKey } from "../editorial/models.ts";
 import { registeredModels } from "../providers/llm.ts";
@@ -27,18 +23,9 @@ interface UsageRow {
   tokens_cache_measured: string | null;
   cache_reported_calls: number;
   tokens_reasoning: string | null;
-  actual_cost: string | null;
-  actual_currency: string | null;
   provider_key: string | null;
   requested_model: string | null;
   billing_kind: ModelBillingKind | null;
-  estimated_total: string | null;
-  complete_estimate: string | null;
-  approximate_estimate: string | null;
-  partial_estimate: string | null;
-  partial_calls: number;
-  unknown_calls: number;
-  estimated_currency: string | null;
 }
 
 // Legacy usage was not normalized; malformed values must not make the admin page fail.
@@ -87,11 +74,11 @@ export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>>
              sum(${input}) FILTER(WHERE c.cached IS NOT NULL) AS tokens_cache_measured,
              count(*) FILTER(WHERE c.cached IS NOT NULL)::int AS cache_reported_calls,
              sum(${reasoning}) AS tokens_reasoning,
-             ${MODEL_COST_FIELDS},a.provider_key,a.requested_model,a.billing_kind
+             a.provider_key,a.requested_model,a.billing_kind
       FROM receipt_attempts a JOIN receipts r ON r.id = a.receipt_id
       CROSS JOIN LATERAL (SELECT ${cachedInput} AS cached) c
       WHERE a.started_at >= ${since} AND a.origin = 'live' AND a.model IS NOT NULL
-      GROUP BY 1, 2, 3, a.provider_key, a.requested_model, a.billing_kind, ${ACTUAL_CURRENCY}, a.estimated_currency ORDER BY 1, 4 DESC`,
+      GROUP BY 1, 2, 3, a.provider_key, a.requested_model, a.billing_kind ORDER BY 1, 4 DESC`,
     sql<BeforeJson<AdminModels["history"][number]>[]>`
       SELECT created_at AS at, actor, subject, reason, before, after FROM audit_log WHERE action = 'models.switch' ORDER BY created_at DESC LIMIT 30`,
     sql<{ id: string; label: string; sample_size: number; prompt_version: string | null; models: string[]; summary: unknown; created_at: Date }[]>`
@@ -127,16 +114,6 @@ export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>>
         cacheReportedCalls: u.cache_reported_calls,
         cacheHitRate: Number(u.tokens_cache_measured ?? 0) > 0 ? Number(u.tokens_cached)/Number(u.tokens_cache_measured) : null,
         reasoningTokensOut: u.tokens_reasoning === null ? null : Number(u.tokens_reasoning),
-        actualCost: u.actual_cost,
-        currency: u.actual_currency,
-        estimate: u.complete_estimate === null && u.approximate_estimate === null ? null : { amount: u.estimated_total!, currency: u.estimated_currency ?? "USD" },
-        estimateStatus: (u.approximate_estimate !== null ? "approximate" : u.complete_estimate !== null ? "complete" : u.partial_calls > 0 ? "partial" : u.unknown_calls > 0 ? "unpriced" : null) as ModelEstimateStatus | null,
-        estimateComplete: u.complete_estimate,
-        estimateApproximate: u.approximate_estimate,
-        estimatePartial: u.partial_estimate,
-        estimatedCurrency: u.estimated_currency,
-        partialCalls: u.partial_calls,
-        unknownCalls: u.unknown_calls,
         providerKey: u.provider_key,
         requestedModel: u.requested_model,
         billingKind: u.billing_kind,

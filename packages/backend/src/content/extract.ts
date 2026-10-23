@@ -22,6 +22,20 @@ export interface ExtractedBody {
 
 const MIN_BODY_CHARS = 200;
 
+// 只匹配独立路径段，避免误伤 /auth-for-agents 等正常文章地址。
+const AUTH_PATH = /(?:^|\/)(?:login|log-in|signin|sign-in|register|signup|sign-up|authorize|oauth2?|sso|auth)(?:\/|$)/i;
+
+export function isSignInUrl(url: string): boolean {
+  try { return AUTH_PATH.test(new URL(url).pathname); }
+  catch { return false; }
+}
+
+/** 只按重定向地址识别登录页；讨论登录的正文和原地址补尾斜杠仍可提取。 */
+export function isSignInRedirect(asked: string, landed: string): boolean {
+  try { return !AUTH_PATH.test(new URL(asked).pathname) && AUTH_PATH.test(new URL(landed).pathname); }
+  catch { return false; }
+}
+
 export function readable(html: string, url: string): ExtractedBody | null {
   let document: ReturnType<typeof contentDocument>;
   try { document = contentDocument(html); }
@@ -66,6 +80,8 @@ export async function extractFromUrl(url: string, opts: { allowJina: boolean; su
   shutdownSignal.signal.throwIfAborted();
   try {
     const res = await guardedFetch(url, { timeoutMs: 20_000, maxBytes: 6 * 1024 * 1024 });
+    // 已确认跳到登录页时停止；付费阅读后备也不能把登录表单当成正文。
+    if (isSignInRedirect(url, res.url)) return null;
     const type = res.headers.get("content-type") ?? "";
     if (res.status === 200 && /html/.test(type)) {
       const got = readable(res.text(), res.url);

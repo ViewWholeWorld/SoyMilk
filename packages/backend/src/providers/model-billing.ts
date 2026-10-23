@@ -1,7 +1,16 @@
 import { credential } from "../config.ts";
 import type { ModelSpec } from "./llm.ts";
-import type { BillingContext } from "./model-pricing.ts";
 import { officialModelProvider, officialSupplierId } from "./model-supplier.ts";
+
+/** 请求归属信息保持原有字段，避免价格功能移除影响回执身份与历史统计。 */
+export interface BillingContext {
+  providerKey: string;
+  providerLabel: string | null;
+  billingKind: "api" | "subscription_equivalent";
+  requestedModel: string;
+  officialProviderId?: string | null;
+  supplierId?: string | null;
+}
 
 export function modelBillingContext(spec: ModelSpec, mode = spec.connection?.type ?? (spec.key === "default" ? process.env.LLM_AUTH_MODE ?? "api-key" : "api-key"), endpoint?: string | null): BillingContext {
   const subscription = mode === "codex" || mode === "chatgpt";
