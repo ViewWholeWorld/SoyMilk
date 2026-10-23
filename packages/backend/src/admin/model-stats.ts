@@ -2,12 +2,11 @@ import { z } from "zod";
 import type postgres from "postgres";
 import type { AdminModelStats, AdminModelStatsOptions, AdminUsageMetrics, BeforeJson } from "@aihot/contracts/admin";
 import { sql } from "../db.ts";
-import { bootstrapBudgetStatus } from "../operations/bootstrap-budget.ts";
 import { listModelSuppliers } from "./model-suppliers.ts";
 
 const optional = z.string().trim().max(200).optional().transform(value => value || undefined);
 export const ModelStatsFilters = z.object({
-  days: z.coerce.number().int().min(1).max(90).default(7),
+  days: z.coerce.number().int().min(1).max(90).default(1),
   from: z.string().datetime({ offset: true }).optional(), to: z.string().datetime({ offset: true }).optional(),
   supplierId: optional, model: optional, providerKey: optional, purpose: optional, service: optional,
   page: z.coerce.number().int().min(1).max(100000).default(1),
@@ -25,8 +24,10 @@ const MODEL_ATTEMPTS = sql`a.origin='live' AND (a.model IS NOT NULL OR a.request
 export function modelStatsRange(input: unknown = {}) {
   const f = ModelStatsFilters.parse(typeof input === "number" ? { days: input } : input);
   const until = new Date(f.to ?? Date.now());
-  const since = new Date(f.from ?? until.getTime() - f.days * 86400_000);
-  if (since >= until) throw Object.assign(new Error("统计开始时间必须早于结束时间"), { statusCode: 400 });
+  const beijingDay = new Date(until.getTime() + 8 * 3600_000).toISOString().slice(0, 10);
+  const since = new Date(f.from ?? Date.parse(`${beijingDay}T00:00:00+08:00`) - (f.days - 1) * 86400_000);
+  if (since > until) throw Object.assign(new Error("统计开始时间必须早于结束时间"), { statusCode: 400 });
+  if (until.getTime() - since.getTime() > 90 * 86400_000) throw Object.assign(new Error("统计范围不能超过 90 天"), { statusCode: 400 });
   // model 为空但有模型计费快照的请求仍计入；无型号的采集等付费服务不计入。
   const clauses = [sql`${MODEL_ATTEMPTS} AND a.started_at>=${since} AND a.started_at<${until}`];
   if (f.supplierId) clauses.push(f.supplierId === "__unknown" ? sql`${EFFECTIVE_SUPPLIER} IS NULL` : sql`${EFFECTIVE_SUPPLIER}=${f.supplierId}`);
@@ -56,6 +57,7 @@ const rawReasoning = raw("reasoningOutput", sql`coalesce(a.usage->'completion_to
 export function modelUsageCte(condition: SqlFragment) {
   return sql`WITH raw_samples AS (
     SELECT ${EFFECTIVE_SUPPLIER} AS supplier_id,coalesce(a.requested_model,a.model) AS requested_model,
+      (a.started_at AT TIME ZONE 'Asia/Shanghai')::date::text AS day,
       a.status,a.latency_ms,a.finished_at,${rawInput} AS raw_input,${rawOutput} AS raw_output,
       ${rawRead} AS raw_read,${rawWrite} AS raw_write,${rawReasoning} AS raw_reasoning,
       coalesce(a.normalized_usage->>'status' IN ('invalid','unknown'),false)
@@ -72,7 +74,7 @@ export function modelUsageCte(condition: SqlFragment) {
       OR coalesce(cache_read,0)::numeric+coalesce(cache_write,0)::numeric>input
       OR reasoning>output AS bad FROM parsed
   ), samples AS (
-    SELECT supplier_id,requested_model,status,latency_ms,finished_at,
+    SELECT supplier_id,requested_model,day,status,latency_ms,finished_at,
       CASE WHEN NOT coalesce(bad,false) THEN input END AS input,
       CASE WHEN NOT coalesce(bad,false) THEN output END AS output,
       CASE WHEN NOT coalesce(bad,false) AND input IS NOT NULL AND cache_read IS NOT NULL THEN input END AS measured_input,
@@ -93,8 +95,11 @@ interface UsageAggregate {
   cache_read: string | null; measured_input: string | null; cache_calls: number;
 }
 function usageMetrics(row: UsageAggregate): AdminUsageMetrics {
+  const tokensIn = row.calls === 0 ? 0 : row.input === null ? null : Number(row.input);
+  const tokensOut = row.calls === 0 ? 0 : row.output === null ? null : Number(row.output);
   return { calls: row.calls, successRate: row.calls ? row.received / row.calls : null, p50: row.p50, p95: row.p95,
-    tokensIn: row.input === null ? null : Number(row.input), tokensOut: row.output === null ? null : Number(row.output),
+    tokensIn, tokensOut, tokensTotal: tokensIn === null && tokensOut === null ? null : (tokensIn ?? 0) + (tokensOut ?? 0),
+    totalPartial: (row.input_calls > 0 || row.output_calls > 0) && (row.input_calls < row.calls || row.output_calls < row.calls),
     inputPartial: row.input_calls > 0 && row.input_calls < row.calls, outputPartial: row.output_calls > 0 && row.output_calls < row.calls,
     cacheHitRate: Number(row.measured_input) > 0 ? Number(row.cache_read) / Number(row.measured_input) : null,
     cachePartial: row.cache_calls > 0 && row.cache_calls < row.calls };
@@ -103,28 +108,46 @@ function usageMetrics(row: UsageAggregate): AdminUsageMetrics {
 export async function modelStats(input: unknown = {}): Promise<BeforeJson<AdminModelStats>> {
   const { f, since, until, condition } = modelStatsRange(input);
   const cte = modelUsageCte(condition);
-  const [rows, summary, count] = await Promise.all([
-    sql<(UsageAggregate & { supplier_id: string | null; supplier_name: string | null; requested_model: string | null })[]>`${cte}
-      SELECT s.supplier_id,max(p.name) AS supplier_name,s.requested_model,${usageFields}
-      FROM samples s LEFT JOIN model_suppliers p ON p.id=s.supplier_id GROUP BY s.supplier_id,s.requested_model
-      ORDER BY calls DESC,s.supplier_id NULLS LAST,s.requested_model NULLS LAST LIMIT ${f.limit} OFFSET ${(f.page-1)*f.limit}`,
-    sql<UsageAggregate[]>`${cte} SELECT ${usageFields} FROM samples`,
-    sql<{ n: number }[]>`${cte} SELECT count(*)::int AS n FROM (SELECT 1 FROM samples GROUP BY supplier_id,requested_model) groups`,
-  ]);
-  return { from: since, to: until, page: f.page, limit: f.limit, total: count[0]!.n, summary: usageMetrics(summary[0]!),
-    rows: rows.map(row => ({ supplierId: row.supplier_id, supplierName: row.supplier_name, requestedModel: row.requested_model, ...usageMetrics(row) })) };
+  // 一次扫描同时产生汇总、模型和每日分组。仅本事务关闭并行查询，避免小内存 NAS 的共享内存耗尽。
+  const aggregates = await sql.begin(async tx => {
+    await tx`SET TRANSACTION READ ONLY`;
+    await tx`SET LOCAL max_parallel_workers_per_gather=0`;
+    return tx<(UsageAggregate & { supplier_id: string | null; requested_model: string | null; day: string | null; grouping: number })[]>`${cte}
+      SELECT supplier_id,requested_model,day,GROUPING(supplier_id,requested_model,day)::int AS grouping,${usageFields}
+      FROM samples GROUP BY GROUPING SETS ((supplier_id,requested_model),(day),())
+      ORDER BY calls DESC,supplier_id NULLS LAST,requested_model NULLS LAST`;
+  });
+  const suppliers = new Map((await listModelSuppliers()).map(row => [row.id, row.name]));
+  const groups = aggregates.filter(row => row.grouping === 1);
+  const days = new Map(aggregates.filter(row => row.grouping === 6).map(row => [row.day!, usageMetrics(row)]));
+  const daily: AdminModelStats["daily"] = [];
+  const startDay = new Date(since.getTime() + 8 * 3600_000).toISOString().slice(0, 10);
+  for (let at = Date.parse(`${startDay}T00:00:00+08:00`); at < until.getTime(); at += 86400_000) {
+    const date = new Date(at + 8 * 3600_000).toISOString().slice(0, 10);
+    daily.push({ date, ...(days.get(date) ?? { calls: 0, successRate: null, p50: null, p95: null,
+      tokensIn: 0, tokensOut: 0, tokensTotal: 0, inputPartial: false, outputPartial: false, totalPartial: false,
+      cacheHitRate: null, cachePartial: false }) });
+  }
+  return { from: since, to: until, page: f.page, limit: f.limit, total: groups.length,
+    summary: usageMetrics(aggregates.find(row => row.grouping === 7)!), daily,
+    rows: groups.slice((f.page - 1) * f.limit, f.page * f.limit).map(row => ({ supplierId: row.supplier_id,
+      supplierName: suppliers.get(row.supplier_id!) ?? null, requestedModel: row.requested_model, ...usageMetrics(row) })) };
 }
 
 export async function modelStatsOptions(): Promise<AdminModelStatsOptions> {
-  const [suppliers, connections, purposes, bootstrap] = await Promise.all([
+  const [suppliers, options] = await Promise.all([
     listModelSuppliers(),
-    sql<{ id: string; name: string }[]>`SELECT a.provider_key AS id,coalesce(max(a.provider_label_snapshot),a.provider_key) AS name
-      FROM receipt_attempts a JOIN receipts r ON r.id=a.receipt_id WHERE ${MODEL_ATTEMPTS} AND a.provider_key IS NOT NULL GROUP BY a.provider_key ORDER BY name,id`,
-    sql<{ purpose: string }[]>`SELECT DISTINCT r.purpose FROM receipts r JOIN receipt_attempts a ON a.receipt_id=r.id
-      WHERE ${MODEL_ATTEMPTS} ORDER BY r.purpose`,
-    bootstrapBudgetStatus(),
+    sql.begin(async tx => {
+      await tx`SET TRANSACTION READ ONLY`;
+      await tx`SET LOCAL max_parallel_workers_per_gather=0`;
+      return tx<{ id: string | null; name: string | null; purpose: string; model: string | null }[]>`
+        SELECT a.provider_key AS id,max(a.provider_label_snapshot) AS name,r.purpose,coalesce(a.requested_model,a.model) AS model
+        FROM receipt_attempts a JOIN receipts r ON r.id=a.receipt_id WHERE ${MODEL_ATTEMPTS}
+        GROUP BY a.provider_key,r.purpose,coalesce(a.requested_model,a.model) ORDER BY id,purpose,model`;
+    }),
   ]);
-  return { suppliers, connections, purposes: purposes.map(row => row.purpose),
-    bootstrap: bootstrap && (bootstrap.status === "active" || bootstrap.failed > 0 || bootstrap.missing > 0 || bootstrap.status === "superseded"
-      || (bootstrap.status === "expired" && (bootstrap.pending > 0 || bootstrap.pendingEvents > 0))) ? bootstrap : null };
+  const connections = new Map<string, string>();
+  for (const row of options) if (row.id) connections.set(row.id, row.name ?? connections.get(row.id) ?? row.id);
+  return { suppliers, connections: [...connections].map(([id, name]) => ({ id, name })).sort((a,b) => a.name.localeCompare(b.name)),
+    purposes: [...new Set(options.map(row => row.purpose))].sort(), models: [...new Set(options.flatMap(row => row.model ? [row.model] : []))].sort() };
 }

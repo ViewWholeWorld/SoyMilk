@@ -32,10 +32,10 @@ export const publicReads: ReadCase[] = [
 ];
 
 export const adminReads = [
-  "me", "model-config", "model-assignments", "model-suppliers", "model-stats", "model-stats/options", "model-attempts",
+  "me", "model-config", "model-assignments", "model-suppliers", "model-stats", "model-stats/options",
   "model-config/codex", "model-config/codex/login/:id", "sources", "sources/:id", "content", "content/:id",
-  "runs", "settings", "models", "model-pricing", "model-price-catalog",
-  "model-costs", "model-cost-backfills", "model-cost-backfills/:id", "selectbench", "selectbench/:id", "nav-counts", "audit",
+  "runs", "settings", "models",
+  "selectbench", "selectbench/:id", "nav-counts", "audit",
 ];
 export const adminWrites: [string, string][] = [
   ["POST", "model-suppliers"], ["POST", "model-config/connections"], ["POST", "model-config/active"],
@@ -49,8 +49,6 @@ export const adminWrites: [string, string][] = [
   ["POST", "processing/requeue"],
   ["POST", "followups/:key/dismiss"], ["POST", "followups/:key/restore"],
   ["PUT", "budgets/:service"], ["POST", "models/:capability"],
-  ["PUT", "model-pricing"], ["POST", "model-pricing/restore"], ["POST", "model-price-catalog/sync"],
-  ["POST", "model-cost-backfills/preview"], ["POST", "model-cost-backfills"], ["POST", "model-cost-backfills/:id/resume"],
   ["POST", "selectbench/import"],
 ];
 export const fallbackRoutes = ["/api/v1", "/api/v1/*", "/api/public/*"];

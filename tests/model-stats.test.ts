@@ -2,8 +2,7 @@ import { tag } from "./setup.ts";
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { sql, closeDb } from "@aihot/backend/db";
-import { modelStats } from "@aihot/backend/admin/model-stats";
-import { modelAttempts, modelCosts } from "@aihot/backend/admin/model-costs";
+import { modelStats, modelStatsRange, modelStatsOptions } from "@aihot/backend/admin/model-stats";
 import { createModelSupplier } from "@aihot/backend/admin/model-suppliers";
 import { normalizeModelUsage } from "@aihot/backend/providers/model-usage";
 
@@ -48,11 +47,12 @@ test("相同供应商型号跨连接、用途和提示版本聚合，指标从�
   assert.equal(row.calls, 3); assert.equal(row.successRate, 2 / 3);
   assert.equal(row.p50, 200); assert.equal(row.p95, 1000);
   assert.equal(row.tokensIn, 1000); assert.equal(row.tokensOut, 60);
+  assert.equal(row.tokensTotal, 1060); assert.equal(row.totalPartial, true);
   assert.equal(row.inputPartial, true); assert.equal(row.outputPartial, false);
   assert.equal(row.cacheHitRate, .17); assert.equal(row.cachePartial, true);
   const filtered = await modelStats({ service: T, supplierId: supplierA.id, model: "shared-model", purpose: "group_signal", providerKey: "connection:two" });
   assert.equal(filtered.summary.calls, 1); assert.equal(filtered.rows[0]!.cacheHitRate, null);
-  assert.equal((await modelCosts({ service: T, supplierId: supplierA.id, model: "shared-model", showUnknown: "true" })).rows[0]!.calls, 3);
+  assert.equal((await modelStats({ service: T, supplierId: supplierA.id, model: "shared-model" })).rows[0]!.calls, 3);
 });
 
 test("未知、部分数据与明确零值不同，非法用量和未完成耗时不参与计算", async () => {
@@ -65,9 +65,62 @@ test("未知、部分数据与明确零值不同，非法用量和未完成耗�
   await seed(purpose, { usage: { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0 }, status: "pending", finished: false, latency: 100 });
   const result = await modelStats({ service: T, purpose });
   assert.equal(result.summary.calls, 7); assert.equal(result.summary.tokensIn, 0); assert.equal(result.summary.tokensOut, 0);
+  assert.equal(result.summary.tokensTotal, 0); assert.equal(result.summary.totalPartial, true);
   assert.equal(result.summary.cacheHitRate, null); assert.equal(result.summary.inputPartial, true); assert.equal(result.summary.p50, null);
   const zero = await modelStats({ service: T, model: "missing-model" });
-  assert.equal(zero.summary.calls, 0); assert.equal(zero.summary.successRate, null); assert.equal(zero.summary.tokensIn, null);
+  assert.equal(zero.summary.calls, 0); assert.equal(zero.summary.successRate, null); assert.equal(zero.summary.tokensIn, 0);
+  assert.equal(zero.summary.tokensOut, 0); assert.equal(zero.summary.tokensTotal, 0); assert.equal(zero.summary.totalPartial, false);
+});
+
+test("仅输入、仅输出、全部未知和显式零值的总 token 具有不同覆盖含义", async () => {
+  for (const [purpose, usage, input, output, total, partial] of [
+    ["only-input", { input_tokens: 12 }, 12, null, 12, true],
+    ["only-output", { output_tokens: 4 }, null, 4, 4, true],
+    ["all-unknown", null, null, null, null, false],
+    ["explicit-zero", { input_tokens: 0, output_tokens: 0 }, 0, 0, 0, false],
+  ] as const) {
+    await seed(purpose, { usage });
+    const result = await modelStats({ service: T, purpose });
+    for (const row of [result.summary, result.rows[0]!, result.daily.find(day => day.calls)!]) {
+      assert.equal(row.tokensIn, input); assert.equal(row.tokensOut, output);
+      assert.equal(row.tokensTotal, total); assert.equal(row.totalPartial, partial);
+    }
+  }
+});
+
+test("今天、七天和三十天从北京时间自然日开始，精确午夜允许空窗口", async () => {
+  const purpose = "preset-days", to = "2026-10-23T10:00:00.000Z";
+  for (const time of ["2026-09-23T15:59:59.999Z", "2026-09-23T16:00:00.000Z", "2026-10-16T15:59:59.999Z",
+    "2026-10-16T16:00:00.000Z", "2026-10-22T15:59:59.999Z", "2026-10-22T16:00:00.000Z", to]) {
+    await seed(purpose, { time, usage: { input_tokens: 2, output_tokens: 1 } });
+  }
+  for (const [days, from, calls] of [[1, "2026-10-22T16:00:00.000Z", 1], [7, "2026-10-16T16:00:00.000Z", 3], [30, "2026-09-23T16:00:00.000Z", 5]] as const) {
+    assert.equal(modelStatsRange({ days, to }).since.toISOString(), from);
+    const result = await modelStats({ service: T, purpose, days, to });
+    assert.equal(new Date(result.from).toISOString(), from); assert.equal(new Date(result.to).toISOString(), to);
+    assert.equal(result.summary.calls, calls); assert.equal(result.summary.tokensTotal, calls * 3);
+    assert.equal(result.daily.length, days); assert.equal(result.daily.at(-1)!.date, "2026-10-23");
+    assert.equal(result.daily.reduce((total, row) => total + row.calls, 0), calls);
+  }
+  assert.equal(modelStatsRange({ to }).since.toISOString(), "2026-10-22T16:00:00.000Z");
+  const midnight = await modelStats({ service: T, purpose, to: "2026-10-22T16:00:00.000Z" });
+  assert.equal(midnight.summary.calls, 0); assert.equal(new Date(midnight.from).getTime(), new Date(midnight.to).getTime());
+  assert.equal(midnight.summary.tokensIn, 0); assert.equal(midnight.summary.tokensOut, 0); assert.equal(midnight.summary.tokensTotal, 0);
+  assert.deepEqual(midnight.daily, []);
+  await assert.rejects(modelStats({ from: "2026-01-01T00:00:00Z", to }), /90 天/);
+});
+
+test("每日统计按北京时间跨日，范围内无请求日补零但缺失用量日保持未知", async () => {
+  const purpose = "daily", from = "2026-10-01T16:00:00.000Z", to = "2026-10-05T16:00:00.000Z";
+  await seed(purpose, { time: "2026-10-02T15:59:59.999Z", usage: { input_tokens: 10, output_tokens: 2 } });
+  await seed(purpose, { time: "2026-10-02T16:00:00.000Z", usage: { input_tokens: 3 } });
+  await seed(purpose, { time: "2026-10-04T16:00:00.000Z" });
+  const result = await modelStats({ service: T, purpose, from, to });
+  assert.deepEqual(result.daily.map(row => [row.date, row.calls, row.tokensIn, row.tokensOut, row.tokensTotal, row.totalPartial]), [
+    ["2026-10-02", 1, 10, 2, 12, false], ["2026-10-03", 1, 3, null, 3, true],
+    ["2026-10-04", 0, 0, 0, 0, false], ["2026-10-05", 1, null, null, null, false],
+  ]);
+  assert.equal(result.summary.calls, 3); assert.equal(result.summary.tokensTotal, 15); assert.equal(result.summary.totalPartial, true);
 });
 
 test("SQL 用量校验与规范化后的记录一致，缓存缺失不当作未命中", async () => {
@@ -86,63 +139,6 @@ test("SQL 用量校验与规范化后的记录一致，缓存缺失不当作未�
   assert.equal(raw.tokensIn, 120); assert.equal(raw.tokensOut, 9);
 });
 
-test("费用每次只取一个有效金额，部分估算保持未知，币种与计费类别在同一行分项", async () => {
-  const purpose = "costs", a = { supplierId: supplierA.id, purpose };
-  await seed(purpose, { ...a, cost: "0", currency: "USD", estimate: "99", estimateStatus: "complete" });
-  await seed(purpose, { ...a, estimate: "1", estimateStatus: "complete" });
-  await seed(purpose, { ...a, estimate: "0.2", estimateStatus: "partial" });
-  await seed(purpose, { ...a, estimateStatus: "missing_usage" });
-  await seed(purpose, { ...a, estimate: "2", estimateStatus: "approximate", estimateCurrency: "CNY", billingKind: "subscription_equivalent" });
-  await seed(purpose, { ...a, cost: "3", currency: "EUR", billingKind: null });
-  await seed(purpose, { supplierId: supplierB.id, purpose });
-  const result = await modelCosts({ service: T, purpose });
-  assert.equal(result.rows.length, 1); assert.equal(result.rows[0]!.calls, 6);
-  assert.deepEqual(result.summary, { calls: 7, knownCalls: 4, unknownCalls: 3 });
-  assert.deepEqual(result.hidden, { groups: 1, calls: 1 });
-  assert.deepEqual(result.totals.map(a => [a.billingKind, a.currency, Number(a.amount)]), [["api", "USD", 1], ["subscription_equivalent", "CNY", 2], [null, "EUR", 3]]);
-  assert.equal(result.rows[0]!.unknownCalls, 2); assert.deepEqual(result.rows[0]!.amounts, Array.from(result.totals));
-  const detail = await modelAttempts({ service: T, purpose, status: "partial" });
-  assert.equal(Number(detail.rows[0]!.estimatedCost), .2);
-  const visible = await modelCosts({ service: T, purpose, showUnknown: "true", limit: 1, page: 2 });
-  assert.equal(visible.total, 2); assert.equal(visible.rows[0]!.supplierId, supplierB.id);
-  assert.deepEqual(visible.summary, result.summary); assert.deepEqual(visible.totals, result.totals);
-});
-
-test("全未知费用不返回零总额，有效零金额正常可见，非法金额不混入合计", async () => {
-  const purpose = "invalid-costs";
-  for (const cost of ["-1", "NaN"]) await seed(purpose, { cost, currency: "USD" });
-  await seed(purpose, { cost: "5", currency: "" });
-  await seed(purpose, { estimate: "NaN", estimateStatus: "complete" });
-  const unknown = await modelCosts({ service: T, purpose });
-  assert.deepEqual(unknown.summary, { calls: 4, knownCalls: 0, unknownCalls: 4 });
-  assert.deepEqual(Array.from(unknown.totals), []); assert.deepEqual(unknown.rows, []); assert.equal(unknown.hidden.calls, 4);
-  await seed(purpose, { supplierId: supplierA.id, cost: "0", currency: "USD" });
-  const zero = await modelCosts({ service: T, purpose });
-  assert.equal(zero.rows.length, 1); assert.equal(Number(zero.totals[0]!.amount), 0);
-});
-
-test("请求明细按实际或原始估算币种筛选，部分估算不进入参考合计", async () => {
-  const purpose = "detail-currency";
-  await seed(purpose, { estimate: "0.2", estimateStatus: "partial" });
-  await seed(purpose, { estimate: "0.3", estimateStatus: "partial", estimateCurrency: "CNY" });
-  await seed(purpose, { cost: "1", currency: "USD", estimate: "2", estimateStatus: "complete", estimateCurrency: "CNY" });
-  await seed(purpose, { cost: "-1", currency: "CNY", estimate: "0.4", estimateStatus: "partial" });
-  await seed(purpose, { estimateStatus: "missing_usage" });
-  const filters = { service: T, purpose, status: "partial", currency: "USD", limit: 1 };
-  const first = await modelAttempts(filters), second = await modelAttempts({ ...filters, page: 2 });
-  assert.equal(first.total, 2); assert.equal(second.total, 2);
-  assert.equal(first.rows.length, 1); assert.equal(second.rows.length, 1);
-  assert.notEqual(first.rows[0]!.id, second.rows[0]!.id);
-  assert.ok([...first.rows, ...second.rows].every(row => row.estimatedCurrency === "USD" && row.actualCost === null));
-  assert.equal((await modelAttempts({ ...filters, currency: "CNY" })).total, 1);
-  assert.equal((await modelAttempts({ ...filters, status: "actual" })).total, 1);
-  assert.equal((await modelAttempts({ ...filters, status: "actual", currency: "CNY" })).total, 0);
-  assert.equal((await modelAttempts({ ...filters, status: "missing_usage" })).total, 1);
-  const costs = await modelCosts({ service: T, purpose });
-  assert.deepEqual(costs.summary, { calls: 5, knownCalls: 1, unknownCalls: 4 });
-  assert.deepEqual(costs.totals.map(row => [row.currency, Number(row.amount)]), [["USD", 1]]);
-});
-
 test("历史固定订阅标识可识别，其他缺失归属和显式空归属保持未知", async () => {
   const purpose = "legacy";
   await seed(purpose, { providerKey: "subscription:codex" });
@@ -152,24 +148,25 @@ test("历史固定订阅标识可识别，其他缺失归属和显式空归属�
   const result = await modelStats({ service: T, purpose });
   assert.equal(result.total, 2); assert.equal(result.rows.find(r => r.supplierId === "openai")!.calls, 2);
   assert.equal(result.rows.find(r => r.supplierId === null)!.calls, 2);
-  assert.equal((await modelAttempts({ service: T, purpose, supplierId: "__unknown" })).total, 2);
+  assert.equal((await modelStats({ service: T, purpose, supplierId: "__unknown" })).summary.calls, 2);
 });
 
-test("调用、费用和明细共用开始包含结束排除边界，排除导入、回放、评测和非模型请求", async () => {
+test("调用使用开始包含结束排除边界，排除导入、回放、评测和非模型请求", async () => {
   const purpose = "range", time = "2026-10-02T00:00:00Z";
-  await seed(purpose, { time, cost: "1", currency: "USD" });
-  await seed(purpose, { time: "2026-10-01T23:59:59.999Z" });
-  await seed(purpose, { time: "2026-10-03T00:00:00Z" });
-  await seed(purpose, { time, origin: "imported" });
-  await seed(purpose, { time, origin: "replay" });
-  await seed("selectbench_score", { time });
-  await seed(purpose, { time, model: null, billingKind: null });
-  const f = { service: T, from: time, to: "2026-10-03T00:00:00Z" };
+  // 独立连接隔离本组时间夹具，同时仍让评测和非模型样本进入排除条件的验证范围。
+  const providerKey = `connection:${T}-boundary`;
+  const boundary = (sample: Sample) => seed(purpose, { providerKey, ...sample });
+  await boundary({ time, cost: "1", currency: "USD" });
+  await boundary({ time: "2026-10-01T23:59:59.999Z" });
+  await boundary({ time: "2026-10-03T00:00:00Z" });
+  await boundary({ time, origin: "imported" });
+  await boundary({ time, origin: "replay" });
+  await boundary({ purpose: "selectbench_score", time });
+  await boundary({ time, model: null, billingKind: null });
+  const f = { service: T, providerKey, from: time, to: "2026-10-03T00:00:00Z" };
   assert.equal((await modelStats(f)).summary.calls, 1);
-  assert.equal((await modelCosts(f)).summary.calls, 1);
-  assert.equal((await modelAttempts(f)).total, 1);
   await assert.rejects(modelStats({ from: f.to, to: f.from }), /早于/);
-  await assert.rejects(modelCosts({ page: 1.5 }));
+  await assert.rejects(modelStats({ page: 1.5 }));
 });
 
 test("默认每页二十组合且同调用数稳定排序，翻页不影响完整汇总", async () => {
@@ -180,4 +177,29 @@ test("默认每页二十组合且同调用数稳定排序，翻页不影响完�
   assert.equal(first.rows.length, 20); assert.equal(second.rows.length, 3); assert.equal(first.total, 23);
   assert.equal(first.rows[0]!.requestedModel, "page-00"); assert.equal(second.rows[0]!.requestedModel, "page-20");
   assert.deepEqual(first.summary, second.summary);
+  assert.deepEqual(first.daily, second.daily);
+});
+
+test("模型候选去重排序并排除导入、回放和评测，事务本地并行设置不泄露", async () => {
+  const prefix = `${T}-option`;
+  await seed("options", { model: `${prefix}-b`, providerKey: "connection:option-b" });
+  await seed("options", { model: `${prefix}-a`, providerKey: "connection:option-a" });
+  await seed("options", { model: `${prefix}-a`, providerKey: "connection:option-b" });
+  await seed("options", { model: `${prefix}-imported`, origin: "imported" });
+  await seed("options", { model: `${prefix}-replay`, origin: "replay" });
+  await seed("selectbench_options", { model: `${prefix}-bench` });
+  // source 是连接设置的来源标记，可能随事务切换变化；比较实际生效值及新事务默认值。
+  const settings = () => sql`SELECT current_setting('max_parallel_workers_per_gather') AS parallel_workers,
+    current_setting('transaction_read_only') AS read_only,current_setting('default_transaction_read_only') AS default_read_only`;
+  const before = await settings();
+  const results = await Promise.all(Array.from({ length: 4 }, async () => {
+    const [options, stats] = await Promise.all([modelStatsOptions(), modelStats({ service: T, purpose: "options" })]);
+    assert.equal(stats.summary.calls, 3);
+    assert.deepEqual(options.models.filter(model => model.startsWith(prefix)), [`${prefix}-a`, `${prefix}-b`]);
+    return settings();
+  }));
+  for (const after of [...results, await settings()]) assert.deepEqual([...after], [...before]);
+  const nextTransaction = await sql.begin(tx => tx`SELECT current_setting('max_parallel_workers_per_gather') AS parallel_workers,
+    current_setting('transaction_read_only') AS read_only,current_setting('default_transaction_read_only') AS default_read_only`);
+  assert.deepEqual([...nextTransaction], [...before]);
 });

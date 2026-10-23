@@ -36,7 +36,10 @@ export function parseCookies(header: string | undefined): Record<string, string>
   const out: Record<string, string> = {};
   for (const part of (header ?? "").split(";")) {
     const i = part.indexOf("=");
-    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    if (i <= 0) continue;
+    // 一个无关 Cookie 编码损坏不应阻断登录；损坏的会话值也不能成为有效身份。
+    try { out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim()); }
+    catch { /* 忽略本项，继续读取其他 Cookie。 */ }
   }
   return out;
 }
@@ -45,8 +48,9 @@ export function cookie(name: string, value: string, maxAgeSeconds: number, secur
   return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secure ? "; Secure" : ""}`;
 }
 
-/** Only admin paths on this site; anything else (other hosts, protocol-relative) falls back to /admin. */
+/** 只返回本站后台路径；代理传入的 HTTP(S) 完整地址先去除来源，其他目标回到 /admin。 */
 export function safeReturn(target: string): string {
+  if (/[\\\x00-\x20\x7f]/.test(target)) return "/admin";
   let path = target;
   // A proxy's login redirect may pass the whole original URL; keep only its path and query.
   if (/^https?:\/\//i.test(path)) {
@@ -57,7 +61,13 @@ export function safeReturn(target: string): string {
       return "/admin";
     }
   }
-  return /^\/admin(\/|\?|$)/.test(path) && !path.startsWith("//") ? path : "/admin";
+  if (!path.startsWith("/") || path.startsWith("//")) return "/admin";
+  try {
+    const normalized = new URL(path, "http://admin.local");
+    if (normalized.origin !== "http://admin.local" || !/^\/admin(?:\/|$)/.test(normalized.pathname)
+      || /^\/admin\/login(?:\/|$)/.test(normalized.pathname)) return "/admin";
+    return `${normalized.pathname}${normalized.search}${normalized.hash}`;
+  } catch { return "/admin"; }
 }
 
 export class LoginRejected extends Error {}

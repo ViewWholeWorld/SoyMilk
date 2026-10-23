@@ -77,6 +77,7 @@ export function registerAdminAuth(app: FastifyInstance) {
   // The web admin sends a signed-out visitor here with ?return=; the sign-in page lives in the web app.
   app.get("/api/auth/login", async (req, reply) => {
     const returnTo = String((req.query as Record<string, string>).return ?? "/admin");
+    if (await sessionPrincipal(req.headers.cookie)) return reply.header("Cache-Control", "no-store").redirect(safeReturn(returnTo), 302);
     return reply.header("Cache-Control", "no-store").redirect(loginPage(returnTo), 302);
   });
 

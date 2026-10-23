@@ -96,10 +96,10 @@ test("review receipt guards preserve article, revision, purpose and service boun
   assert.deepEqual(next.response, { pair: "new" });
 });
 
-for (const withPricing of [false, true]) {
-test(`stale recovery waiting on a response transaction preserves its committed answer and attempt${withPricing ? " with pricing" : ""}`, async () => {
+for (const withModelContext of [false, true]) {
+test(`stale recovery waiting on a response transaction preserves its committed answer and attempt${withModelContext ? " with model context" : ""}`, async () => {
   const request = { service: "invariant-recovery-race", purpose: "invariant_test", identity: { race: tag() },
-    billingContext: withPricing ? { providerKey: "environment:default", requestedModel: "fixture-model", providerLabel: "Fixture", billingKind: "api" as const } : undefined };
+    billingContext: withModelContext ? { providerKey: "environment:default", requestedModel: "fixture-model", providerLabel: "Fixture", billingKind: "api" as const } : undefined };
   const asked = gate();
   const answer = gate();
   let sent = 0;

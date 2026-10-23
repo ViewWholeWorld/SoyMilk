@@ -1,8 +1,9 @@
 // 后台使用管理员密码登录，表单直接提交到 API。
-import { useLoaderData } from "react-router";
+import { redirect, useLoaderData } from "react-router";
 import type { Route } from "./+types/admin-login";
 import { SITE } from "@aihot/industry/site";
 import { apiGet } from "../lib/api.server";
+import { adminSignedIn } from "../lib/admin.server";
 import { Wordmark } from "../components/Logo";
 import { buttonClass } from "../components/ui/Controls";
 
@@ -15,8 +16,20 @@ const ERRORS: Record<string, string> = {
 export async function loader({ request }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const returnTo = url.searchParams.get("return") ?? "/admin";
+  const target = safeTarget(returnTo);
+  if (await adminSignedIn(request).catch(() => false)) throw redirect(target);
   const options = await apiGet<{ password: boolean }>("/api/auth/options", { signal: request.signal }).catch(() => ({ password: true }));
-  return { returnTo: returnTo.startsWith("/admin") ? returnTo : "/admin", error: url.searchParams.get("error"), ...options };
+  return { returnTo: target, error: url.searchParams.get("error"), ...options };
+}
+
+/** 跳转只接受规范化后的后台路径，并排除登录页自身，避免循环跳转。 */
+function safeTarget(value: string): string {
+  if (!/^\/admin(?:\/|\?|$)/.test(value) || /[\\\x00-\x20]/.test(value)) return "/admin";
+  try {
+    const target = new URL(value, "http://admin.local");
+    if (target.origin !== "http://admin.local" || !/^\/admin(?:\/|$)/.test(target.pathname) || /^\/admin\/login(?:\/|$)/.test(target.pathname)) return "/admin";
+    return `${target.pathname}${target.search}${target.hash}`;
+  } catch { return "/admin"; }
 }
 
 export const meta: Route.MetaFunction = () => [{ title: `登录 · ${SITE.name} 后台` }, { name: "robots", content: "noindex, nofollow" }];

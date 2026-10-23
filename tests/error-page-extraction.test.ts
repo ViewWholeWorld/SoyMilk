@@ -4,16 +4,18 @@ import http from "node:http";
 import { after, before, test } from "node:test";
 import { config } from "@aihot/backend/config";
 import { closeDb, sql } from "@aihot/backend/db";
-import { extractArticleBody, readable } from "@aihot/backend/content/extract";
+import { extractArticleBody, extractFromUrl, isSignInRedirect, isSignInUrl, readable } from "@aihot/backend/content/extract";
 import { upsertMaterial } from "@aihot/backend/content/materials";
 import { jinaRead } from "@aihot/backend/providers/jina";
-import { fetchDetail, fetchWebList } from "@aihot/backend/sources/web-list";
+import { fetchDetail, fetchWebList, fromMarkdown } from "@aihot/backend/sources/web-list";
 
 const T = tag(), sourceId = `error-page-${T}`;
 const navigation = "Tech Reviews Science Entertainment AI Policy Subscribe Contact Privacy Terms of Use. ".repeat(8);
 const prose = "A real report explains why a service returned 404 and how CAPTCHA verification affects its users. ".repeat(8);
 const challenge = "example.org Performing security verification This website uses a security service to protect against malicious bots. This page verifies you are not a bot.";
 const html = (title: string, text: string) => `<html><head><title>${title}</title><meta name="description" content="False description"></head><body><article><h1>${title}</h1><p>${text}</p><a href="/news/post">Navigation item</a></article></body></html>`;
+const signInPage = html("Sign in to Example", "Sign in to your account. Enter your email address and password to continue. ".repeat(6));
+const autofill = "A real report explains how password managers fill a sign-in form and why autofill is safer than typing. ".repeat(4);
 const readerPages: Record<string, string> = {
   missing: `Title: 404 Not Found | Example\n\nMarkdown Content:\n${navigation}`,
   status: `Title: Ordinary title\nWarning: Target URL returned error 404: Not Found\n\nMarkdown Content:\n${navigation}`,
@@ -23,8 +25,17 @@ const readerPages: Record<string, string> = {
 };
 let readerHits = 0;
 const server = http.createServer((req, res) => {
+  if (req.url === "/redirect") { res.writeHead(302, { location: "/login" }); return void res.end(); }
+  if (req.url === "/brand/register") { res.writeHead(301, { location: "/brand/register/" }); return void res.end(); }
   res.writeHead(200, { "content-type": req.url?.startsWith("/reader/") ? "text/plain" : "text/html", "x-usage-tokens": "100" });
   if (req.url?.startsWith("/reader/")) { readerHits++; return void res.end(readerPages[req.url.split("/").at(-1)!] ?? readerPages.missing); }
+  if (req.url === "/article") return void res.end(html("Password autofill in browsers", autofill));
+  if (req.url === "/login") return void res.end(signInPage);
+  if (req.url === "/brand/register/") return void res.end(html("The certified products register", prose));
+  if (req.url === "/listing") return void res.end(`<html><body>
+    <article><a href="/article">Password autofill in browsers</a></article>
+    <nav><a href="/login">Log in</a><a href="/signup">Sign up</a></nav>
+  </body></html>`);
   res.end(html("404 Not Found | Example", navigation));
 });
 await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -72,4 +83,32 @@ test("原生错误页不能提供列表条目或详情元数据", async () => {
   const source = { id: sourceId, config: { url: `${base}/missing`, parseMode: "html", itemSelector: "article", titleSelector: "h1", detail: { titleSelector: "h1", summarySelector: 'meta[name="description"]' } } } as never;
   await assert.rejects(fetchWebList(source), /unavailable page/i);
   await assert.rejects(fetchDetail(`${base}/missing`, source, { title: true, date: true, summary: true, body: true }), /unavailable page/i);
+});
+
+test("登录跳转不成为正文且不触发付费后备，正常登录主题文章和尾斜杠规范化仍可提取", async () => {
+  assert.ok(readable(signInPage, `${base}/login`), "夹具登录表单本身足够长，原正文检查会误收");
+  const hits = readerHits;
+  assert.equal(await extractFromUrl(`${base}/redirect`, { subject: `article:${T}:signin`, allowJina: true }), null);
+  assert.equal(readerHits, hits, "已确认的登录跳转不再请求 Jina");
+  const article = await extractFromUrl(`${base}/article`, { subject: `article:${T}:autofill`, allowJina: false });
+  assert.ok(article?.text.includes("password managers"));
+  const registry = await extractFromUrl(`${base}/brand/register`, { subject: `article:${T}:registry`, allowJina: false });
+  assert.ok(registry?.text.includes("real report"));
+});
+
+test("HTML和Markdown列表排除登录注册导航，只按完整路径段判断", async () => {
+  const source = { id: sourceId, config: { url: `${base}/listing`, parseMode: "html", itemSelector: "a[href]", linkSelector: "a[href]" } } as never;
+  assert.deepEqual((await fetchWebList(source)).map(candidate => candidate.url), [`${base}/article`]);
+  const markdown = "[Log in here](/login)\n[Sign up here](/signup)\n[Password autofill in browsers](/article)\n[Auth for agents explained](/auth-for-agents)";
+  assert.deepEqual(fromMarkdown(markdown, base, source).map(candidate => candidate.url), [`${base}/article`, `${base}/auth-for-agents`]);
+  for (const path of ["/login", "/account/sign-up", "/oauth2/authorize", "/sso"]) assert.equal(isSignInUrl(`${base}${path}`), true, path);
+  for (const path of ["/authors/news", "/login-security", "/articles?next=/login"]) assert.equal(isSignInUrl(`${base}${path}`), false, path);
+  assert.equal(isSignInUrl("not a URL"), false);
+  assert.equal(isSignInRedirect("not a URL", `${base}/login`), false);
+});
+
+test("列表和详情重定向到登录页时不提取导航或伪造元数据", async () => {
+  const source = { id: sourceId, config: { url: `${base}/redirect`, parseMode: "html", itemSelector: "a[href]", detail: { titleSelector: "h1", summarySelector: 'meta[name="description"]' } } } as never;
+  await assert.rejects(fetchWebList(source), /redirected to a sign-in page/);
+  await assert.rejects(fetchDetail(`${base}/redirect`, source, { title: true, date: true, summary: true, body: true }), /redirected to a sign-in page/);
 });

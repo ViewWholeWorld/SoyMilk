@@ -117,7 +117,7 @@ test("供应商与统计接口保留管理员鉴权、写入 CSRF，能力配置
   const app = Fastify({ logger: false }); registerAdmin(app);
   const headers = { cookie: `${SESSION_COOKIE}=${login.token}` };
   try {
-    for (const url of ["/api/admin/model-suppliers", "/api/admin/model-stats", "/api/admin/model-costs", "/api/admin/model-attempts", "/api/admin/model-assignments"]) {
+    for (const url of ["/api/admin/model-suppliers", "/api/admin/model-stats", "/api/admin/model-assignments"]) {
       assert.equal((await app.inject({ url })).statusCode, 401);
     }
     assert.equal((await app.inject({ method: "POST", url: "/api/admin/model-suppliers", headers, payload: { name: a.name } })).statusCode, 403);

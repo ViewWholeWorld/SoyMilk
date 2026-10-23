@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { sql, closeDb } from "@aihot/backend/db";
 import { modelStats, modelStatsRange } from "@aihot/backend/admin/model-stats";
-import { modelAttempts, modelCosts } from "@aihot/backend/admin/model-costs";
 
 const T = `stats_index_${tag()}`;
 after(async () => { await sql`DELETE FROM receipts WHERE service=${T}`; await closeDb(); });
@@ -32,7 +31,5 @@ test("模型时间索引覆盖仅请求型号的记录，并兼容旧版查询�
   }
   const filters = { ...range, service: T, showUnknown: "true" };
   assert.equal((await modelStats(filters)).summary.calls, 1);
-  assert.equal((await modelCosts(filters)).summary.calls, 1);
-  const detail = await modelAttempts(filters);
-  assert.equal(detail.total, 1); assert.equal(detail.rows[0]!.requestedModel, "requested-only");
+  assert.equal((await modelStats(filters)).rows[0]!.requestedModel, "requested-only");
 });
