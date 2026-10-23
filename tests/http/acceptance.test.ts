@@ -84,7 +84,27 @@ test("从空库迁移后通过生产网页代理执行 HTTP API 验收", async t
       const wrong = await h.request("POST", "/api/auth/password", 303, { body: { password: "wrong-fixture" }, level: "boundary" });
       assert.match(wrong.response.headers.get("location") ?? "", /error=wrong/); assert.equal(wrong.response.headers.get("set-cookie"), null);
       await h.login(); await h.request("GET", "/api/auth/check", 204, { admin: true, level: "business" });
+      for (const [target, location] of [["/admin/model-stats?range=7d", "/admin/model-stats?range=7d"], ["javascript:alert(1)", "/admin"], ["//evil.example/admin", "/admin"], ["https://untrusted.example.test/admin/content", "/admin/content"], ["/admin/../about", "/admin"], ["/admin/login", "/admin"]]) {
+        const skipped = await h.request("GET", `/api/auth/login?return=${encodeURIComponent(target!)}`, 302, { admin: true, level: "business" });
+        assert.equal(skipped.response.headers.get("location"), location);
+        assert.equal(skipped.response.headers.get("cache-control"), "no-store");
+      }
+      const signedInPage = await h.request("GET", "/admin/login?return=%2Fadmin%2Fmodel-stats", 302, { admin: true });
+      assert.equal(signedInPage.response.headers.get("location"), "/admin/model-stats");
+      const damaged = await h.request("GET", "/api/auth/login?return=/admin/model-stats", 302, {
+        headers: { cookie: "aihot_admin=%E0%A4%A; unrelated=%ZZ" }, level: "boundary",
+      });
+      assert.equal(new URL(damaged.response.headers.get("location")!, h.base).pathname, "/admin/login");
       await h.request("POST", "/api/admin/model-suppliers", 403, { admin: true, body: { name: "错误 CSRF" }, headers: { "x-csrf-token": "wrong-fixture-csrf" }, level: "guard" });
+    });
+    await scenario("原生退出表单保留16KiB上限，超限不销毁会话，正常退出使会话失效", async () => {
+      await h.request("POST", "/api/auth/logout", 413, { admin: true, form: { x: "a".repeat(20_000) }, level: "boundary" });
+      await h.request("GET", "/api/auth/check", 204, { admin: true, level: "business" });
+      const logout = await h.request("POST", "/api/auth/logout", 303, { admin: true, form: {}, level: "business" });
+      assert.equal(logout.response.headers.get("location"), "/");
+      assert.match(logout.response.headers.get("set-cookie") ?? "", /Max-Age=0/);
+      await h.request("GET", "/api/auth/check", 401, { admin: true, level: "guard" });
+      await h.login();
     });
     for (const [method, name] of [...adminReads.map(name => ["GET", name]), ...adminWrites]) {
       await scenario(`后台鉴权 ${method} /api/admin/${name}`, async () => {
@@ -97,10 +117,9 @@ test("从空库迁移后通过生产网页代理执行 HTTP API 验收", async t
       for (const name of adminReads.filter(name => !name.includes(":") && name !== "model-config/codex")) {
         const result = await h.request("GET", `/api/admin/${name}`, 200, { admin: true, level: "empty" });
         assert.ok(result.data); assert.equal(result.response.headers.get("cache-control"), "no-store");
-        if (name === "model-stats" || name === "model-costs") assert.equal(result.data.summary.calls, 0);
-        if (name === "model-attempts") assert.equal(result.data.total, 0);
+        if (name === "model-stats") assert.equal(result.data.summary.calls, 0);
       }
-      for (const name of ["sources/missing", "content/missing", "model-cost-backfills/00000000-0000-4000-8000-000000000000", "selectbench/missing", "model-config/codex/login/missing"]) {
+      for (const name of ["sources/missing", "content/missing", "selectbench/missing", "model-config/codex/login/missing"]) {
         await h.request("GET", "/api/admin/" + name, 404, { admin: true, level: "boundary" });
       }
       await h.request("POST", "/api/admin/model-config/codex/login/missing/cancel", 404, { body: {}, admin: true, level: "boundary" });
@@ -139,17 +158,19 @@ test("从空库迁移后通过生产网页代理执行 HTTP API 验收", async t
     await contentWorkflows(h, scenario);
     await sourceHealthWorkflows(h, scenario);
     await upstreamWorkflows(h, scenario);
-    await scenario("生产 SSR 后台各标签可访问，退出后的会话和 CSRF 失效", async () => {
-      for (const path of ["/admin/models", "/admin/models?tab=prices", "/admin/model-stats", "/admin/model-stats?tab=costs", "/admin/model-stats?tab=costs&details=1&backfill=1"]) {
+    await scenario("生产 SSR 精简统计与旧书签可访问，退出后的会话和 CSRF 失效", async () => {
+      for (const path of ["/admin/models", "/admin/model-stats", "/admin/model-stats?tab=costs", "/admin/model-stats?tab=costs&details=1&backfill=1"]) {
         assert.match((await h.request("GET", path, 200, { admin: true })).text, /SoyMilk/);
       }
-      for (const [tab, purpose] of [["usage", "usage"], ["costs", "cost"]]) {
+      const oldPrices = await h.request("GET", "/admin/models?tab=prices", 302, { admin: true });
+      assert.equal(oldPrices.response.headers.get("location"), "/admin/models");
+      for (const [tab, purpose] of [["usage", "usage"], ["costs", "usage"]]) {
         const query = new URLSearchParams({ tab, purpose, range: "custom", from: "2026-10-02", to: "2026-10-02" });
         const html = await h.request("GET", "/admin/model-stats?" + query, 200, { admin: true });
         const tables = [...parseHTML(html.text).document.querySelectorAll("table")].map(table => table.textContent).join("\n");
-        assert.ok(tables.includes("HTTP Fixture A · shared-model"), "SSR 表格必须实际渲染夹具的历史供应商与型号");
-        if (tab === "usage") assert.ok(tables.includes("66.7%"));
-        else { assert.ok(tables.includes("USD")); assert.ok(tables.includes("CNY")); assert.ok(tables.includes("订阅 API 等价")); }
+        assert.ok(tables.includes("HTTP Fixture A") && tables.includes("shared-model"), "SSR 表格必须实际渲染夹具的历史供应商与型号");
+        assert.match(html.text, /总 token/); assert.match(tables, /1,060/);
+        assert.doesNotMatch(html.text, /订阅 API 等价|历史补算|模型价格/);
       }
       await h.request("POST", "/api/auth/logout", 303, { admin: true, level: "business" });
       await h.request("GET", "/api/auth/check", 401, { admin: true, level: "guard" });

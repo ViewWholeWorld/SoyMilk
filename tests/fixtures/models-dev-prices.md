@@ -1,5 +1,7 @@
 # models.dev 冻结价格片段
 
+> 历史验证资料：2026-10-23 的 3.9.0 候选已移除价格核算与目录同步。此片段及许可证仅保留早期审计来源，不再用于当前回归或运行时。
+
 来源：<https://github.com/anomalyco/models.dev>，MIT，固定提交 `b8d6cca87ec2fdd246387436f9f9377fa41d8f6f`（2026-10-15 读取）。许可原文保存在 [models-dev.LICENSE](models-dev.LICENSE)。
 
 `models-dev-prices.json` 包含该提交的四个精简 provider/model 片段：OpenAI `gpt-4.1`、`gpt-6-luna`，DeepSeek `deepseek-flash`，小米 `mimo-v2.6-flash`。由对应 `providers/<provider>/provider.toml`、`providers/<provider>/models/<model>.toml` 及 `models/<owner>/<model>.toml` 合并，保留名称、ID、成本和必要元数据；与 `packages/core/src/index.ts` 及 `packages/web/script/build.ts` 的旧版 `/api.json` provider/model 映射输出对照。夹具不代表当前报价。

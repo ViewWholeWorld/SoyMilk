@@ -4,12 +4,9 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { actorOf } from "@aihot/backend/admin/auth";
 
 import { importSelectBenchRun, listSelectBenchRuns, selectBenchRun } from "@aihot/backend/admin/selectbench";
-import { previewModelCostBackfill, createModelCostBackfill, processModelCostBackfill, listModelCostBackfills, modelCostBackfill } from "@aihot/backend/admin/model-cost-backfills";
 import { modelAssignments, modelsOverview, switchModel } from "@aihot/backend/admin/models";
 import { modelStats, modelStatsOptions } from "@aihot/backend/admin/model-stats";
-import { modelAttempts } from "@aihot/backend/admin/model-costs";
 import { createModelSupplier, listModelSuppliers } from "@aihot/backend/admin/model-suppliers";
-import { listModelPricing, saveModelPricing, restoreModelPricing, listModelPriceCatalog, syncModelPriceCatalog, modelCosts } from "@aihot/backend/admin/model-pricing";
 import { activateConnection, cancelLogin, codexModels, codexStatus, connectCodex, disconnectCodex, loginStatus, modelConfiguration, removeConnection, saveConnection } from "@aihot/backend/admin/model-config";
 import { sha256 } from "@aihot/backend/lib/ids";
 
@@ -19,7 +16,7 @@ import { dismissFollowUp, restoreFollowUp } from "@aihot/backend/operations/aler
 import { settingsOverview, updateBudget } from "@aihot/backend/admin/settings";
 import { createSource, fetchNow, listSources, previewSource, previewStoredSource, sourceDetail, updateSource } from "@aihot/backend/admin/sources";
 import { navCounts } from "@aihot/backend/admin/navigation";
-import { audit, listAudit } from "@aihot/backend/audit";
+import { listAudit } from "@aihot/backend/audit";
 import { detachFromFact, mergeStories } from "@aihot/backend/events/corrections";
 import { releaseReceipt } from "@aihot/backend/operations/recover";
 import { sendProblem } from "../http/respond.ts";
@@ -40,7 +37,6 @@ export function registerAdmin(app: FastifyInstance) {
   app.post("/api/admin/model-suppliers", adminHandler(async (req) => createModelSupplier(req.body)));
   app.get("/api/admin/model-stats", adminHandler(async (req) => modelStats(q(req))));
   app.get("/api/admin/model-stats/options", adminHandler(async () => modelStatsOptions()));
-  app.get("/api/admin/model-attempts", adminHandler(async (req) => modelAttempts(q(req))));
   app.post("/api/admin/model-config/connections", adminHandler(async (req, _reply, admin) => saveConnection(req.body, actorOf(admin))));
   app.post("/api/admin/model-config/active", adminHandler(async (req, _reply, admin) => activateConnection(req.body, actorOf(admin))));
   app.delete("/api/admin/model-config/connections/:id", adminHandler(async (req, _reply, admin) => removeConnection(param(req, "id"), actorOf(admin))));
@@ -100,23 +96,6 @@ export function registerAdmin(app: FastifyInstance) {
     const b = body<{ model: string | null; reason: string }>(req);
     return switchModel(param(req, "capability"), b.model ?? null, String(b.reason ?? ""), actorOf(admin));
   }));
-  app.get("/api/admin/model-pricing", adminHandler(async () => listModelPricing()));
-  app.put("/api/admin/model-pricing", adminHandler(async (req, _reply, admin) => saveModelPricing(req.body, actorOf(admin))));
-  app.post("/api/admin/model-pricing/restore", adminHandler(async (req, _reply, admin) => restoreModelPricing(req.body, actorOf(admin))));
-  app.get("/api/admin/model-price-catalog", adminHandler(async (req) => listModelPriceCatalog({ q: q(req).q, page: page(req), limit: Number(q(req).limit) || 40 })));
-  app.post("/api/admin/model-price-catalog/sync", adminHandler(async (_req, _reply, admin) => {
-    const result = await syncModelPriceCatalog();
-    await audit(actorOf(admin), "models.pricing.catalog.sync", "models.dev", "手动同步模型参考价", null, result);
-    return { ...result, actor: actorOf(admin) };
-  }));
-  app.get("/api/admin/model-costs", adminHandler(async (req) => modelCosts(q(req))));
-
-  app.post("/api/admin/model-cost-backfills/preview", adminHandler(async (req) => previewModelCostBackfill(req.body)));
-  app.post("/api/admin/model-cost-backfills", adminHandler(async (req, _reply, admin) => createModelCostBackfill(req.body, actorOf(admin))));
-  app.get("/api/admin/model-cost-backfills", adminHandler(async () => listModelCostBackfills()));
-  app.get("/api/admin/model-cost-backfills/:id", adminHandler(async (req, reply) => orNotFound(req, reply, await modelCostBackfill(param(req, "id"), page(req)))));
-  app.post("/api/admin/model-cost-backfills/:id/resume", adminHandler(async (req, _reply, admin) => processModelCostBackfill(param(req, "id"), req.body, actorOf(admin))));
-
   // SelectBench
   app.get("/api/admin/selectbench", adminHandler(async () => ({ runs: await listSelectBenchRuns() })));
   app.get("/api/admin/selectbench/:id", adminHandler(async (req, reply) => {

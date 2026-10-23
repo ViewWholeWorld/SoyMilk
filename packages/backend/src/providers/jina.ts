@@ -51,10 +51,9 @@ export async function jinaRead(
       }
       if (res.status === 429 || res.status >= 500) throw new ProviderRejectedError(`jina HTTP ${res.status}`, res.status, true, false, spendingRefusal("jina", res.status, res.text()));
       const text = res.text();
-      // Billed in tokens; estimated at about ¥0.36 per million. Without the usage header nothing is guessed.
+      // 只记录上游报告的 token，不按本地固定单价推算金额。
       const tokens = Number(res.headers.get("x-usage-tokens")) || null;
-      const cost = tokens ? { amount: (tokens / 1e6) * 0.36, currency: "CNY", basis: "estimated" as const } : null;
-      return { response: { text: text.slice(0, 2_000_000), status: res.status }, requestId: res.headers.get("x-request-id"), usage: { bytes: res.body.length, tokens }, cost };
+      return { response: { text: text.slice(0, 2_000_000), status: res.status }, requestId: res.headers.get("x-request-id"), usage: { bytes: res.body.length, tokens } };
     },
   );
   const raw = String((receipt.response as { text?: string })?.text ?? "");

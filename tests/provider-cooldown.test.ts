@@ -164,12 +164,13 @@ test("非模型重试冻结每次账号scope，旧回执字段变化不重写历
   const next = { ...req, cooldown: changed };
   keys.add(providerCooldownKey(changed));
   assert.equal((await paidRequest(next, success)).reused, false);
-  const rows = await sql<{ snapshot: { providerScope: ProviderCooldownScope; configured: boolean }; billing_kind: string | null; estimated_cost: number | null }[]>`
+  const rows = await sql<{ snapshot: { providerScope: ProviderCooldownScope; supplierId: string | null }; billing_kind: string | null; estimated_cost: number | null }[]>`
     SELECT pricing_snapshot AS snapshot,billing_kind,estimated_cost FROM receipt_attempts
     WHERE receipt_id=(SELECT id FROM receipts WHERE subject=${req.subject}) ORDER BY attempt`;
   assert.equal(rows.length, 2);
   assert.deepEqual(rows.map(row => row.snapshot.providerScope.accountFingerprint), [current.accountFingerprint, changed.accountFingerprint]);
-  assert.ok(rows.every(row => row.snapshot.configured === false && row.billing_kind === null && row.estimated_cost === null));
+  assert.ok(rows.every(row => row.snapshot.supplierId === current.supplierId && row.billing_kind === null && row.estimated_cost === null));
+  assert.ok(rows.every(row => !Object.hasOwn(row.snapshot, "inputPerMtok")));
 });
 
 test("新进程读取持久冷却，不能因重启立即发送", async () => {
