@@ -386,11 +386,11 @@ export async function markReceiptsCompleted(ids: number[]): Promise<void> {
 
 /** 合并流程关闭后仍能消费已付费结果；不读取当前连接或发起网络请求。 */
 export async function reuseJsonReceipt<S extends z.ZodType>(id: number, schema: S, promptVersion: string,
-  opts: { parse?: (content: string) => unknown; materialHash?: string; userHash?: string; compatiblePromptVersions?: readonly string[];
+  opts: { parse?: (content: string) => unknown; materialHash?: string; userHash?: string; compatiblePromptVersions?: readonly string[]; recoverRejectedOutput?: boolean;
     observation?: { subject: string; purpose: string } } = {}): Promise<ChatJsonResult<z.infer<S>> | null> {
   const context = { event: "saved_reuse" as const, subject: opts.observation?.subject ?? `receipt:${id}`,
     purpose: opts.observation?.purpose ?? "saved_receipt", receiptId: id };
-  const saved = await storedReceipt(id).catch(error => {
+  const saved = await storedReceipt(id, { allowRejectedOutput: opts.recoverRejectedOutput }).catch(error => {
     observeRequest({ ...context, outcome: "error", failure: requestWait(error)?.kind ?? (error instanceof Error ? error.constructor.name : "unknown_error") });
     throw error;
   });
@@ -416,6 +416,8 @@ export async function reuseJsonReceipt<S extends z.ZodType>(id: number, schema: 
       model: typeof saved.request.modelKey === "string" ? saved.request.modelKey : saved.model, usage: response.usage ?? null };
   } catch (error) {
     observeRequest({ ...observation, outcome: "error", failure: "invalid_output" });
+    // 旧失败稿只有经新解析器完整验证后才消费；仍不合法则沿调用方既有的有限恢复，不更改回执。
+    if (saved.status === "failed" && opts.recoverRejectedOutput) return null;
     await rejectReceivedResponse(id, `unusable output: ${String(error).slice(0, 500)}`, sql, saved.attempts);
     throw new ModelOutputError(`已保存响应 ${id} 无法解析`, id);
   }

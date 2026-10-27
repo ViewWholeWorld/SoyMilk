@@ -1,3 +1,5 @@
+{{> safety}}
+
 {{> content-understanding}}
 
 {{> rules-domain}}
@@ -8,4 +10,4 @@
 
 {{> rules-answer-first-summary}}
 
-答案前置只描述 summaryZh 的写法，不要增加 answer 字段。
+标题和摘要分别填入 titleZh、summaryZh；不增加 answer 字段。
