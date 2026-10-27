@@ -22,8 +22,8 @@ import { pageFetchable } from "../content/extract.ts";
 import { shutdownSignal } from "../jobs/queue.ts";
 import {
   buildArticlePrompt, buildLongTweetPrompt, buildShortTweetPrompt, finalizeCopy, isShortTweetInput, looksZh, MAX_BODY_CHARS, missingEvidence,
-  needsShortTweetTranslation, parseTranslateOutput, PREFILTER_SYSTEM, prefilterUser, translateInputOf, UNDERSTAND_SYSTEM, UNDERSTAND_RULES, understandUser,
-  type IdentityGuard,
+  needsShortTweetTranslation, parseTranslateOutput, PREFILTER_SYSTEM, prefilterUser, TAG_PROMPT_VALUES, translateInputOf, UNDERSTAND_SYSTEM, UNDERSTAND_RULES, understandUser,
+  type IdentityGuard, type PriceEvidenceGuard,
 } from "./writing.ts";
 import { CATEGORY_BY_ITEM_TYPE, CATEGORY_GUIDE, CATEGORY_TAGS, ENTITIES, ENTITY_TAGS, ITEM_TYPES, normalizeTags, TOPIC_TAGS } from "./vocabulary.ts";
 import { promptText, promptVersion } from "./prompts.ts";
@@ -48,15 +48,20 @@ export const COMBINED_VERSIONS = {
   combinedSummarize: promptVersion("summarize-structure", "structure-rules", "summarize-article", "summarize-article-empty", "summarize-short-post", "summarize-short-post-quoted", "summarize-long-post", "summarize-long-post-quoted", "identity-context"),
 };
 
-// 3.7.0 的输出 schema 未变，仅清理输入和收紧写作规则；允许消费已收到的结果。
+// 输出字段保持兼容；提示词收紧后仍允许消费已收到的结果，并执行当前本地防护。
 // 只列明确核验的版本，未知版本仍等待兼容程序，不能换提示词重复付费。
 export const COMPATIBLE_PROMPT_VERSIONS = {
   prefilter: ["prefilter@3d2d544cbd", "prefilter@4778c7b014"],
-  understand: ["understand@323747ba4b"],
-  summarize: ["summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@378efa398a"],
-  structure: ["structure@64db76620a"],
-  combinedUnderstand: ["understand-structure+understand+structure@f57fd087c3"],
-  combinedSummarize: ["summarize-structure+structure+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@4210decab2"],
+  understand: ["understand@323747ba4b", "understand@07ea8c327c"],
+  summarize: ["summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@378efa398a",
+    "summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@e0af940ce3",
+    "summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@e87bd8012c"],
+  structure: ["structure@64db76620a", "structure@6db1156d1c"],
+  combinedUnderstand: ["understand-structure+understand+structure@f57fd087c3", "understand-structure+understand-rules+structure-rules@4baa7350d1",
+    "understand-structure+understand-rules+structure-rules@809996b152"],
+  combinedSummarize: ["summarize-structure+structure+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@4210decab2",
+    "summarize-structure+structure-rules+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@282255e6f4",
+    "summarize-structure+structure-rules+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@e77de6a2b8"],
 } as const;
 
 // ── Scoring ───────────────────────────────────────────────────────────────────────────────
@@ -168,9 +173,40 @@ const CombinedStructureSchema = z.object({
     action: z.string().max(80).nullable().optional(), object: z.string().max(160).nullable().optional(), occurredAt: z.string().nullable().optional() }).nullable(),
 });
 const CombinedUnderstandSchema = z.object({ writing: UnderstandSchema, structure: CombinedStructureSchema });
-/** 仅兼容 writing／structure 边界的空成员或漏括号；保留全部值并继续严格校验。 */
+const RecoverableUnderstandSchema = CombinedUnderstandSchema.extend({ writing: UnderstandSchema.extend({
+  authorRole: z.enum(["principal", "observer", "relayer"]), tags: z.array(z.string()).max(12), editorialJudgment: z.string().max(400),
+}).strict() });
+const WRITING_FIELDS = ["itemType", "authorRole", "tags", "editorialJudgment", "titleZh", "summaryZh"];
+const STRUCTURE_FIELDS = ["category", "tags", "subjects", "fact"];
+const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+const exactFields = (value: Record<string, unknown>, fields: string[]) =>
+  Object.keys(value).length === fields.length && fields.every(key => Object.hasOwn(value, key));
+
+/** 仅恢复生产出现的完整错层级，不搜索深层对象，不补值，不覆盖重复结构。 */
+function restoreCombinedUnderstandShape(value: unknown): unknown {
+  if (!record(value) || !record(value.writing)) return value;
+  const writing = value.writing;
+  const misplaced = ["structure", "category", "subjects", "fact"].some(key => Object.hasOwn(writing, key));
+  if (!misplaced) return value;
+  if (!exactFields(value, ["writing"])) throw new SyntaxError("合并结果包含重复或歧义结构");
+  let candidate: unknown;
+  if (exactFields(writing, [...WRITING_FIELDS, "structure"]) && record(writing.structure) && exactFields(writing.structure, STRUCTURE_FIELDS)) {
+    const { structure, ...copy } = writing;
+    candidate = { writing: copy, structure };
+  } else if (exactFields(writing, [...WRITING_FIELDS, "category", "subjects", "fact"])) {
+    // 两套 tags 使用相同词表；只复用原数组，不能凭 itemType 生成缺失标签。
+    const { category, subjects, fact, ...copy } = writing;
+    if (!Array.isArray(copy.tags) || !copy.tags.length || JSON.stringify(copy.tags) !== JSON.stringify(normalizeTags(copy.tags))) return value;
+    candidate = { writing: copy, structure: { category, tags: copy.tags, subjects, fact } };
+  } else return value;
+  // 保留原值供调用方完整 schema 校验，不把无效分类或缺少事实字段修成默认值。
+  return RecoverableUnderstandSchema.safeParse(candidate).success ? candidate : value;
+}
+
+/** 兼容有限的 JSON 边界错误与完整错层级；恢复后仍执行完整 schema 校验。 */
 export function parseCombinedUnderstandJson(text: string): unknown {
-  try { return extractJson(text); }
+  let parsed: unknown;
+  try { parsed = extractJson(text); }
   catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
     const body = text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
@@ -196,8 +232,9 @@ export function parseCombinedUnderstandJson(text: string): unknown {
       if (!value.writing || Object.keys(value.writing).length !== fields.length || fields.some(key => !Object.hasOwn(value.writing!, key)) ||
         Object.keys(value).length !== 2 || !Object.hasOwn(value, "structure")) throw error;
     }
-    return repaired;
+    parsed = repaired;
   }
+  return restoreCombinedUnderstandShape(parsed);
 }
 // 普通文章不用 bodyZh；模型省略该空字段时仍可消费已付费的合法摘要。
 const CombinedSummarizeSchema = z.object({ writing: SummarizeSchema.extend({ bodyZh: z.string().default("") }), structure: CombinedStructureSchema });
@@ -235,6 +272,7 @@ export interface AnalysisRun {
     itemType?: string;
     authorRole?: string;
     identityGuard?: IdentityGuard;
+    priceEvidenceGuard?: PriceEvidenceGuard;
     receiptIds: number[];
     reused: boolean;
   } | null;
@@ -427,7 +465,7 @@ async function runUnderstand(a: AnalyzeInputArticle, opts: StepOpts): Promise<An
   return {
     kind: "understand", model: res.model, titleZh: copy.titleZh, summaryZh: copy.summaryZh, reasonZh: d.editorialJudgment.trim() || null,
     tags: normalizeTags(d.tags, { fallbackCategory: CATEGORY_BY_ITEM_TYPE[d.itemType] }), itemType: d.itemType, authorRole: d.authorRole,
-    identityGuard: copy.identityGuard, receiptIds: [res.receiptId], reused: res.reused,
+    identityGuard: copy.identityGuard, priceEvidenceGuard: copy.priceEvidenceGuard, receiptIds: [res.receiptId], reused: res.reused,
   };
 }
 
@@ -467,7 +505,7 @@ async function runSummarize(a: AnalyzeInputArticle, opts: StepOpts): Promise<Non
       ? { titleZh: p.titleZh, summaryZh: p.summaryZh || p.bodyZh }
       : { titleZh: p.titleZh || (looksZh(t.title) ? t.title : ""), summaryZh: p.summaryZh };
   const copy = finalizeCopy(t, draft);
-  return { kind: "summarize", model: res.model, titleZh: copy.titleZh, summaryZh: copy.summaryZh, reasonZh: null, tags: null, identityGuard: copy.identityGuard, receiptIds: [res.receiptId], reused: res.reused };
+  return { kind: "summarize", model: res.model, titleZh: copy.titleZh, summaryZh: copy.summaryZh, reasonZh: null, tags: null, identityGuard: copy.identityGuard, priceEvidenceGuard: copy.priceEvidenceGuard, receiptIds: [res.receiptId], reused: res.reused };
 }
 
 type CombinedStep = "combinedUnderstand" | "combinedSummarize";
@@ -485,6 +523,7 @@ async function runCombined(a: AnalyzeInputArticle, opts: StepOpts, step: Combine
   const parse = step === "combinedUnderstand" ? parseCombinedUnderstandJson : undefined;
   // 先读已接收结果；连接分配变化及供应商暂不可用均不妨碍本地消费。
   let res = savedId ? await reuseJsonReceipt(savedId, schema, version, { materialHash: materialHash(a), parse,
+    recoverRejectedOutput: step === "combinedUnderstand",
     observation: { subject: subjectOf(a), purpose: ANALYSIS_PURPOSES[step] },
     compatiblePromptVersions: COMPATIBLE_PROMPT_VERSIONS[step] }) : null;
   if (!res) {
@@ -492,12 +531,12 @@ async function runCombined(a: AnalyzeInputArticle, opts: StepOpts, step: Combine
     const model = await modelFor(combinedWriter(step));
     const t = translateInputOf(a);
     const short = isShortTweetInput(t);
-    const text = step === "combinedUnderstand" ? understandUser(a, true) : short ? buildShortTweetPrompt(t)
-      : t.sourceKind === "x_search" ? buildLongTweetPrompt(t) : buildArticlePrompt(t);
+    const text = step === "combinedUnderstand" ? understandUser(a, true) : short ? buildShortTweetPrompt(t, true)
+      : t.sourceKind === "x_search" ? buildLongTweetPrompt(t, true) : buildArticlePrompt(t, true);
     // 主体正文只出现一次；补充原结构阶段单独读取的来源事实及已有译文。
     const user = `${text}\n\n【结构补充】来源类型=${a.source.kind}；分级=${a.source.tier}；一手来源=${a.source.firstParty ? "是" : "否"}${a.translationZh ? `\n已有中文译文：${a.translationZh.slice(0, 5000)}` : ""}\n最终输出格式以系统中的 writing／structure JSON 为准。`;
     const system = promptText(step === "combinedUnderstand" ? "understand-structure" : "summarize-structure", {
-      writingRules: UNDERSTAND_RULES, structureRules: STRUCTURE_RULES,
+      ...TAG_PROMPT_VALUES, writingRules: UNDERSTAND_RULES, structureRules: STRUCTURE_RULES,
     });
     const call = (image: ContentPart | null) => {
       checkAnalysisRunning();
@@ -672,6 +711,7 @@ export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Pr
     scores: out.scores, scoreModel: out.scoreModel, threshold: out.threshold, ...(out.scoreRefused ? { scoreRefused: true } : {}),
     ...(w ? { writer: w.kind, writerModel: w.model, itemType: w.itemType ?? null, authorRole: w.authorRole ?? null } : {}),
     ...(w?.identityGuard?.outcome === "fallback" ? { identityGuard: w.identityGuard } : {}),
+    ...(w?.priceEvidenceGuard?.outcome === "hold" ? { priceEvidenceGuard: w.priceEvidenceGuard } : {}),
     fact: out.fact,
     ...(run.combined ? { combinedStep: run.combined } : {}),
     receiptPromptVersions,

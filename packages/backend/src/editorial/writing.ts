@@ -1,7 +1,7 @@
 // The writing side of the analysis: the prefilter's and the content understanding's inputs, the
 // title/summary prompts for everything else, the output parsing and the deterministic guards. The
 // wording lives in the industry pack (industry/prompts/); a failed guard falls back without a repair call.
-import { IDENTITY_CONTEXT_ALIASES, IDENTITY_LEXICON, PUBLISHER_DOMAINS } from "@aihot/industry/taxonomy";
+import { CATEGORY_TAGS, ENTITY_TAGS, IDENTITY_CONTEXT_ALIASES, IDENTITY_LEXICON, PUBLISHER_DOMAINS, TOPIC_TAGS } from "@aihot/industry/taxonomy";
 import type { AnalyzeInputArticle } from "./input.ts";
 import { promptText } from "./prompts.ts";
 import { articlePromptBody, cleanArticleTextForLLM } from "../content/article-text.ts";
@@ -14,7 +14,11 @@ function onlyXArticleLink(text: string | null | undefined): boolean {
 }
 
 export const PREFILTER_SYSTEM = promptText("prefilter");
-export const UNDERSTAND_SYSTEM = promptText("understand");
+// 单项与合并写作从同一份行业词表渲染，不在提示词维护第二份白名单。
+export const TAG_PROMPT_VALUES = {
+  categoryTags: CATEGORY_TAGS.join("、"), topicTags: TOPIC_TAGS.join("、"), entityTags: ENTITY_TAGS.join("、"),
+};
+export const UNDERSTAND_SYSTEM = promptText("understand", TAG_PROMPT_VALUES);
 // 合并路径只复用字段规则，唯一 JSON 输出格式由合并模板定义。
 export const UNDERSTAND_RULES = promptText("understand-rules");
 
@@ -229,10 +233,55 @@ export function enforceIdentity(input: TranslateInput, copy: { titleZh: string; 
 
 export const isShortTweetInput = (input: TranslateInput) => input.sourceKind === "x_search" && isShortTweet(input.mainText || input.title);
 
+type PriceRequirement = { kind: "coupon" | "points"; amount: number };
+export interface PriceEvidenceGuard {
+  outcome: "pass" | "hold";
+  missing: Array<PriceRequirement & { field: "titleZh" | "summaryZh" }>;
+}
+
+const priceText = (text: string) => text.normalize("NFKC").replace(/\s+/g, "");
+const MONEY = /\d+(?:\.\d+)?元/;
+const COUPON_PRICE = /(?:券后|用券后|领券后)[^。；;！？!?]{0,16}?\d+(?:\.\d+)?元/;
+const EFFECTIVE_PRICE = /(?:折合|折算|到手|相当于)[^。；;！？!?]{0,16}?\d+(?:\.\d+)?元/;
+const amounts = (text: string, pattern: RegExp) => [...new Set([...text.matchAll(pattern)].map(match => Number(match[1]!.replaceAll(",", ""))))];
+const redemptionPoints = (text: string) => [...new Set([
+  ...amounts(text, /(\d[\d,]*(?:\.\d+)?)积分[，,:：]?(?:才可|方可|可以|即可|用于|才能|可)?(?:兑换|换购|抵扣)/g),
+  ...amounts(text, /(?:兑换|换购|抵扣)[^。；;！？!?]{0,24}?(?:需要|消耗|扣除|使用|需|用)(\d[\d,]*(?:\.\d+)?)积分/g),
+])];
+
+/**
+ * 只检查可明确提取的券额和积分兑换门槛。多档条件不猜对应关系；命中遗漏则待确认，
+ * 原始回执保留，不补写条件、不裁剪句子，也不另发模型请求。其他语义仍需质量复核。
+ */
+export function enforcePriceEvidence(input: TranslateInput, copy: { titleZh: string; summaryZh: string }) {
+  const source = priceText(cleanArticleTextForLLM([input.text, input.quotedText].filter(Boolean).join("\n"), input.documentUrl));
+  const coupons = amounts(source, /(\d[\d,]*(?:\.\d+)?)元(?:优惠)?券/g);
+  const points = redemptionPoints(source);
+  const missing: PriceEvidenceGuard["missing"] = [];
+  for (const field of ["titleZh", "summaryZh"] as const) {
+    const text = priceText(copy[field]);
+    const required: PriceRequirement[] = [];
+    if (coupons.length === 1 && COUPON_PRICE.test(text) && !amounts(text, /(\d[\d,]*(?:\.\d+)?)元(?:优惠)?券/g).includes(coupons[0]!)) {
+      required.push({ kind: "coupon", amount: coupons[0]! });
+    }
+    if (points.length === 1 && ((EFFECTIVE_PRICE.test(text)) || (/(?:兑换|换购|抵扣)/.test(text) && MONEY.test(text))) &&
+      !redemptionPoints(text).includes(points[0]!)) {
+      required.push({ kind: "points", amount: points[0]! });
+    }
+    missing.push(...required.map(requirement => ({ ...requirement, field })));
+  }
+  return {
+    titleZh: missing.some(item => item.field === "titleZh") ? "" : copy.titleZh,
+    summaryZh: missing.some(item => item.field === "summaryZh") ? "" : copy.summaryZh,
+    priceEvidenceGuard: { outcome: missing.length ? "hold" : "pass", missing } as PriceEvidenceGuard,
+  };
+}
+
 /** 长度交给写作规则约束；本地不能为缩短摘要删掉后置条件，也不另发修复请求。 */
 export function finalizeCopy(input: TranslateInput, copy: { titleZh: string; summaryZh: string }) {
   const summaryZh = isShortTweetInput(input) ? copy.summaryZh : copy.summaryZh.trim().replace(/\s*\n+\s*/g, " ");
-  return enforceIdentity(input, { titleZh: copy.titleZh, summaryZh });
+  const identity = enforceIdentity(input, { titleZh: copy.titleZh, summaryZh });
+  return { ...identity, ...enforcePriceEvidence(input, identity) };
 }
 
 // ── Title/summary prompts for items the content understanding does not write ─────────────────
@@ -244,14 +293,15 @@ function anchorDate(d: Date | undefined): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
 }
 
-export function buildArticlePrompt(input: TranslateInput): string {
+export function buildArticlePrompt(input: TranslateInput, combined = false): string {
   return promptText("summarize-article", {
+    outputFormat: combined ? "写作结果填入系统 JSON 的 writing.titleZh 和 writing.summaryZh；普通文章的 writing.bodyZh 为空字符串。只使用系统定义的 writing／structure 两个并列对象。" : "输出格式（严格遵守）：\ntitle_zh: <中文标题>\nsummary_zh: <80-160字、最多3句的中文摘要>",
     publishedDate: anchorDate(input.publishedAt),
     today: anchorDate(new Date()),
     sourceName: sourceName(input.sourceName),
     identity: identityPrompt(input),
     title: input.title,
-    body: input.text ? articlePromptBody(input.text, input.documentUrl) : promptText("summarize-article-empty"),
+    body: input.text.trim() ? articlePromptBody(input.text, input.documentUrl) : promptText("summarize-article-empty"),
   });
 }
 
@@ -261,14 +311,16 @@ function quotedBlock(input: TranslateInput, name: string): string {
   return `\n\n${promptText(name, { quotedLabel: input.quotedAuthor ? `@${input.quotedAuthor}` : "引用推文", quotedText: clampText(input.quotedText, 1500) })}`;
 }
 
-export function buildShortTweetPrompt(input: TranslateInput): string {
+export function buildShortTweetPrompt(input: TranslateInput, combined = false): string {
   const post = clampText(input.mainText || input.text || input.title, 4000);
-  return promptText("summarize-short-post", { sourceName: sourceName(input.sourceName), identity: identityPrompt(input), post }) + quotedBlock(input, "summarize-short-post-quoted");
+  const outputFormat = combined ? "写作结果填入系统 JSON 的 writing.titleZh 和 writing.bodyZh；writing.summaryZh 为空字符串。只使用系统定义的 writing／structure 两个并列对象。" : "输出格式（严格遵守）：\ntitle_zh: <中文标题>\nbody_zh: <中文翻译>";
+  return promptText("summarize-short-post", { sourceName: sourceName(input.sourceName), identity: identityPrompt(input), post, outputFormat }) + quotedBlock(input, "summarize-short-post-quoted");
 }
 
-export function buildLongTweetPrompt(input: TranslateInput): string {
+export function buildLongTweetPrompt(input: TranslateInput, combined = false): string {
   const post = clampText(input.mainText || input.text || input.title, 4000);
-  return promptText("summarize-long-post", { sourceName: sourceName(input.sourceName), identity: identityPrompt(input), post }) + quotedBlock(input, "summarize-long-post-quoted");
+  const outputFormat = combined ? "写作结果填入系统 JSON 的 writing.titleZh 和 writing.summaryZh；writing.bodyZh 为空字符串。只使用系统定义的 writing／structure 两个并列对象。" : "输出格式（严格遵守）：\ntitle_zh: <中文标题>\nsummary_zh: <中文摘要>";
+  return promptText("summarize-long-post", { sourceName: sourceName(input.sourceName), identity: identityPrompt(input), post, outputFormat }) + quotedBlock(input, "summarize-long-post-quoted");
 }
 
 /** Prompt lines a model sometimes repeats after its answer (来源：…, 【已核验身份上下文】…, 原始标题：…). */
