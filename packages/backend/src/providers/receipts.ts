@@ -121,10 +121,14 @@ export const rejectedByContentFilter = (row: { status: string; error: string | n
     !Object.hasOwn(row.request ?? {}, "providerRejection") && /^HTTP 4\d\d: [\s\S]*(?:contentFilter|"1301")/.test(row.error ?? ""));
 
 /** 本地消费已保存响应；不因模型配置或功能开关改变而重新发送。 */
-export async function storedReceipt(id: number) {
+export async function storedReceipt(id: number, opts: { allowRejectedOutput?: boolean } = {}) {
   const row = await sql.begin(async tx => {
-    const [r] = await tx<Array<{ id: number; attempts: number; status: string; response: unknown; model: string; request: Record<string, unknown> | null; updated_at: Date }>>`
-      SELECT id,attempts,status,response,model,request,updated_at FROM receipts WHERE id=${id} FOR UPDATE`;
+    const [r] = await tx<Array<{ id: number; attempts: number; status: string; response: unknown; model: string; request: Record<string, unknown> | null; updated_at: Date;
+      error: string | null; latestReceived: boolean }>>`
+      SELECT r.id,r.attempts,r.status,r.response,r.model,r.request,r.updated_at,r.error,
+        (${opts.allowRejectedOutput ?? false} AND EXISTS(SELECT 1 FROM receipt_attempts a
+          WHERE a.receipt_id=r.id AND a.attempt=r.attempts AND a.status='received')) AS "latestReceived"
+      FROM receipts r WHERE r.id=${id} FOR UPDATE OF r`;
     if (r?.status === "pending" && Date.now() - r.updated_at.getTime() >= PENDING_STALE_MS) {
       await markUnknown(tx, id, "placeholder went stale without a recorded result");
       r.status = "unknown";
@@ -133,7 +137,10 @@ export async function storedReceipt(id: number) {
   });
   if (row?.status === "pending") throw new ReceiptBusyError(`Receipt ${id} is in flight`);
   if (row?.status === "unknown") throw new ReceiptUnknownError(id, `Receipt ${id} has an unknown outcome`);
-  return row && ["received", "completed"].includes(row.status) ? row : null;
+  // 仅供修复后的解析器重读最新已收到的输出；不改状态、不读旧 attempt、不放行未知或供应商拒绝。
+  const rejectedOutput = opts.allowRejectedOutput && row?.status === "failed" && row.latestReceived && row.response != null &&
+    row.request?.providerRejection === null && row.error?.startsWith("unusable output:");
+  return row && (["received", "completed"].includes(row.status) || rejectedOutput) ? row : null;
 }
 
 interface ReceiptRow {

@@ -8,7 +8,7 @@ import { upsertMaterial } from "@aihot/backend/content/materials";
 import { analyzeArticle, parseCombinedUnderstandJson, COMPATIBLE_PROMPT_VERSIONS } from "@aihot/backend/editorial/analyze";
 import { analysisHistory, compatibleAnalysisModels, exclusiveAnalysisSteps } from "@aihot/backend/editorial/analysis-route";
 import { ModelOutputError } from "@aihot/backend/providers/llm";
-import { paidRequest, ProviderUnavailableError, ReceiptBusyError, ReceiptUnknownError } from "@aihot/backend/providers/receipts";
+import { paidRequest, ProviderUnavailableError, ReceiptBusyError, ReceiptUnknownError, rejectReceivedResponse } from "@aihot/backend/providers/receipts";
 import { receiptArticleSubject, processArticle } from "@aihot/backend/jobs/content";
 import { releaseReceipt } from "@aihot/backend/operations/recover";
 import { stopBoss } from "@aihot/backend/jobs/queue";
@@ -26,7 +26,8 @@ const samples = [
 ];
 type Sample = typeof samples[number];
 const requests: Array<{ step: string; marker: string; body: Record<string, unknown> }> = [];
-let fault: "none" | "missing" | "legacy" | "filter" | "malformedFilter" | "unusedBodyMissing" | "summaryMissing" | "emptyMember" | "missingWriterClose" | "invalidStructureWithEmptyMember" = "none";
+let fault: "none" | "missing" | "legacy" | "filter" | "malformedFilter" | "unusedBodyMissing" | "summaryMissing" | "emptyMember" | "missingWriterClose" | "invalidStructureWithEmptyMember" |
+  "nestedStructure" | "flatStructure" | "conflictingStructure" | "invalidNestedStructure" | "flatMissingTags" | "unsafePrice" | "emptySummary" = "none";
 let combinedGate: { asked: ReturnType<typeof gate<void>>; hold: ReturnType<typeof gate<void>> } | null = null;
 const provider = await stub(async (_n, req) => {
   const body = JSON.parse(req.body);
@@ -41,6 +42,8 @@ const provider = await stub(async (_n, req) => {
   if (combined && combinedGate) { combinedGate.asked.open(); await combinedGate.hold.promise; }
   const writing = { itemType: "product_launch", authorRole: "principal", tags: ["产品更新", sample.topic], editorialJudgment: "仅按原文条件推荐",
     titleZh: sample.title, summaryZh: `${sample.text} 测试摘要保留原文的适用范围。`, bodyZh: `${sample.text} 测试摘要保留原文的适用范围。` };
+  if (fault === "unsafePrice") writing.summaryZh = "联合会员券后268元，付款后兑换30元礼品卡，折合238元，需满足兑换条件且数量有限。";
+  if (fault === "emptySummary") writing.summaryZh = writing.bodyZh = "";
   const structure = { category: sample.category, tags: ["产品更新", sample.topic], subjects: [],
     fact: { title: sample.title, subject: "测试主体", action: "发布", object: "限定范围的测试消息", occurredAt: null } };
   const combinedWriting = step === "combinedSummarize" && ["unusedBodyMissing", "summaryMissing"].includes(fault)
@@ -55,6 +58,13 @@ const provider = await stub(async (_n, req) => {
   if (step === "combinedUnderstand" && fault === "missingWriterClose") {
     const { bodyZh: _unused, ...sixFields } = writing;
     rendered = JSON.stringify({ writing: sixFields, structure }).replace('},"structure":', ',"structure":');
+  }
+  if (step === "combinedUnderstand" && ["nestedStructure", "flatStructure", "conflictingStructure", "invalidNestedStructure", "flatMissingTags"].includes(fault)) {
+    const { bodyZh: _unused, ...copy } = writing;
+    rendered = JSON.stringify(fault === "flatStructure" ? { writing: { ...copy, ...structure } }
+      : fault === "flatMissingTags" ? { writing: { ...copy, ...structure, tags: undefined } }
+      : { writing: { ...copy, structure: fault === "invalidNestedStructure" ? { ...structure, category: "invalid" } : structure },
+        ...(fault === "conflictingStructure" ? { structure: { ...structure, category: "economy" } } : {}) });
   }
   return { id: "fixture", choices: [{ message: { content: rendered } }],
     usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } };
@@ -173,6 +183,65 @@ test("空成员兼容后仍拒绝错误分类，不能拆成新付费请求", as
   } finally { fault = "none"; separateModels(); }
 });
 
+test("P2a 完整结构嵌套或平铺时无损恢复；旧版本回执在模型配置变化后零请求消费", async () => {
+  try {
+    for (const mode of ["nestedStructure", "flatStructure"] as const) {
+      compatibleModels(); fault = mode;
+      const id = await article(), start = requests.length;
+      const first = await analyzeArticle(id);
+      assert.deepEqual(requests.slice(start).map(r => r.step), ["prefilter", "score", "score", "combinedUnderstand"]);
+      assert.equal(first!.output!.category, samples[0]!.category);
+      assert.equal(first!.output!.fact!.title, samples[0]!.title);
+      assert.equal(first!.receiptIds.length, 4);
+      const [receipt] = await analysisHistory(`article:${id}@1`);
+      const oldVersion = COMPATIBLE_PROMPT_VERSIONS.combinedUnderstand[1];
+      // 模拟升级前新形状被本地 schema 拒绝，供应商最新 attempt 的 received 证据仍保留。
+      await sql`UPDATE receipts SET status='received',completed_at=NULL,
+        request=jsonb_set(request,'{promptVersion}',${sql.json(oldVersion)}::jsonb) WHERE id=${receipt!.id}`;
+      await rejectReceivedResponse(receipt!.id, "unusable output: missing top-level structure");
+      separateModels(); const hits = provider.hits();
+      assert.deepEqual((await analyzeArticle(id))!.output, first!.output);
+      assert.equal(provider.hits(), hits);
+      assert.deepEqual((await sql`SELECT status,attempts FROM receipts WHERE id=${receipt!.id}`)[0], { status: "completed", attempts: 1 });
+      const [saved] = await sql`SELECT prompt_version FROM analyses WHERE article_id=${id} ORDER BY id DESC LIMIT 1`;
+      assert.ok(saved!.prompt_version.includes(oldVersion));
+    }
+  } finally { fault = "none"; separateModels(); }
+});
+
+test("P2a 本地恢复不消费供应商拒绝或旧 attempt 遗留响应", async () => {
+  try {
+    for (const mode of ["providerRejected", "olderAttempt"] as const) {
+      compatibleModels(); fault = "nestedStructure";
+      const id = await article();
+      await analyzeArticle(id);
+      const [receipt] = await analysisHistory(`article:${id}@1`);
+      await sql`UPDATE receipts SET status='failed',error=${mode === "providerRejected" ? "HTTP 400: rejected" : "unusable output: stale response"},
+        request=request || '{"providerRejection":null}'::jsonb,
+        attempts=${mode === "olderAttempt" ? 2 : 1} WHERE id=${receipt!.id}`;
+      separateModels(); const hits = provider.hits();
+      await assert.rejects(analyzeArticle(id), ProviderUnavailableError);
+      assert.equal(provider.hits(), hits);
+      assert.equal((await sql`SELECT status FROM receipts WHERE id=${receipt!.id}`)[0]!.status, "failed");
+    }
+  } finally { fault = "none"; separateModels(); }
+});
+
+test("P2a 结构重复冲突、错值或缺标签仍拒绝，不拆为分步付费请求", async () => {
+  try {
+    for (const mode of ["conflictingStructure", "invalidNestedStructure", "flatMissingTags"] as const) {
+      compatibleModels(); fault = mode;
+      const id = await article(), start = requests.length;
+      await assert.rejects(analyzeArticle(id), ModelOutputError);
+      assert.deepEqual(requests.slice(start).map(r => r.step), ["prefilter", "score", "score", "combinedUnderstand"]);
+      assert.equal((await sql`SELECT count(*)::int AS n FROM analyses WHERE article_id=${id}`)[0]!.n, 0);
+      separateModels(); const hits = provider.hits();
+      await assert.rejects(analyzeArticle(id), ProviderUnavailableError);
+      assert.equal(provider.hits(), hits);
+    }
+  } finally { fault = "none"; separateModels(); }
+});
+
 test("P2a 解析保留正文中的 JSON 字面文本，拒绝其他位置和非空的无名成员", () => {
   const data = { writing: { summaryZh: '原文示例 ,""},"structure": 并非输出边界', titleZh: "完整文案" }, structure: { fact: null } };
   assert.deepEqual(parseCombinedUnderstandJson(JSON.stringify(data)), data);
@@ -181,12 +250,45 @@ test("P2a 解析保留正文中的 JSON 字面文本，拒绝其他位置和非�
   const complete = JSON.stringify({ writing: { itemType: "industry_event", authorRole: "relayer", tags: [], editorialJudgment: "", titleZh: "保留文字", summaryZh: "全部事实保留" }, structure: { fact: null } });
   assert.deepEqual(parseCombinedUnderstandJson(complete.replace('},"structure":', ',"structure":')), JSON.parse(complete));
   const nested = JSON.stringify({ writing: { structure: { fact: null } } });
-  assert.deepEqual(parseCombinedUnderstandJson(nested), JSON.parse(nested), "合法嵌套不提升为顶层字段，交给 schema 拒绝");
+  assert.deepEqual(parseCombinedUnderstandJson(nested), JSON.parse(nested), "缺少结构四字段时不补值，交给 schema 拒绝");
   for (const text of [legal.replace('},"structure":', ',"非空"},"structure":'),
     legal.replace('},"structure":', ',"structure":'),
     '{"writing":{"nested":{"title":"原文",""}},"structure":{}}',
     '{"writing":{"titleZh":"文案"},"structure":{},""}',
     '{"writing":{"titleZh":"文案","",""},"structure":{}}']) assert.throws(() => parseCombinedUnderstandJson(text), SyntaxError);
+});
+
+test("P2b 价格遗漏待确认并保留诊断与四个回执，旧提示词结果零请求复用仍受防护", async () => {
+  compatibleModels(); fault = "unsafePrice";
+  try {
+    const id = await article(samples[2], { bodyText: "CASE_TECH 联合会员领30元优惠券后268元，先入店铺会员，付款得268积分。需600积分兑换30元礼品卡，数量有限。" });
+    const start = requests.length, first = await analyzeArticle(id);
+    assert.deepEqual(requests.slice(start).map(r => r.step), ["prefilter", "score", "score", "combinedSummarize"]);
+    assert.equal(first!.receiptIds.length, 4);
+    assert.equal(first!.output!.relevance, "unknown");
+    assert.equal(first!.output!.selected, false);
+    assert.equal(first!.output!.summaryZh, "");
+    const [saved] = await sql`SELECT output->'priceEvidenceGuard' AS guard FROM analyses WHERE article_id=${id}`;
+    assert.equal(saved!.guard.outcome, "hold");
+    assert.deepEqual(saved!.guard.missing, [{ kind: "coupon", amount: 30, field: "summaryZh" }, { kind: "points", amount: 600, field: "summaryZh" }]);
+    const [receipt] = await analysisHistory(`article:${id}@1`);
+    await sql`UPDATE receipts SET request=jsonb_set(request,'{promptVersion}',${sql.json(COMPATIBLE_PROMPT_VERSIONS.combinedSummarize[1])}::jsonb) WHERE id=${receipt!.id}`;
+    separateModels(); const hits = provider.hits();
+    assert.deepEqual((await analyzeArticle(id))!.output, first!.output);
+    assert.equal(provider.hits(), hits);
+  } finally { fault = "none"; separateModels(); }
+});
+
+test("P2b 材料不足的空摘要保持待确认，不凭标题填充或另发请求", async () => {
+  compatibleModels(); fault = "emptySummary";
+  try {
+    const start = requests.length;
+    const result = await analyzeArticle(await article(samples[2], { bodyText: "CASE_TECH 这段材料只有视频及链接，没有足以概括的事件事实。" }));
+    assert.deepEqual(requests.slice(start).map(r => r.step), ["prefilter", "score", "score", "combinedSummarize"]);
+    assert.equal(result!.output!.summaryZh, "");
+    assert.equal(result!.output!.relevance, "unknown");
+    assert.equal(result!.output!.selected, false);
+  } finally { fault = "none"; separateModels(); }
 });
 
 test("P2b 自动合并普通摘要，省略不用的 bodyZh 仍四次请求完成，配置变化后零付费复用", async () => {
@@ -266,7 +368,7 @@ test("信源元数据变化但文章修订号不变时，材料指纹阻止复�
 });
 
 test("质量提示词升级后，旧合并与分步回执同材料零新增 attempts 消费；未知版本不重付费", async () => {
-  for (const combined of [true, false]) for (const sample of [samples[0]!, samples[2]!]) {
+  for (const versionIndex of [0, -1]) for (const combined of [true, false]) for (const sample of [samples[0]!, samples[2]!]) {
     if (combined) compatibleModels(); else separateModels();
     const id = await article(sample);
     const first = await analyzeArticle(id);
@@ -275,7 +377,7 @@ test("质量提示词升级后，旧合并与分步回执同材料零新增 atte
     await sql`UPDATE receipts SET request=jsonb_set(request,'{promptVersion}',${sql.json(oldPrefilter)}::jsonb)
       WHERE purpose='prefilter_article' AND subject=${subject}`;
     for (const r of await analysisHistory(subject)) {
-      const version = COMPATIBLE_PROMPT_VERSIONS[r.step][0];
+      const version = COMPATIBLE_PROMPT_VERSIONS[r.step].at(versionIndex);
       if (version) await sql`UPDATE receipts SET request=jsonb_set(request,'{promptVersion}',${sql.json(version)}::jsonb) WHERE id=${r.id}`;
     }
     const attempts = (await sql`SELECT count(*)::int AS n FROM receipt_attempts WHERE receipt_id=ANY(${first!.receiptIds}::bigint[])`)[0]!.n;

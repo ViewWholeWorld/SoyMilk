@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { articlePromptBody, cleanArticleTextForLLM } from "@aihot/backend/content/article-text";
 import { readable } from "@aihot/backend/content/extract";
 import { buildMaterial, type AnalyzeInputArticle } from "@aihot/backend/editorial/input";
-import { buildArticlePrompt, finalizeCopy, understandUser } from "@aihot/backend/editorial/writing";
+import { buildArticlePrompt, buildLongTweetPrompt, buildShortTweetPrompt, finalizeCopy, understandUser } from "@aihot/backend/editorial/writing";
 
 const url = "https://www.animenewsnetwork.com/news/2026-10-20/test/.123";
 const news = "Test Studio announced the game will launch on February 25, 2027. It supports up to 120 fps and two players via GameShare. ";
@@ -74,4 +74,52 @@ test("长摘要保留后置价格条件、否定和可能措施，单句分句�
     assert.equal(final.summaryZh, summary.replace(/\s*\n+\s*/g, " "));
     assert.ok(final.summaryZh.endsWith(tail));
   }
+});
+
+const promotion = { title: "测试软件联合会员促销", sourceKind: "rss", text: "领30元优惠券后实付268元。先加入店铺会员，下单获得268积分，可用600积分兑换30元礼品卡，数量有限。" };
+
+test("条件价格遗漏券额或积分兑换门槛时待确认，泛称条件与本次所得积分不能代替门槛", () => {
+  for (const summaryZh of [
+    "联合会员券后268元，付款后可兑换30元礼品卡，折合238元，兑换需满足条件且数量有限。",
+    "联合会员领30元优惠券后268元，下单得268积分兑换30元礼品卡，折合238元。",
+    "联合会员先加入店铺会员，领30元优惠券后268元，可得600积分，折合238元。",
+  ]) {
+    const result = finalizeCopy(promotion, { titleZh: promotion.title, summaryZh });
+    assert.equal(result.summaryZh, "");
+    assert.equal(result.titleZh, promotion.title);
+    assert.equal(result.priceEvidenceGuard.outcome, "hold");
+    assert.ok(result.priceEvidenceGuard.missing.some(item => item.kind === "points" && item.amount === 600));
+  }
+  assert.deepEqual(finalizeCopy(promotion, { titleZh: "联合会员券后268元", summaryZh: "联合会员提供多种服务组合。" }).priceEvidenceGuard.missing,
+    [{ kind: "coupon", amount: 30, field: "titleZh" }]);
+});
+
+test("完整积分门槛与券额原样保留；只写实付、促销内容或普通定价不被积分规则误拦", () => {
+  for (const summaryZh of [
+    "先加入店铺会员并领30元优惠券，实付268元；下单得268积分，另需600积分才可兑换30元礼品卡，名额有限。",
+    "领３０元券后２６８元，下单得２６８积分；兑换３０元礼品卡需要６００积分，数量有限。",
+    "联合会员实付268元，下单可获得268积分。",
+    "联合会员促销包含软件和视频服务，礼品卡兑换名额有限。",
+  ]) {
+    const result = finalizeCopy(promotion, { titleZh: promotion.title, summaryZh });
+    assert.equal(result.summaryZh, summaryZh);
+    assert.equal(result.priceEvidenceGuard.outcome, "pass");
+  }
+  const ordinary = finalizeCopy({ ...promotion, text: "普通产品定价268元，不含促销。" }, { titleZh: "产品定价268元", summaryZh: "普通产品定价268元。" });
+  assert.equal(ordinary.priceEvidenceGuard.outcome, "pass");
+  const ambiguous = { ...promotion, text: "甲套餐可用600积分兑换30元礼品卡；乙套餐可用800积分兑换40元礼品卡。" };
+  assert.equal(finalizeCopy(ambiguous, { titleZh: promotion.title, summaryZh: "甲套餐折合238元。" }).priceEvidenceGuard.outcome, "pass", "多档材料不猜对应关系，交由语义复核");
+});
+
+test("合并写作输入只有 JSON 输出约定，单项格式与材料不足边界仍保留", () => {
+  for (const build of [buildArticlePrompt, buildLongTweetPrompt, buildShortTweetPrompt]) {
+    const prompt = build(promotion, true);
+    assert.ok(prompt.includes("writing／structure"));
+    assert.ok(!/^title_zh:/m.test(prompt));
+    assert.ok(!/^summary_zh:/m.test(prompt));
+    assert.ok(!/^body_zh:/m.test(prompt));
+    assert.ok(/^title_zh:/m.test(build(promotion)));
+  }
+  assert.ok(buildArticlePrompt({ ...promotion, text: " \n " }, true).includes("摘要必须为空字符串"));
+  assert.equal(finalizeCopy({ ...promotion, text: "只有视频链接。" }, { titleZh: promotion.title, summaryZh: "" }).summaryZh, "");
 });
