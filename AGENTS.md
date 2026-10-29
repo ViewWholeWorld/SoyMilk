@@ -25,6 +25,7 @@ SoyMilk 是覆盖游戏、AI、科技、经济、娱乐的私网资讯站，负�
 - 项目目录或代码结构发生新增、删除、移动、重命名或职责调整时，须在同一次变更中同步更新 `AGENTS.md` 的目录结构、路径及相关说明，保持与实际项目结构一致。
 
 ```text
+.github/workflows/         # PR／手动触发的最小检查 CI，不部署或发布
 apps/
   api/src/                 # Fastify 入口、routes/、HTTP 响应与分享图
   worker/src/              # worker 入口 main.ts、定时任务 schedules.ts
@@ -104,7 +105,7 @@ npm run dev:web              # 网页：http://localhost:3000
 - 通过 HTTP 内网或 Tailscale IP 加端口访问，不要求 HTTPS。模型在 `/admin/models` 管理，Codex 设备授权无需 SSH 回调隧道。
 - 生产采集和模型调用已授权开启；保持账号、模型、强度、预算与 Codex 复用。3.8.0 已按授权将 Codex 通道改为 **1**、请求工作启动间隔 **3000 毫秒**，文章分析并发保持 **2**；预筛满 **5 篇**或最早等待 **30 分钟**即发。保持批次、消费者和 unknown 恢复，见[节流计划](docs/系统优化/2026-10-21-Codex限流与新闻请求节流计划.md)。不通过改请求身份、重评、换账号或提高预算加速，不为测试修改生产开关。
 - 入口为 `ssh beans-nas`，部署目录 `/share/homes/tromso/apps/soymilk` 不是 Git checkout。统一用 `sh deploy/nas/compose.sh`，保留私有覆盖及最后的 `compose.release.yml`，核对 setup/API/worker/web 镜像和 setup 的 `--topics-only`。
-- 已取消 CI、自动镜像发布和自动部署。发布、新增迁移、基础 Compose 及受保护定制变更须有具体授权；按[手动部署流程](docs/运维部署/生产环境手动部署.md)验证、排空 worker、备份、切换和验收。仅回退兼容应用，保留新状态、迟到分析过滤、轮次及回执消费者；不恢复旧库、删除付费记录或批量重开历史终态。
+- 已恢复仅检查的最小 CI（PR 到 develop/main 或手动触发时运行类型、版本、后端、网页构建与网页测试，不部署），自动镜像发布与自动部署仍取消，发布流程不变。发布、新增迁移、基础 Compose 及受保护定制变更须有具体授权；按[手动部署流程](docs/运维部署/生产环境手动部署.md)验证、排空 worker、备份、切换和验收。仅回退兼容应用，保留新状态、迟到分析过滤、轮次及回执消费者；不恢复旧库、删除付费记录或批量重开历史终态。
 - **Hermes 已不在 NAS 部署**。旧文档的固定网络、启动与原生客户端验收要求不再适用；仓库示例仅供可选接入，公开 MCP 五个匿名只读工具继续保留。
 - 不读取或输出生产 `.env`、密钥、Codex `auth.json`、令牌、完整 Docker inspect／Compose config 或未筛选日志。通过 `bootstrapBudgetStatus()`、`modelsOverview().tokenSummary` 等状态接口输出必要统计，运行计数和预算标注查询时间。
 
@@ -112,6 +113,7 @@ npm run dev:web              # 网页：http://localhost:3000
 
 - 使用独立数据库、数据目录、虚构密钥和隔离网络，不访问生产库、真实模型或外部服务。库名以 `_test` 或 `_ci` 结尾，`COLLECT_ENABLED`、`MODEL_CALLS_ENABLED` 保持关闭。
 - 模型用例用 `tests/setup.ts` 的 `stub()` 与 `useModelStubs()` 绑定本进程的本地替身，仅临时放行内存入口；子进程也须显式绑定。隔离方法见[隔离回归测试](docs/开发指南/隔离回归测试.md)。
+- 最小 CI 仅执行类型、版本、迁移后后端、网页构建与网页测试；两项已知时序用例仅在 `CI=true` 时跳过，见[追踪记录](docs/问题修复/2026-10-29-CI已知不稳定用例.md)。HTTP、冒烟与 MCP 仍按下述要求另行验收。
 - 功能改动至少完成以下检查。纯文档检查内容、路径和差异；简单样式不额外编写测试。
 
 ```bash

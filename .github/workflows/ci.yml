@@ -1,0 +1,77 @@
+name: CI
+
+"on":
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  DATABASE_URL: postgres://soymilk_ci:ci-only-password@127.0.0.1:5432/soymilk_ci
+  COLLECT_ENABLED: "false"
+  MODEL_CALLS_ENABLED: "false"
+  SESSION_SECRET: ci-only-session-secret-0123456789
+  IMG_PROXY_SIGN_SECRET: ci-only-img-secret-0123456789
+  API_BASE_URL: http://127.0.0.1:3001
+  SITE_URL: http://localhost:3000
+  LOG_LEVEL: error
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      AIHOT_DATA_DIR: ${{ runner.temp }}/soymilk-ci-data
+      AIHOT_CREDENTIALS_DIR: ${{ runner.temp }}/soymilk-ci-credentials
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: soymilk_ci
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: soymilk_ci
+        ports:
+          - 5432:5432
+        # 保留官方镜像默认 host 密码认证；备份凭据测试要求错误密码实际被拒绝。
+        options: >-
+          --health-cmd "pg_isready -U soymilk_ci -d soymilk_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: 安装 PostgreSQL 17 客户端
+        run: |
+          sudo install -d /usr/share/keyrings
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo tee /usr/share/keyrings/postgresql.asc > /dev/null
+          . /etc/os-release
+          echo "deb [signed-by=/usr/share/keyrings/postgresql.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+          /usr/lib/postgresql/17/bin/psql --version
+          /usr/lib/postgresql/17/bin/pg_dump --version
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run check:version
+      - name: 迁移独立 CI 空库
+        run: node scripts/migrate.ts
+      - run: npm test
+      - run: npm run build -w @aihot/web
+      - run: node --test apps/web/tests/*.test.ts
+
+      # 后续可扩展 smoke／mcp-check（需启动隔离站点）及 test:http（需另一未迁移空库）。
+      # 本工作流仅检查，不部署、发布或推送镜像，不使用 secrets。
