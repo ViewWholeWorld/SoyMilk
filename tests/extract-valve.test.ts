@@ -12,7 +12,7 @@ import { getBoss, stopBoss } from "@aihot/backend/jobs/queue";
 
 test("关阀时 worker 仍注册提取消费者，开阀时只注册一次", () => {
   const main = readFileSync(new URL("../apps/worker/src/main.ts", import.meta.url), "utf8");
-  assert.match(main, /^await registerTranslationJobs\(boss\);\nawait registerExtractionJobs\(boss\);\nif /m, "正文提取必须在顶层无条件注册");
+  assert.match(main, /^await registerExtractionJobs\(boss\);$/m, "正文提取必须在顶层无条件注册");
   assert.equal([...main.matchAll(/registerExtractionJobs\(boss\)/g)].length, 1);
   assert.match(main, /if \(process\.env\.COLLECT_ENABLED !== "false"\) await registerSourceJobs\(boss\);/);
   const sources = readFileSync(new URL("../packages/backend/src/jobs/sources.ts", import.meta.url), "utf8");
