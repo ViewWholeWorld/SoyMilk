@@ -1,1 +1,2 @@
-export const hello = (name: string): string => `hello ${name}`;
+// 合约按子路径导入，根入口保留为空模块。
+export {};

@@ -9,6 +9,7 @@ import { sql, type Tx } from "../db.ts";
 import { enqueue, QUEUES } from "../jobs/queue.ts";
 import { queueProcessing } from "../jobs/content.ts";
 import { identityKeyForUrl, normalizeUrl } from "../lib/url.ts";
+import { ValidationError } from "../lib/errors.ts";
 import { publishArticleTx, setSeoDecision } from "../publication/publish.ts";
 import { requestRegroup } from "../events/corrections.ts";
 import { computeHotRanking, storedHotRanking } from "../events/hot.ts";
@@ -76,7 +77,7 @@ const STALE = "这条内容的人工设置已被修改，请刷新后再操作";
 async function overrideRow(id: string, tx: Tx) {
   // Use the same first lock as publication and automatic processing, including the first correction.
   const [article] = await tx`SELECT id FROM articles WHERE id = ${id} FOR UPDATE`;
-  if (!article) throw Object.assign(new Error("内容不存在"), { statusCode: 400 });
+  if (!article) throw new ValidationError("内容不存在");
   const [o] = await tx<{ fields: Record<string, unknown>; visibility: string | null; version: number }[]>`SELECT fields, visibility, version FROM editorial_overrides WHERE article_id = ${id}`;
   return o ?? { fields: {}, visibility: null, version: 0 };
 }
