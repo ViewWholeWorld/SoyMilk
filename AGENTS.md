@@ -11,7 +11,7 @@ SoyMilk 是覆盖游戏、AI、科技、经济、娱乐的私网资讯站，负�
 | 网页 | React 19、React Router 8（SSR）、Vite 8、Tailwind CSS 4 |
 | API | Fastify 5；共享类型与 HTTP 约定放在 `packages/contracts` |
 | 数据与任务 | PostgreSQL 17、`postgres` 客户端、pg-boss 12 队列 |
-| 部署 | Docker Compose；NAS 使用 `deploy/nas/Dockerfile`（Bookworm）手动构建和发布 |
+| 部署 | Docker Compose；NAS 使用 `deploy/nas/Dockerfile`（Bookworm）；`v*` 标签触发 GHCR 镜像构建，所有者说发布后在 NAS 运行 `deploy/nas/auto-release.sh`，手动构建保留为后备 |
 
 必须保持的边界：
 
