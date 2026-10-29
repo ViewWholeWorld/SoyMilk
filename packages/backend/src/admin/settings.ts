@@ -2,6 +2,7 @@
 import type { AdminBudget, AdminSettings, BeforeJson } from "@aihot/contracts/admin";
 import { sql } from "../db.ts";
 import { audit } from "../audit.ts";
+import { ValidationError } from "../lib/errors.ts";
 
 export async function settingsOverview(): Promise<BeforeJson<AdminSettings>> {
   return { budgets: await listBudgets() };
@@ -16,9 +17,9 @@ export async function listBudgets(): Promise<BeforeJson<AdminBudget>[]> {
 }
 
 export async function updateBudget(service: string, input: { perMinute: number; perHour: number; perDay: number; reason: string }, actor: string) {
-  if (["socialdata", "dajiala"].includes(service)) throw Object.assign(new Error("此采集服务已下线"), { statusCode: 400 });
-  if (!input.reason?.trim()) throw new Error("reason is required");
-  for (const v of [input.perMinute, input.perHour, input.perDay]) if (!Number.isInteger(v) || v < 0) throw new Error("budgets are non-negative integers (0 stops the service)");
+  if (["socialdata", "dajiala"].includes(service)) throw new ValidationError("此采集服务已下线");
+  if (!input.reason?.trim()) throw new ValidationError("reason is required");
+  for (const v of [input.perMinute, input.perHour, input.perDay]) if (!Number.isInteger(v) || v < 0) throw new ValidationError("budgets are non-negative integers (0 stops the service)");
   const [before] = await sql`SELECT per_minute, per_hour, per_day FROM budgets WHERE service = ${service}`;
   const [after] = await sql`
     INSERT INTO budgets (service, per_minute, per_hour, per_day, note) VALUES (${service}, ${input.perMinute}, ${input.perHour}, ${input.perDay}, ${input.reason})

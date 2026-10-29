@@ -55,9 +55,9 @@ test("packages never import the apps, and nothing below the admin imports it", (
   assert.deepEqual(found, [], "admin/ is the top layer: move what others need to the module that owns it");
 });
 
-// Public routes read through the public read faces; the rest are the image proxy and shared HTTP helpers. Admin, intake and ingest routes may call any backend use case.
-const PRIVATE_ROUTES = new Set(["admin.ts", "admin-auth.ts", "intake.ts", "ingest.ts"]);
-const PUBLIC_READS = [/^publication\//, /^site\//, /^analytics\//, /^lib\//, /^config\.ts$/, /^media\//, /^jobs\/queue\.ts$/];
+// Public routes read through the public read faces; the rest are the image proxy and shared HTTP helpers. Admin and ingest routes may call any backend use case.
+const PRIVATE_ROUTES = new Set(["admin.ts", "admin-auth.ts", "ingest.ts"]);
+const PUBLIC_READS = [/^publication\//, /^site\//, /^lib\//, /^config\.ts$/, /^media\//, /^jobs\/queue\.ts$/];
 
 function publicImports(files: Source[], paths: Paths = path, root = ROOT): string[] {
   const routes = files.filter(({ file }) => !PRIVATE_ROUTES.has(path.posix.basename(rulePath(file))));

@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance, type RouteOptions } from "fastify";
 import { randomUUID } from "node:crypto";
 import { OAUTH_PROBE_PATHS, resolveRedirect } from "@aihot/contracts/http-policy";
 import { sql } from "@aihot/backend/db";
+import { Unavailable } from "@aihot/backend/lib/errors";
 import { registerSite } from "./routes/site.ts";
 import { registerOg } from "./routes/og.ts";
 import { registerAdminAuth } from "./routes/admin-auth.ts";
@@ -92,7 +93,10 @@ export async function buildApp(options: { onRoute?: (route: RouteOptions) => voi
     if (status === 400 || status === 413 || status === 415) {
       return sendProblem(req, reply, { status: status === 400 ? 400 : status, code: "invalid_request", detail: "The request could not be processed." });
     }
-    return sendProblem(req, reply, { status: 503, code: "temporarily_unavailable", detail: "Temporarily unavailable.", retryAfter: 30 });
+    if (error instanceof Unavailable || status === 503) {
+      return sendProblem(req, reply, { status: 503, code: "temporarily_unavailable", detail: "Temporarily unavailable.", retryAfter: 30 });
+    }
+    return sendProblem(req, reply, { status: 500, code: "internal_error", detail: "服务器内部错误" });
   });
 
   return app;
