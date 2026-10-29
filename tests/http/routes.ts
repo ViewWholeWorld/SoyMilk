@@ -45,9 +45,11 @@ export const adminWrites: [string, string][] = [
   ["POST", "sources"], ["POST", "sources/preview"], ["PATCH", "sources/:id"], ["POST", "sources/:id/preview"], ["POST", "sources/:id/fetch"],
   ...["visibility", "seo", "override", "rerun", "detach"].map(name => ["POST", `content/:id/${name}`] as [string, string]),
   ["POST", "stories/merge"],
+  // content.ts 同时验收空核对说明／空重排原因的 400，确保拒绝后状态不变。
   ["POST", "receipts/:id/release"],
   ["POST", "processing/requeue"],
   ["POST", "followups/:key/dismiss"], ["POST", "followups/:key/restore"],
+  // content.ts 覆盖预算原因缺失、负数与非整数的 400，保留原预算。
   ["PUT", "budgets/:service"], ["POST", "models/:capability"],
   ["POST", "selectbench/import"],
 ];

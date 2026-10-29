@@ -1,6 +1,7 @@
 // 管理各能力的模型、用量与延迟，并保留切换审计和同批材料的 SelectBench 结果。
 import type { AdminModelAssignments, AdminModels, AdminTokenSummary, BeforeJson, ModelBillingKind } from "@aihot/contracts/admin";
 import { sql } from "../db.ts";
+import { ValidationError } from "../lib/errors.ts";
 import { CAPABILITIES, invalidateModelCache, modelSources, type Capability, type CapabilityKey } from "../editorial/models.ts";
 import { registeredModels } from "../providers/llm.ts";
 import { audit } from "../audit.ts";
@@ -136,12 +137,12 @@ export async function switchModel(capability: string, model: string | null, reas
   // 与连接删除共用跨进程锁，核对模型存在与保存引用之间不能插入删除。
   return privateLease("connections", async () => {
     const c = (CAPABILITIES as Record<string, Capability>)[capability];
-    if (!c) throw Object.assign(new Error("unknown capability"), { statusCode: 400 });
-    if (!reason.trim()) throw Object.assign(new Error("a reason is required"), { statusCode: 400 });
+    if (!c) throw new ValidationError("unknown capability");
+    if (!reason.trim()) throw new ValidationError("a reason is required");
     if (model !== null) {
       const spec = (await registeredModels())[model];
-      if (!spec) throw Object.assign(new Error("unknown model"), { statusCode: 400 });
-      if (c.vision && !spec.vision) throw Object.assign(new Error("this capability needs a vision model"), { statusCode: 400 });
+      if (!spec) throw new ValidationError("unknown model");
+      if (c.vision && !spec.vision) throw new ValidationError("this capability needs a vision model");
     }
     const before = (await modelSources())[capability];
     if (model === null) await sql`DELETE FROM settings WHERE key = ${`models.${capability}`}`;

@@ -5,6 +5,7 @@
 // receipt lets its request call again, and an article that stopped on it goes back to processing.
 import { audit, Conflict } from "../audit.ts";
 import { sql } from "../db.ts";
+import { ValidationError } from "../lib/errors.ts";
 import { receiptArticleSubject, resumeAfterRelease } from "../jobs/content.ts";
 import { retryReleasedReceiptJobs } from "../jobs/queue.ts";
 import { consumersForRelease, markStalePendingReceipts, releaseUnknownReceipt } from "../providers/receipts.ts";
@@ -37,7 +38,7 @@ async function release(id: number, error: string, actor: string, note: string, b
 
 /** Admin, after checking the provider's console: records whether it was billed and releases it. */
 export async function releaseReceipt(id: number, input: { billed: boolean; note: string }, actor: string) {
-  if (!input.note?.trim()) throw new Error("note is required");
+  if (!input.note?.trim()) throw new ValidationError("note is required");
   const [row] = await sql<{ status: string }[]>`SELECT status FROM receipts WHERE id = ${id}`;
   if (!row) return null;
   if (row.status !== "unknown") throw new Conflict("只有结果未知的回执需要人工核对");

@@ -142,6 +142,13 @@ export async function contentWorkflows(h: HttpRuntime, scenario: (name: string, 
   await scenario("预算和模型能力设置均写入隔离夹具", async () => {
     const budget = await write("PUT", "/api/admin/budgets/http-fixture", { perMinute: 1, perHour: 2, perDay: 3, reason: "合成预算" });
     assert.equal(budget.per_day, 3); assert.equal(budget.per_minute, 1);
+    for (const patch of [{ reason: " " }, { perMinute: -1 }, { perHour: 1.5 }, { perDay: -1 }]) {
+      const problem = await write("PUT", "/api/admin/budgets/http-fixture", { perMinute: 1, perHour: 2, perDay: 3, reason: "无效预算", ...patch }, 400);
+      assert.equal(problem.code, "invalid_request");
+      assert.equal(problem.detail, "reason" in patch ? "reason is required" : "budgets are non-negative integers (0 stops the service)");
+    }
+    const [unchangedBudget] = await sql`SELECT per_minute, per_hour, per_day FROM budgets WHERE service='http-fixture'`;
+    assert.deepEqual(unchangedBudget, { per_minute: 1, per_hour: 2, per_day: 3 });
     await write("POST", "/api/admin/models/score", { model: null, reason: "恢复默认配置验收" });
     await write("POST", "/api/admin/models/missing", { model: null, reason: "未知能力" }, 400);
     const settings = await read("/api/admin/settings"); assert.ok(settings.budgets.some((b: any) => b.service === "http-fixture"));
@@ -168,10 +175,16 @@ export async function contentWorkflows(h: HttpRuntime, scenario: (name: string, 
   await scenario("未知回执人工释放、失败重排及评测导入", async () => {
     const sample = await attempt("recover", { status: "unknown" });
     await sql`UPDATE receipts SET status='unknown' WHERE id=${sample.receiptId}`;
+    const missingNote = await write("POST", `/api/admin/receipts/${sample.receiptId}/release`, { billed: false, note: " " }, 400);
+    assert.equal(missingNote.code, "invalid_request"); assert.equal(missingNote.detail, "note is required");
+    assert.equal((await sql`SELECT status FROM receipts WHERE id=${sample.receiptId}`)[0]!.status, "unknown");
     await write("POST", `/api/admin/receipts/${sample.receiptId}/release`, { billed: false, note: "合成回执未计费" });
     assert.equal((await sql`SELECT status FROM receipts WHERE id=${sample.receiptId}`)[0]!.status, "failed");
     await write("POST", `/api/admin/receipts/${sample.receiptId}/release`, { billed: false, note: "重复核对" }, 409);
     await sql`UPDATE articles SET processing_state='failed',processing_error='HTTP 合成失败' WHERE id=${publication.articleId}`;
+    const missingReason = await write("POST", "/api/admin/processing/requeue", { group: null, reason: " " }, 400);
+    assert.equal(missingReason.code, "invalid_request"); assert.equal(missingReason.detail, "reason is required");
+    assert.equal((await sql`SELECT processing_state FROM articles WHERE id=${publication.articleId}`)[0]!.processing_state, "failed");
     const requeue = await write("POST", "/api/admin/processing/requeue", { group: null, reason: "合成失败恢复" }); assert.equal(requeue.requeued, 1);
     const report = { meta: { n: 1 }, models: { fixture: { summary: { n: 1 }, cases: [{ caseId: "http-case", title: "合成评测", gold: "select", decision: "select", score: 90 }] } } };
     const run = await write("POST", "/api/admin/selectbench/import", { label: "HTTP 合成评测", report });
