@@ -68,6 +68,13 @@ docs/                      # 中文操作文档、计划和历史证据
 
 ## 第三章：环境搭建与开发流程
 
+### 开发流程
+
+- 所有代码改动（前端与后端）均由 Codex CLI 编写，经审核方审核 diff 通过后才进入 PR。任务分支从 `develop` 切出，PR 目标为 `develop`；具体 Git 规则见第五章。
+- CI（`.github/workflows/ci.yml`）仅检查、不部署，是客观验收依据。本地只运行类型检查（`npm run typecheck`）与改动相关的测试文件，完整套件交给 CI。
+- CI 失败时先分诊环境／工作流问题、偶发不稳定用例或真实回归，再在明确范围内做有边界的修复，由 CI 复验。
+- 推送、合并、部署均须经所有者明确批准；发布与部署保持手动。
+
 ### 本地开发
 
 准备 Node.js 24.22.1+、npm 和独立 PostgreSQL，以下命令仅用于新开发环境：
@@ -114,7 +121,7 @@ npm run dev:web              # 网页：http://localhost:3000
 - 使用独立数据库、数据目录、虚构密钥和隔离网络，不访问生产库、真实模型或外部服务。库名以 `_test` 或 `_ci` 结尾，`COLLECT_ENABLED`、`MODEL_CALLS_ENABLED` 保持关闭。
 - 模型用例用 `tests/setup.ts` 的 `stub()` 与 `useModelStubs()` 绑定本进程的本地替身，仅临时放行内存入口；子进程也须显式绑定。隔离方法见[隔离回归测试](docs/开发指南/隔离回归测试.md)。
 - 最小 CI 仅执行类型、版本、迁移后后端、网页构建与网页测试；两项已知时序用例仅在 `CI=true` 时跳过，见[追踪记录](docs/问题修复/2026-10-29-CI已知不稳定用例.md)。HTTP、冒烟与 MCP 仍按下述要求另行验收。
-- 功能改动至少完成以下检查。纯文档检查内容、路径和差异；简单样式不额外编写测试。
+- 本地检查范围按第三章开发流程执行。纯文档检查内容、路径和差异；简单样式不额外编写测试。以下为完整验收命令参考，完整套件交给 CI，冒烟与 MCP 按受影响的公开入口另行验收。
 
 ```bash
 npm run typecheck
@@ -146,7 +153,7 @@ HTTP 验收自行迁移，重跑另建空库。按[接口验收指南](docs/开�
 
 - 先检查 `git status`、`git branch -a` 和所有未提交／未跟踪改动，保留用户工作。从最新 `develop` 切 `feature/`、`bugfix/`、`refactor/`、`docs/`、`test/` 或 `chore/` 分支，不在 `main`、`develop` 直接提交。
 - 一个任务一个分支。**仅在用户明确要求时提交**；分项提交获授权后，每项验证并提交再开始下一项。使用 Conventional Commits，逐文件暂存，检查 `git diff --staged` 与 `git diff --check`；不提交 `.env`、密钥、授权缓存、`.data/` 和日志。
-- 日常 PR 指向 `develop`；`release/vX.Y.Z` 从 `develop` 发往 `main`，`hotfix/` 从 `main` 切出，发布后回合 `develop`。合并、推送受保护分支、标签／发版、删除远程分支或改写已推送历史须有明确授权，不跳过钩子或强推共享分支。
+- 日常 PR 指向 `develop`；`release/vX.Y.Z` 从 `develop` 发往 `main`，`hotfix/` 从 `main` 切出，发布后回合 `develop`。推送、合并、标签／发版、删除远程分支或改写已推送历史须经所有者明确批准，不跳过钩子或强推共享分支。
 - 上游改动手动移植，先读[上游审查台账](docs/问题修复/上游审查台账.md)，按完整 SHA 续查、复核待办，逐项记录后推进游标。审核、实现和部署分别记录，不重新引入下线功能。
 - 同步相关中文文档和索引链接。用户可见变更更新 `industry/changelog.json`，最新条目置顶；维护配置或测试调整记入[维护变更记录](docs/历史记录/维护变更记录.md)。
 - 发版按 SemVer，同步根 `package.json`、锁文件根包、`PUBLIC_VERSIONS.v1OpenApi`、网站日志顶层及最新条目的 `version`，运行 `npm run check:version`。`latestVersion` 为北京时间日期时间；纯文档不升应用版本，不补造历史公告。
