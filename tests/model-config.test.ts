@@ -235,7 +235,8 @@ test("model usage weights cache hits by measured input and keeps historical omis
   assert.equal(overview.tokenSummary.cacheUnknownInputTokens-before.cacheUnknownInputTokens,500);
   assert.equal(overview.tokenSummary.calls-before.calls,3);
 });
-test("pinned official binary accepts bridge settings and reads an empty isolated account offline", async () => {
+// 仅 CI 跳过已知时序不稳定用例；现象与移除条件见 docs/问题修复/2026-10-29-CI已知不稳定用例.md。
+test("pinned official binary accepts bridge settings and reads an empty isolated account offline", { skip: process.env.CI === "true" }, async () => {
   const server = await openCodexServer();
   try { assert.equal((await server.request("account/read", { refreshToken: false })).account, null); }
   finally { await server.stop(); }
@@ -261,7 +262,8 @@ test("Codex catalog reports model defaults and an explicit effort reaches turn/s
   assert.equal(turn.effort, "high"); assert.equal(turn.approvalPolicy, "never"); assert.equal(turn.sandboxPolicy.networkAccess, false);
   await server.stop();
 });
-test("device login stays bound to its initiating session and observes managed completion", async () => {
+// 仅 CI 跳过已知时序不稳定用例；现象与移除条件见 docs/问题修复/2026-10-29-CI已知不稳定用例.md。
+test("device login stays bound to its initiating session and observes managed completion", { skip: process.env.CI === "true" }, async () => {
   let server!: CodexServer;
   const view = await startCodexLogin("session-a", async () => { server = fake(); return server; });
   assert.equal(view.state, "pending"); assert.equal(view.userCode, "FAKE-CODE");

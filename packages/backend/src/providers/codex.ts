@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import { config } from "../config.ts";
+import { Conflict, NotFound, ValidationError } from "../lib/errors.ts";
 import { codexHome, privateLease, resetCodexIdentity, withCodexAdmin } from "./model-config.ts";
 import { ReceiptBusyError } from "./receipts.ts";
 import type { ContentPart } from "./llm.ts";
@@ -133,7 +134,7 @@ export async function startCodexLogin(owner: string, open = openCodexServer, res
   if (restart && login?.view.state === "pending") await login.cancel();
   if (login?.view.state === "pending") {
     if (login.owner === owner) return login.view;
-    throw Object.assign(new Error("另一个登录会话正在授权，可能来自你打开的其他地址或浏览器。可点击重新开始授权。"), { statusCode: 409 });
+    throw new Conflict("另一个登录会话正在授权，可能来自你打开的其他地址或浏览器。可点击重新开始授权。");
   }
   let ready!: (v: CodexLogin) => void;
   let reject!: (e: unknown) => void;
@@ -182,7 +183,7 @@ export async function startCodexLogin(owner: string, open = openCodexServer, res
   return started;
 }
 export function codexLoginStatus(owner: string, id: string): CodexLogin {
-  if (!login || login.owner !== owner || login.view.id !== id) throw Object.assign(new Error("授权已结束或页面已失效，请重新连接"), { statusCode: 404 });
+  if (!login || login.owner !== owner || login.view.id !== id) throw new NotFound("授权已结束或页面已失效，请重新连接");
   return login.view;
 }
 export async function cancelCodexLogin(owner: string, id: string) { codexLoginStatus(owner, id); await login!.cancel(); return login!.view; }
@@ -197,7 +198,7 @@ export async function codexModels(open = openCodexServer) {
   return withCodexAdmin(async () => {
     const server = await open();
     try {
-      if (!(await account(server)).connected) throw Object.assign(new Error("请先连接 Codex 账号"), { statusCode: 400 });
+      if (!(await account(server)).connected) throw new ValidationError("请先连接 Codex 账号");
       const r = await server.request("model/list", { includeHidden: false });
       return { models: (r.data as any[]).map((m) => ({ model: m.model, name: m.displayName, vision: m.inputModalities?.includes("image") ?? false,
         defaultReasoningEffort: m.defaultReasoningEffort ?? null, supportedReasoningEfforts: m.supportedReasoningEfforts ?? [],

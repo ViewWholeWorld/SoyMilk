@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ZodError } from "zod";
 import type { AdminMe } from "@aihot/contracts/admin";
 import { config } from "@aihot/backend/config";
+import { AppError } from "@aihot/backend/lib/errors";
 import {
   cookie,
   endSession,
@@ -56,14 +57,17 @@ export function adminHandler(fn: AdminHandler) {
       if (error instanceof ZodError) {
         return sendProblem(req, reply, { status: 400, code: "invalid_request", detail: error.issues.map((issue) => `${issue.path.join(".") || "请求"}: ${issue.message}`).join("; ").slice(0, 300) });
       }
-      if ((error as { statusCode?: number }).statusCode === 400 || error instanceof SyntaxError) {
+      if (error instanceof SyntaxError) {
         return sendProblem(req, reply, { status: 400, code: "invalid_request", detail: String((error as Error).message).slice(0, 300) });
+      }
+      if (error instanceof AppError) {
+        return sendProblem(req, reply, { status: error.status, code: error.code, detail: error.expose ? error.message.slice(0, 300) : "服务器内部错误" });
       }
       if ((error as { code?: string }).code === "conflict") return sendProblem(req, reply, { status: 409, code: "conflict", detail: (error as Error).message });
       const status = (error as { statusCode?: number }).statusCode;
-      if (status === 404 || status === 409) return sendProblem(req, reply, { status, code: status === 404 ? "not_found" : "conflict", detail: String((error as Error).message).slice(0, 300) });
+      if (status === 400 || status === 404 || status === 409) return sendProblem(req, reply, { status, code: status === 400 ? "invalid_request" : status === 404 ? "not_found" : "conflict", detail: String((error as Error).message).slice(0, 300) });
       req.log.error({ err: error, path: req.url.split("?")[0] }, "admin api error");
-      return sendProblem(req, reply, { status: 500, code: "internal_error", detail: String((error as Error).message).slice(0, 300) });
+      return sendProblem(req, reply, { status: 500, code: "internal_error", detail: "服务器内部错误" });
     }
   };
 }

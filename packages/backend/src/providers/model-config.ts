@@ -9,6 +9,7 @@ import { config } from "../config.ts";
 import { atomicPrivateJson } from "./chatgpt-auth.ts";
 import { ProviderUnavailableError } from "./receipts.ts";
 import { sql } from "../db.ts";
+import { Conflict, NotFound, ValidationError } from "../lib/errors.ts";
 import { officialSupplierId } from "./model-supplier.ts";
 
 export const ConnectionInput = z.object({
@@ -54,7 +55,7 @@ export async function privateLease<T>(name: string, work: () => Promise<T>): Pro
       // Every operation has a shorter hard deadline than the twenty-minute crash lease.
       const s = await stat(lock).catch(() => null);
       if (s && Date.now() - s.mtimeMs > 20 * 60_000) { await rmdir(lock).catch(() => {}); continue; }
-      if (Date.now() > until) throw Object.assign(new Error("Codex 正在登录或处理任务，请稍后重试"), { statusCode: 409 });
+      if (Date.now() > until) throw new Conflict("Codex 正在登录或处理任务，请稍后重试");
       await delay(100);
     }
   }
@@ -93,7 +94,7 @@ export async function saveModelConnection(input: unknown) {
   return privateLease("connections", async () => {
     const c = await readModelConfig();
     const old = c.connections.find((x) => x.id === v.id);
-    if (v.id && !old) throw Object.assign(new Error("连接不存在"), { statusCode: 404 });
+    if (v.id && !old) throw new NotFound("连接不存在");
     const next: ModelConnection = { ...v, id: old?.id ?? randomUUID(), apiKey: v.type === "api-key" ? v.apiKey || old?.apiKey : undefined, generation: old?.generation };
     // 旧客户端显式指定归属视为手动；两个字段都省略时保留已保存的选择。
     next.autoSupplier = v.autoSupplier ?? (v.supplierId !== undefined ? false : old?.autoSupplier);
@@ -102,9 +103,9 @@ export async function saveModelConnection(input: unknown) {
       ? old.supplierId : officialSupplierId(v.type, v.baseUrl);
     if (next.supplierId) {
       const [supplier] = await sql`SELECT id FROM model_suppliers WHERE id=${next.supplierId}`;
-      if (!supplier) throw Object.assign(new Error("供应商不存在"), { statusCode: 400 });
+      if (!supplier) throw new ValidationError("供应商不存在");
     }
-    if (next.type === "api-key" && !next.apiKey) throw Object.assign(new Error("请填写 API Key"), { statusCode: 400 });
+    if (next.type === "api-key" && !next.apiKey) throw new ValidationError("请填写 API Key");
     // Keep legacy absence too: adding an identity on a name-only edit would bypass its old receipts.
     if (!old || !sameRequestConfiguration(old, next)) next.generation = randomUUID();
     c.connections = [...c.connections.filter((x) => x.id !== next.id), next];
@@ -115,7 +116,7 @@ export async function saveModelConnection(input: unknown) {
 export async function selectModelConnection(id: string | null) {
   return privateLease("connections", async () => {
     const c = await readModelConfig();
-    if (id !== null && !c.connections.some((x) => x.id === id)) throw Object.assign(new Error("连接不存在"), { statusCode: 400 });
+    if (id !== null && !c.connections.some((x) => x.id === id)) throw new ValidationError("连接不存在");
     c.active = id;
     await atomicPrivateJson(file(), c);
     return { active: id };
@@ -124,11 +125,11 @@ export async function selectModelConnection(id: string | null) {
 export async function deleteModelConnection(id: string) {
   return privateLease("connections", async () => {
     const c = await readModelConfig();
-    if (c.active === id) throw Object.assign(new Error("请先切换默认连接，再删除此连接"), { statusCode: 409 });
+    if (c.active === id) throw new Conflict("请先切换默认连接，再删除此连接");
     const before = c.connections.find((x) => x.id === id);
     const references = await sql<{ key: string }[]>`
       SELECT key FROM settings WHERE key LIKE 'models.%' AND value->>'model'=${`connection:${id}`} ORDER BY key`;
-    if (references.length) throw Object.assign(new Error(`此连接仍被能力 ${references.map(r => r.key.slice(7)).join("、")} 使用，请先在“模型与能力”中更换后再删除`), { statusCode: 409 });
+    if (references.length) throw new Conflict(`此连接仍被能力 ${references.map(r => r.key.slice(7)).join("、")} 使用，请先在“模型与能力”中更换后再删除`);
     c.connections = c.connections.filter((x) => x.id !== id);
     await atomicPrivateJson(file(), c);
     return before ? publicConnection(before) : null;

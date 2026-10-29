@@ -161,6 +161,7 @@ export async function extractArticleBody(articleId: string, allowJina = process.
   if (!a || a.body_status === "ok") return "skipped";
   // 已下线类型的历史正文不会再请求付费采集；已有正文直接沿用。
   if (a.x_post?.tweetId || !pageFetchable(a.url, a.source_kind)) return markUnconfirmed(a.id, a.revision);
+  if (process.env.COLLECT_ENABLED === "false") throw new ProviderUnavailableError("disabled", "等待采集开关（COLLECT_ENABLED=false）");
   const got = await extractFromUrl(a.url, { allowJina, subject: `article:${a.id}@${a.revision}`, round: () => pinBodyFallback(a.id, a.revision, a.url) });
   if (!got) {
     return markUnconfirmed(articleId, a.revision);

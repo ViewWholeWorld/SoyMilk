@@ -17,6 +17,7 @@ import { republishSource } from "@aihot/backend/publication/publish";
 const T = tag();
 const BODY = `A lab released a new AI model with benchmark results and pricing details. ${T} `.repeat(12);
 const originalConfig = { modelCallsEnabled: config.modelCallsEnabled, allowPrivateNetworkFetch: config.allowPrivateNetworkFetch };
+const previousCollect = process.env.COLLECT_ENABLED;
 const provider = await stub((_hit, req) => {
   const body = JSON.parse(req.body) as { messages: Array<{ role: string; content: string }> };
   const system = body.messages[0]?.role === "system" ? body.messages[0].content : "";
@@ -43,12 +44,14 @@ await new Promise<void>((resolve) => page.listen(0, "127.0.0.1", resolve));
 const pageUrl = `http://127.0.0.1:${(page.address() as { port: number }).port}`;
 config.modelCallsEnabled = true;
 config.allowPrivateNetworkFetch = true;
+process.env.COLLECT_ENABLED = "true"; // 仅请求本文件的本地采集替身。
 
 before(async () => {
   await sql`UPDATE budgets SET per_minute = 1000, per_hour = 10000, per_day = 100000 WHERE service IN ('dashscope', 'zhipu', 'deepseek', 'llm')`;
 });
 after(async () => {
   Object.assign(config, originalConfig);
+  if (previousCollect === undefined) delete process.env.COLLECT_ENABLED; else process.env.COLLECT_ENABLED = previousCollect;
   await provider.close();
   await new Promise<void>((resolve) => page.close(() => resolve()));
   await stopBoss();

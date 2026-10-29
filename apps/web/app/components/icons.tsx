@@ -5,7 +5,7 @@ type P = SVGProps<SVGSVGElement> & { size?: number };
 
 function Svg({ size = 18, children, ...rest }: P & { children: React.ReactNode }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...rest}>
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" {...rest} role={rest["aria-label"] ? "img" : undefined} aria-hidden={rest["aria-label"] ? undefined : "true"}>
       {children}
     </svg>
   );

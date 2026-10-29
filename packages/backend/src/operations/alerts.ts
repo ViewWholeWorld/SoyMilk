@@ -3,6 +3,7 @@ import { beijingDate, beijingTime } from "@aihot/contracts/time";
 import { sql } from "../db.ts";
 import { credential } from "../config.ts";
 import { audit } from "../audit.ts";
+import { ValidationError } from "../lib/errors.ts";
 import { beijingStamp, duration, formatAlert, formatRecovery, recordDiagnostic, type Finding, type Level } from "./diagnostics.ts";
 import { backupConfigured } from "./backup.ts";
 import { sourceHealthFindings } from "../sources/health.ts";
@@ -300,7 +301,7 @@ export async function dismissedFollowUps(findings?: Finding[]): Promise<Record<s
     return finding && (!finding.observedAt || finding.observedAt.getTime()<=Date.parse(closed.at));
   }));
 }
-const invalidFollowUp = (message:string) => Object.assign(new Error(message),{statusCode:400});
+const invalidFollowUp = (message:string) => new ValidationError(message);
 export async function dismissFollowUp(key:string, reason:string, actor:string, now=Date.now()): Promise<DismissedFollowUp> {
   if (typeof reason!=='string' || !reason.trim() || reason.trim().length>2000) throw invalidFollowUp('需要填写 1 到 2000 字的忽略理由');
   const finding = (await sourceHealthFindings(now)).find(f => f.key===key);

@@ -11,7 +11,7 @@ SoyMilk 是覆盖游戏、AI、科技、经济、娱乐的私网资讯站，负�
 | 网页 | React 19、React Router 8（SSR）、Vite 8、Tailwind CSS 4 |
 | API | Fastify 5；共享类型与 HTTP 约定放在 `packages/contracts` |
 | 数据与任务 | PostgreSQL 17、`postgres` 客户端、pg-boss 12 队列 |
-| 部署 | Docker Compose；NAS 使用 `deploy/nas/Dockerfile`（Bookworm）手动构建和发布 |
+| 部署 | Docker Compose；NAS 使用 `deploy/nas/Dockerfile`（Bookworm）；`v*` 标签触发 GHCR 镜像构建，所有者说发布后在 NAS 运行 `deploy/nas/auto-release.sh`，手动构建保留为后备 |
 
 必须保持的边界：
 
@@ -25,6 +25,7 @@ SoyMilk 是覆盖游戏、AI、科技、经济、娱乐的私网资讯站，负�
 - 项目目录或代码结构发生新增、删除、移动、重命名或职责调整时，须在同一次变更中同步更新 `AGENTS.md` 的目录结构、路径及相关说明，保持与实际项目结构一致。
 
 ```text
+.github/workflows/         # 最小检查 CI；v* 标签触发 GHCR 镜像构建，不连接 NAS
 apps/
   api/src/                 # Fastify 入口、routes/、HTTP 响应与分享图
   worker/src/              # worker 入口 main.ts、定时任务 schedules.ts
@@ -48,14 +49,14 @@ packages/
     admin/                 # 后台业务与鉴权
     operations/            # 预算恢复、诊断、备份、心跳；request-observation*.ts 与 digest-observation.ts 记录脱敏请求机会、生成只读日报
     media/                 # 图片与媒体处理
-    lib/                   # 纯工具与规则，包括 JSONL 校验、固定种子抽样和评测指标
+    lib/                   # 纯工具与规则；业务错误统一用 errors.ts 的 AppError 家族；含 JSONL 校验、固定种子抽样和评测指标
     db.ts                  # 数据库连接
     config.ts              # 后端配置
 industry/                  # 行业配置、提示词、品牌与条款
 database/migrations/       # 按编号追加的数据库增量迁移
 scripts/                   # 初始化、迁移、种子、冒烟、HTTP 验收；eval-tools/评测 core 复用生产规则；report-model-requests.ts 汇总北京日请求观察
 tests/                     # 后端回归；http/ 为真实 HTTP 验收，fixtures/ 为夹具
-deploy/nas/                # NAS Dockerfile、Compose 入口及私有覆盖位置
+deploy/nas/                # NAS Dockerfile、Compose 入口、按需发布脚本及私有配置模板
 integrations/              # 可选接入示例，不代表生产已部署
 assets/                    # 字体等静态资源
 docs/                      # 中文操作文档、计划和历史证据
@@ -66,6 +67,13 @@ docs/                      # 中文操作文档、计划和历史证据
 `industry/prompts/understand-rules.md` 与 `structure-rules.md` 定义字段语义，单项和合并模板分别定义输出格式；`rules-tags.md` 从行业词表统一渲染标签，`rules-cross-field-evidence.md` 为写作与结构统一约束条件价格、日期精度与事实归属。P2a 合并输入只展开一次共同规则和标签词表；P2b 的字段规则与正文输入共同受同一事实边界约束。
 
 ## 第三章：环境搭建与开发流程
+
+### 开发流程
+
+- 所有代码改动（前端与后端）均由 Codex CLI 编写，经审核方审核 diff 通过后才进入 PR。任务分支从 `develop` 切出，PR 目标为 `develop`；具体 Git 规则见第五章。
+- CI（`.github/workflows/ci.yml`）仅检查、不部署，是客观验收依据。本地只运行类型检查（`npm run typecheck`）与改动相关的测试文件，完整套件交给 CI。
+- CI 失败时先分诊环境／工作流问题、偶发不稳定用例或真实回归，再在明确范围内做有边界的修复，由 CI 复验。
+- 推送、合并、部署均须经所有者明确批准；发布与部署保持手动。
 
 ### 本地开发
 
@@ -104,7 +112,7 @@ npm run dev:web              # 网页：http://localhost:3000
 - 通过 HTTP 内网或 Tailscale IP 加端口访问，不要求 HTTPS。模型在 `/admin/models` 管理，Codex 设备授权无需 SSH 回调隧道。
 - 生产采集和模型调用已授权开启；保持账号、模型、强度、预算与 Codex 复用。3.8.0 已按授权将 Codex 通道改为 **1**、请求工作启动间隔 **3000 毫秒**，文章分析并发保持 **2**；预筛满 **5 篇**或最早等待 **30 分钟**即发。保持批次、消费者和 unknown 恢复，见[节流计划](docs/系统优化/2026-10-21-Codex限流与新闻请求节流计划.md)。不通过改请求身份、重评、换账号或提高预算加速，不为测试修改生产开关。
 - 入口为 `ssh beans-nas`，部署目录 `/share/homes/tromso/apps/soymilk` 不是 Git checkout。统一用 `sh deploy/nas/compose.sh`，保留私有覆盖及最后的 `compose.release.yml`，核对 setup/API/worker/web 镜像和 setup 的 `--topics-only`。
-- 已取消 CI、自动镜像发布和自动部署。发布、新增迁移、基础 Compose 及受保护定制变更须有具体授权；按[手动部署流程](docs/运维部署/生产环境手动部署.md)验证、排空 worker、备份、切换和验收。仅回退兼容应用，保留新状态、迟到分析过滤、轮次及回执消费者；不恢复旧库、删除付费记录或批量重开历史终态。
+- 已恢复仅检查的最小 CI（PR 到 develop/main 或手动触发时运行类型、版本、后端、网页构建与网页测试，不部署），v* 标签触发 GHCR 镜像构建，所有者说发布后在 NAS 运行 `deploy/nas/auto-release.sh`（2026-10-29 所有者批准，新增迁移随发布自动执行）；CI 不连接 NAS、GitHub 不存放密钥。仓库不得提交 IP、主机名、用户名、端口、密钥路径、代理地址或令牌。发布、基础 Compose 及受保护定制变更仍须具体授权；按[手动部署流程](docs/运维部署/生产环境手动部署.md)验证、排空 worker、备份、切换和验收。仅回退兼容应用，保留新状态、迟到分析过滤、轮次及回执消费者；不恢复旧库、删除付费记录或批量重开历史终态。
 - **Hermes 已不在 NAS 部署**。旧文档的固定网络、启动与原生客户端验收要求不再适用；仓库示例仅供可选接入，公开 MCP 五个匿名只读工具继续保留。
 - 不读取或输出生产 `.env`、密钥、Codex `auth.json`、令牌、完整 Docker inspect／Compose config 或未筛选日志。通过 `bootstrapBudgetStatus()`、`modelsOverview().tokenSummary` 等状态接口输出必要统计，运行计数和预算标注查询时间。
 
@@ -112,7 +120,8 @@ npm run dev:web              # 网页：http://localhost:3000
 
 - 使用独立数据库、数据目录、虚构密钥和隔离网络，不访问生产库、真实模型或外部服务。库名以 `_test` 或 `_ci` 结尾，`COLLECT_ENABLED`、`MODEL_CALLS_ENABLED` 保持关闭。
 - 模型用例用 `tests/setup.ts` 的 `stub()` 与 `useModelStubs()` 绑定本进程的本地替身，仅临时放行内存入口；子进程也须显式绑定。隔离方法见[隔离回归测试](docs/开发指南/隔离回归测试.md)。
-- 功能改动至少完成以下检查。纯文档检查内容、路径和差异；简单样式不额外编写测试。
+- 最小 CI 仅执行类型、版本、迁移后后端、网页构建与网页测试；两项已知时序用例仅在 `CI=true` 时跳过，见[追踪记录](docs/问题修复/2026-10-29-CI已知不稳定用例.md)。HTTP、冒烟与 MCP 仍按下述要求另行验收。
+- 本地检查范围按第三章开发流程执行。纯文档检查内容、路径和差异；简单样式不额外编写测试。以下为完整验收命令参考，完整套件交给 CI，冒烟与 MCP 按受影响的公开入口另行验收。
 
 ```bash
 npm run typecheck
@@ -144,7 +153,7 @@ HTTP 验收自行迁移，重跑另建空库。按[接口验收指南](docs/开�
 
 - 先检查 `git status`、`git branch -a` 和所有未提交／未跟踪改动，保留用户工作。从最新 `develop` 切 `feature/`、`bugfix/`、`refactor/`、`docs/`、`test/` 或 `chore/` 分支，不在 `main`、`develop` 直接提交。
 - 一个任务一个分支。**仅在用户明确要求时提交**；分项提交获授权后，每项验证并提交再开始下一项。使用 Conventional Commits，逐文件暂存，检查 `git diff --staged` 与 `git diff --check`；不提交 `.env`、密钥、授权缓存、`.data/` 和日志。
-- 日常 PR 指向 `develop`；`release/vX.Y.Z` 从 `develop` 发往 `main`，`hotfix/` 从 `main` 切出，发布后回合 `develop`。合并、推送受保护分支、标签／发版、删除远程分支或改写已推送历史须有明确授权，不跳过钩子或强推共享分支。
+- 日常 PR 指向 `develop`；`release/vX.Y.Z` 从 `develop` 发往 `main`，`hotfix/` 从 `main` 切出，发布后回合 `develop`。推送、合并、标签／发版、删除远程分支或改写已推送历史须经所有者明确批准，不跳过钩子或强推共享分支。
 - 上游改动手动移植，先读[上游审查台账](docs/问题修复/上游审查台账.md)，按完整 SHA 续查、复核待办，逐项记录后推进游标。审核、实现和部署分别记录，不重新引入下线功能。
 - 同步相关中文文档和索引链接。用户可见变更更新 `industry/changelog.json`，最新条目置顶；维护配置或测试调整记入[维护变更记录](docs/历史记录/维护变更记录.md)。
 - 发版按 SemVer，同步根 `package.json`、锁文件根包、`PUBLIC_VERSIONS.v1OpenApi`、网站日志顶层及最新条目的 `version`，运行 `npm run check:version`。`latestVersion` 为北京时间日期时间；纯文档不升应用版本，不补造历史公告。
