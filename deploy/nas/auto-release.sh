@@ -64,9 +64,7 @@ if [ "$dry_run" = true ]; then
   run cp '<镜像覆盖及三个私有覆盖>' 'backups/release-<时间>/'
   run docker_cmd run --rm --entrypoint ls "$image" /app/database/migrations
   run docker_cmd run --rm --entrypoint ls '<当前镜像ID>' /app/database/migrations
-  run compose exec -T db pg_dump -U aihot -d aihot -Fc
-  run compose exec -T db pg_restore --list '<读取db.dump，保存database-contents.txt并检查非空>'
-  run compose exec -T api tar -C /data -cf - '<存在的附件目录>'
+  printf '计划：仅有新迁移时运行 pg_dump 和 pg_restore --list 非空检查；否则打印“无新迁移，跳过数据库备份”。\n'
   run docker_cmd inspect --format '{{.Id}} {{.Image}} {{.State.StartedAt}}' '<db容器，保存切换前状态>'
   run compose stop -t 230 worker
   run docker_cmd inspect --format '{{.State.ExitCode}}' '<worker容器，须为0>'
@@ -82,6 +80,8 @@ if [ "$dry_run" = true ]; then
   run sha256sum docker-compose.yml deploy/nas/compose.sh deploy/nas/compose.override.yml deploy/nas/compose.codex-worker.yml deploy/nas/compose.web-time.yml
   run diff '<切换前配置校验和>' '<验收时配置校验和>'
   run compose exec -T web node scripts/smoke.ts --base "$WEB_SMOKE_BASE"
+  printf '计划：成功后仅保留最新 3 个 backups/release-* 目录；清理失败只记日志。\n'
+  printf '计划：成功后对 %s 中除新镜像和上一镜像外的 ID 执行 docker image rm，不强制删除；失败只记日志。\n' "$IMAGE_REPO"
   printf '失败时恢复镜像覆盖并固定旧镜像ID，仅回退应用；不恢复数据库。\n'
   exit 0
 fi
@@ -122,6 +122,26 @@ set_images() {
     { print }
   ' "$release" > "$release.tmp" || return 1
   mv "$release.tmp" "$release"
+}
+cleanup() {
+  release_dirs=$(for dir in backups/release-*; do
+    [ -d "$dir" ] || continue
+    printf '%s\n' "$dir"
+  done)
+  release_dirs=$(printf '%s\n' "$release_dirs" | LC_ALL=C sort -r)
+  printf '%s\n' "$release_dirs" | sed '1,3d' | while IFS= read -r dir; do
+    rm -rf "$dir" || printf '清理备份失败：%s\n' "$dir"
+  done
+  if image_ids=$(docker_cmd image ls --no-trunc --format '{{.ID}}' "$IMAGE_REPO"); then
+    image_ids=$(printf '%s\n' "$image_ids" | sort -u)
+    printf '%s\n' "$image_ids" | while IFS= read -r image_id; do
+      [ -n "$image_id" ] || continue
+      [ "$image_id" != "$new_image" ] && [ "$image_id" != "$previous_image" ] || continue
+      docker_cmd image rm "$image_id" || printf '清理镜像失败：%s\n' "$image_id"
+    done
+  else
+    printf '列出仓库镜像失败，跳过镜像清理\n'
+  fi
 }
 write_release() {
   cat > "$release" <<YAML
@@ -216,6 +236,7 @@ current_version=$(docker_cmd run --rm --entrypoint node "$previous_image" -p 'JS
 if [ "$current_version" = "$version" ]; then
   printf '已是最新\n'
   result=noop
+  rm -rf "$backup"
   exit 0
 fi
 step=pull
@@ -237,10 +258,13 @@ if [ -s "$backup/migrations-added.txt" ]; then
   cat "$backup/migrations-added.txt"
 fi
 step=backup-data
-compose exec -T db pg_dump -U aihot -d aihot -Fc > "$backup/db.dump"
-compose exec -T db pg_restore --list < "$backup/db.dump" > "$backup/database-contents.txt"
-[ -s "$backup/database-contents.txt" ]
-compose exec -T api sh -c 'cd /data; set --; for dir in uploads feedback-screenshots; do if [ -d "$dir" ]; then set -- "$@" "$dir"; fi; done; if [ "$#" -gt 0 ]; then tar -cf - "$@"; fi' > "$backup/attachments.tar"
+if [ "$new_migrations" = true ]; then
+  compose exec -T db pg_dump -U aihot -d aihot -Fc > "$backup/db.dump"
+  compose exec -T db pg_restore --list < "$backup/db.dump" > "$backup/database-contents.txt"
+  [ -s "$backup/database-contents.txt" ]
+else
+  printf '无新迁移，跳过数据库备份\n'
+fi
 container=$(compose ps -q db)
 [ -n "$container" ]
 docker_cmd inspect --format '{{.Id}} {{.Image}} {{.State.StartedAt}}' "$container" > "$backup/db-before.txt"
@@ -293,3 +317,4 @@ until compose exec -T web node scripts/smoke.ts --base "$WEB_SMOKE_BASE"; do
   sleep 5
 done
 result=success
+cleanup || :
