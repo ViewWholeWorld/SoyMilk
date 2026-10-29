@@ -49,7 +49,7 @@ packages/
     admin/                 # 后台业务与鉴权
     operations/            # 预算恢复、诊断、备份、心跳；request-observation*.ts 与 digest-observation.ts 记录脱敏请求机会、生成只读日报
     media/                 # 图片与媒体处理
-    lib/                   # 纯工具与规则，包括 JSONL 校验、固定种子抽样和评测指标
+    lib/                   # 纯工具与规则；业务错误统一用 errors.ts 的 AppError 家族；含 JSONL 校验、固定种子抽样和评测指标
     db.ts                  # 数据库连接
     config.ts              # 后端配置
 industry/                  # 行业配置、提示词、品牌与条款
