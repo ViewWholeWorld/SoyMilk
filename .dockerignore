@@ -15,3 +15,7 @@ deploy/nas/compose.override.yml
 deploy/nas/compose.codex-worker.yml
 deploy/nas/compose.web-time.yml
 deploy/nas/compose.release.yml
+
+# NAS 发布私有配置与运行状态不得进入镜像
+deploy/nas/auto-release.env
+deploy/nas/release-status

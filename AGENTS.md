@@ -25,7 +25,7 @@ SoyMilk 是覆盖游戏、AI、科技、经济、娱乐的私网资讯站，负�
 - 项目目录或代码结构发生新增、删除、移动、重命名或职责调整时，须在同一次变更中同步更新 `AGENTS.md` 的目录结构、路径及相关说明，保持与实际项目结构一致。
 
 ```text
-.github/workflows/         # PR／手动触发的最小检查 CI，不部署或发布
+.github/workflows/         # 最小检查 CI；v* 标签触发 GHCR 镜像构建，不连接 NAS
 apps/
   api/src/                 # Fastify 入口、routes/、HTTP 响应与分享图
   worker/src/              # worker 入口 main.ts、定时任务 schedules.ts
@@ -56,7 +56,7 @@ industry/                  # 行业配置、提示词、品牌与条款
 database/migrations/       # 按编号追加的数据库增量迁移
 scripts/                   # 初始化、迁移、种子、冒烟、HTTP 验收；eval-tools/评测 core 复用生产规则；report-model-requests.ts 汇总北京日请求观察
 tests/                     # 后端回归；http/ 为真实 HTTP 验收，fixtures/ 为夹具
-deploy/nas/                # NAS Dockerfile、Compose 入口及私有覆盖位置
+deploy/nas/                # NAS Dockerfile、Compose 入口、按需发布脚本及私有配置模板
 integrations/              # 可选接入示例，不代表生产已部署
 assets/                    # 字体等静态资源
 docs/                      # 中文操作文档、计划和历史证据
@@ -105,7 +105,7 @@ npm run dev:web              # 网页：http://localhost:3000
 - 通过 HTTP 内网或 Tailscale IP 加端口访问，不要求 HTTPS。模型在 `/admin/models` 管理，Codex 设备授权无需 SSH 回调隧道。
 - 生产采集和模型调用已授权开启；保持账号、模型、强度、预算与 Codex 复用。3.8.0 已按授权将 Codex 通道改为 **1**、请求工作启动间隔 **3000 毫秒**，文章分析并发保持 **2**；预筛满 **5 篇**或最早等待 **30 分钟**即发。保持批次、消费者和 unknown 恢复，见[节流计划](docs/系统优化/2026-10-21-Codex限流与新闻请求节流计划.md)。不通过改请求身份、重评、换账号或提高预算加速，不为测试修改生产开关。
 - 入口为 `ssh beans-nas`，部署目录 `/share/homes/tromso/apps/soymilk` 不是 Git checkout。统一用 `sh deploy/nas/compose.sh`，保留私有覆盖及最后的 `compose.release.yml`，核对 setup/API/worker/web 镜像和 setup 的 `--topics-only`。
-- 已恢复仅检查的最小 CI（PR 到 develop/main 或手动触发时运行类型、版本、后端、网页构建与网页测试，不部署），自动镜像发布与自动部署仍取消，发布流程不变。发布、新增迁移、基础 Compose 及受保护定制变更须有具体授权；按[手动部署流程](docs/运维部署/生产环境手动部署.md)验证、排空 worker、备份、切换和验收。仅回退兼容应用，保留新状态、迟到分析过滤、轮次及回执消费者；不恢复旧库、删除付费记录或批量重开历史终态。
+- 已恢复仅检查的最小 CI（PR 到 develop/main 或手动触发时运行类型、版本、后端、网页构建与网页测试，不部署），v* 标签触发 GHCR 镜像构建，所有者说发布后在 NAS 运行 `deploy/nas/auto-release.sh`（2026-10-29 所有者批准，新增迁移随发布自动执行）；CI 不连接 NAS、GitHub 不存放密钥。仓库不得提交 IP、主机名、用户名、端口、密钥路径、代理地址或令牌。发布、基础 Compose 及受保护定制变更仍须具体授权；按[手动部署流程](docs/运维部署/生产环境手动部署.md)验证、排空 worker、备份、切换和验收。仅回退兼容应用，保留新状态、迟到分析过滤、轮次及回执消费者；不恢复旧库、删除付费记录或批量重开历史终态。
 - **Hermes 已不在 NAS 部署**。旧文档的固定网络、启动与原生客户端验收要求不再适用；仓库示例仅供可选接入，公开 MCP 五个匿名只读工具继续保留。
 - 不读取或输出生产 `.env`、密钥、Codex `auth.json`、令牌、完整 Docker inspect／Compose config 或未筛选日志。通过 `bootstrapBudgetStatus()`、`modelsOverview().tokenSummary` 等状态接口输出必要统计，运行计数和预算标注查询时间。
 

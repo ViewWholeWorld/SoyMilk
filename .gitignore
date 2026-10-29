@@ -21,3 +21,7 @@ apps/web/.react-router/
 # Font package unpacked to regenerate the report nameplates (docs/customize.md)
 package/
 fontsource-noto-sans-sc-*.tgz
+
+# NAS 按需发布的私有配置与运行状态
+deploy/nas/auto-release.env
+deploy/nas/release-status/
