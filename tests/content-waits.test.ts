@@ -18,7 +18,7 @@ import { autoReleaseUnknownReceipts, releaseReceipt } from "@aihot/backend/opera
 
 const T = tag(), SOURCE = `content-waits-${T}`;
 const created: string[] = [];
-const savedEnvironment = Object.fromEntries(["JINA_API_KEY", "JINA_BASE_URL", "TRANSLATE_MODEL"].map(key => [key, process.env[key]]));
+const savedEnvironment = Object.fromEntries(["JINA_API_KEY", "JINA_BASE_URL", "TRANSLATE_MODEL", "COLLECT_ENABLED"].map(key => [key, process.env[key]]));
 const savedPrivateNetwork = config.allowPrivateNetworkFetch;
 let serial = 0;
 let mode: "ok" | "reject" | "hold" | "hold-reject" = "ok";
@@ -45,6 +45,7 @@ await Promise.all([jina, page].map(server => new Promise<void>(resolve => server
 const origin = (server: http.Server) => `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 process.env.JINA_API_KEY = "test-key"; process.env.JINA_BASE_URL = origin(jina);
 config.allowPrivateNetworkFetch = true;
+process.env.COLLECT_ENABLED = "true"; // 仅请求本文件的本地采集替身。
 const budgets: Array<{ service: string; per_minute: number; per_hour: number; per_day: number }>  = [];
 before(async () => {
   await getBoss();
