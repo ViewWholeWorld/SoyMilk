@@ -41,8 +41,10 @@ const server = http.createServer((req, res) => {
 await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
 const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 const previousPrivate = config.allowPrivateNetworkFetch;
+const previousCollect = process.env.COLLECT_ENABLED;
 process.env.JINA_API_KEY = "test-key"; process.env.JINA_BASE_URL = `${base}/reader`;
 config.allowPrivateNetworkFetch = true;
+process.env.COLLECT_ENABLED = "true"; // 仅请求本文件的本地采集替身。
 const budgets: Array<{ per_minute: number; per_hour: number; per_day: number }> = [];
 before(async () => {
   await sql`INSERT INTO sources(id,name,kind) VALUES (${sourceId},'Error page regression','rss')`;
@@ -51,6 +53,7 @@ before(async () => {
 });
 after(async () => {
   config.allowPrivateNetworkFetch = previousPrivate;
+  if (previousCollect === undefined) delete process.env.COLLECT_ENABLED; else process.env.COLLECT_ENABLED = previousCollect;
   await new Promise<void>(resolve => server.close(() => resolve()));
   for (const budget of budgets) await sql`UPDATE budgets SET per_minute=${budget.per_minute},per_hour=${budget.per_hour},per_day=${budget.per_day} WHERE service='jina'`;
   await closeDb();

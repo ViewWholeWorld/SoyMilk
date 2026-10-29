@@ -2,7 +2,7 @@
 import { assertProductionSecrets } from "@aihot/backend/config";
 import { closeDb } from "@aihot/backend/db";
 import { getBoss, retireQueuedJobs, stopBoss } from "@aihot/backend/jobs/queue";
-import { registerContentJobs } from "@aihot/backend/jobs/content";
+import { registerContentJobs, registerExtractionJobs } from "@aihot/backend/jobs/content";
 import { registerPrefilterJobs } from "@aihot/backend/jobs/prefilter";
 import { registerTranslationJobs } from "@aihot/backend/jobs/translate";
 import { registerSourceJobs } from "@aihot/backend/jobs/sources";
@@ -22,6 +22,7 @@ await retireQueuedJobs(boss);
 await registerContentJobs(boss);
 await registerPrefilterJobs(boss);
 await registerTranslationJobs(boss);
+await registerExtractionJobs(boss);
 if (process.env.COLLECT_ENABLED !== "false") await registerSourceJobs(boss);
 await registerEventJobs(boss);
 await registerMediaJobs(boss);

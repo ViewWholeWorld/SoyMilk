@@ -3,6 +3,7 @@ import type { AdminRuns, BeforeJson } from "@aihot/contracts/admin";
 import { sql } from "../db.ts";
 type Heartbeat = Omit<AdminRuns["processes"][number], "role" | "alive">;
 import { audit } from "../audit.ts";
+import { ValidationError } from "../lib/errors.ts";
 import { failureGroupSql, requeueFailed } from "../jobs/content.ts";
 import { healthFindings, rhythmMultiple, rhythmText, RHYTHM_MULTIPLE, sourceHealth } from "../sources/health.ts";
 import { dismissedFollowUps, providerRefusalFindings, type AlertState } from "../operations/alerts.ts";
@@ -84,7 +85,7 @@ export async function runsOverview(): Promise<Runs> {
 
 /** Failed articles (one failure group, or all of the last 30 days) back into processing. */
 export async function requeueFailedArticles(input: { group: string | null; reason: string }, actor: string) {
-  if (!input.reason?.trim()) throw new Error("reason is required");
+  if (!input.reason?.trim()) throw new ValidationError("reason is required");
   const result = await requeueFailed(input.group);
   await audit(actor, "processing.requeue", input.group ? `failure:${input.group.slice(0, 80)}` : "failure:all", input.reason, null, result);
   return result;

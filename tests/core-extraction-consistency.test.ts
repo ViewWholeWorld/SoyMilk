@@ -24,7 +24,9 @@ const page = http.createServer(async (_req, res) => {
 });
 await new Promise<void>(resolve => page.listen(0, "127.0.0.1", resolve));
 const base = `http://127.0.0.1:${(page.address() as { port: number }).port}`;
+const previousCollect = process.env.COLLECT_ENABLED;
 config.allowPrivateNetworkFetch = true;
+process.env.COLLECT_ENABLED = "true"; // 仅请求本文件的本地采集替身。
 // The shared suite leaves queued fixture work; these workers must only consume this file's jobs.
 let parkedJobs: Array<{ id: string; start_after: Date }> = [];
 const jina = await stub(async () => { hold.entered.open(); await hold.release.promise; return new Reply(503, "Temporary extraction failure"); });
@@ -46,6 +48,7 @@ after(async () => {
   if (parkedJobs.length) await sql`UPDATE pgboss.job j SET start_after = old.start_after
     FROM jsonb_to_recordset(${sql.json(parkedJobs as never)}) AS old(id uuid, start_after timestamptz) WHERE j.id=old.id`;
   for (const b of savedBudgets) await sql`UPDATE budgets SET per_minute=${b.per_minute}, per_hour=${b.per_hour}, per_day=${b.per_day} WHERE service=${b.service}`;
+  if (previousCollect === undefined) delete process.env.COLLECT_ENABLED; else process.env.COLLECT_ENABLED = previousCollect;
   await closeDb();
 });
 const reset = (count = 1, empty = false) => { hold = { entered: gate(), release: gate(), count, empty }; };

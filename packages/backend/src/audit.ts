@@ -4,9 +4,7 @@
 import type { AdminAudit, AdminAuditEntry, BeforeJson } from "@aihot/contracts/admin";
 import { sql, type Db } from "./db.ts";
 
-export class Conflict extends Error {
-  code = "conflict";
-}
+export { Conflict } from "./lib/errors.ts";
 
 /** Every manual change: who, when, what, why. With `db`, the row commits with the caller's transaction. */
 export async function audit(

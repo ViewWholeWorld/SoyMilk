@@ -2,6 +2,7 @@ import { z } from "zod";
 import type postgres from "postgres";
 import type { AdminModelStats, AdminModelStatsOptions, AdminUsageMetrics, BeforeJson } from "@aihot/contracts/admin";
 import { sql } from "../db.ts";
+import { ValidationError } from "../lib/errors.ts";
 import { listModelSuppliers } from "./model-suppliers.ts";
 
 const optional = z.string().trim().max(200).optional().transform(value => value || undefined);
@@ -26,8 +27,8 @@ export function modelStatsRange(input: unknown = {}) {
   const until = new Date(f.to ?? Date.now());
   const beijingDay = new Date(until.getTime() + 8 * 3600_000).toISOString().slice(0, 10);
   const since = new Date(f.from ?? Date.parse(`${beijingDay}T00:00:00+08:00`) - (f.days - 1) * 86400_000);
-  if (since > until) throw Object.assign(new Error("统计开始时间必须早于结束时间"), { statusCode: 400 });
-  if (until.getTime() - since.getTime() > 90 * 86400_000) throw Object.assign(new Error("统计范围不能超过 90 天"), { statusCode: 400 });
+  if (since > until) throw new ValidationError("统计开始时间必须早于结束时间");
+  if (until.getTime() - since.getTime() > 90 * 86400_000) throw new ValidationError("统计范围不能超过 90 天");
   // model 为空但有模型计费快照的请求仍计入；无型号的采集等付费服务不计入。
   const clauses = [sql`${MODEL_ATTEMPTS} AND a.started_at>=${since} AND a.started_at<${until}`];
   if (f.supplierId) clauses.push(f.supplierId === "__unknown" ? sql`${EFFECTIVE_SUPPLIER} IS NULL` : sql`${EFFECTIVE_SUPPLIER}=${f.supplierId}`);
