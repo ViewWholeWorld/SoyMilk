@@ -26,9 +26,6 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    env:
-      AIHOT_DATA_DIR: ${{ runner.temp }}/soymilk-ci-data
-      AIHOT_CREDENTIALS_DIR: ${{ runner.temp }}/soymilk-ci-credentials
     services:
       postgres:
         image: postgres:17
@@ -46,6 +43,11 @@ jobs:
           --health-retries 5
 
     steps:
+      - name: 设置隔离数据与凭据目录
+        run: |
+          echo "AIHOT_DATA_DIR=$RUNNER_TEMP/soymilk-ci-data" >> "$GITHUB_ENV"
+          echo "AIHOT_CREDENTIALS_DIR=$RUNNER_TEMP/soymilk-ci-credentials" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
