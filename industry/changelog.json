@@ -1,7 +1,17 @@
 {
-  "version": "3.9.2",
-  "latestVersion": "2026-10-29T21:55",
+  "version": "3.9.3",
+  "latestVersion": "2026-10-31T21:28",
   "releases": [
+    {
+      "version": "3.9.3",
+      "date": "2026-10-31",
+      "time": "21:28",
+      "kind": "修复",
+      "title": "修正健康检查显示的发布版本",
+      "body": [
+        "修复 health 接口与进程心跳的 release 字段恒显示 dev，现回退到根 package.json 版本（镜像内即为发布版本）。"
+      ]
+    },
     {
       "version": "3.9.2",
       "date": "2026-10-29",
