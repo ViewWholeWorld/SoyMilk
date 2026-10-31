@@ -11,7 +11,7 @@ SoyMilk 是覆盖游戏、AI、科技、经济、娱乐的私网资讯站，负�
 | 网页 | React 19、React Router 8（SSR）、Vite 8、Tailwind CSS 4 |
 | API | Fastify 5；共享类型与 HTTP 约定放在 `packages/contracts` |
 | 数据与任务 | PostgreSQL 17、`postgres` 客户端、pg-boss 12 队列 |
-| 部署 | Docker Compose；NAS 使用 `deploy/nas/Dockerfile`（Bookworm）；`v*` 标签触发 GHCR 镜像构建，所有者说发布后在 NAS 运行 `deploy/nas/auto-release.sh`，手动构建保留为后备 |
+| 部署 | Docker Compose；NAS 使用 `deploy/nas/Dockerfile`（Bookworm）；CI 全绿即合并并发布，打 `v*` 标签后由运维侧在 NAS 运行 `deploy/nas/auto-release.sh <版本>`，手动构建保留为后备 |
 
 必须保持的边界：
 
@@ -73,7 +73,7 @@ docs/                      # 中文操作文档、计划和历史证据
 - 所有代码改动（前端与后端）均由 Codex CLI 编写，经审核方审核 diff 通过后才进入 PR。任务分支从 `develop` 切出，PR 目标为 `develop`；具体 Git 规则见第五章。
 - CI（`.github/workflows/ci.yml`）仅检查、不部署，是客观验收依据。本地只运行类型检查（`npm run typecheck`）与改动相关的测试文件，完整套件交给 CI。
 - CI 失败时先分诊环境／工作流问题、偶发不稳定用例或真实回归，再在明确范围内做有边界的修复，由 CI 复验。
-- 推送、合并、部署均须经所有者明确批准；发布与部署保持手动。
+- CI 全绿即合并并发布（打 `v*` 标签后由运维侧在 NAS 运行 `deploy/nas/auto-release.sh <版本>`），发布后项目经理验证生产环境（health、网页、worker 队列、近期模型调用失败），异常则拆任务修复后再发布，严重问题（服务不可用、数据风险、回退失败）立即通知所有者；Codex 安全规则与仓库禁止提交私有信息的规则不变。
 
 ### 本地开发
 
@@ -112,7 +112,7 @@ npm run dev:web              # 网页：http://localhost:3000
 - 通过 HTTP 内网或 Tailscale IP 加端口访问，不要求 HTTPS。模型在 `/admin/models` 管理，Codex 设备授权无需 SSH 回调隧道。
 - 生产采集和模型调用已授权开启；保持账号、模型、强度、预算与 Codex 复用。3.8.0 已按授权将 Codex 通道改为 **1**、请求工作启动间隔 **3000 毫秒**，文章分析并发保持 **2**；预筛满 **5 篇**或最早等待 **30 分钟**即发。保持批次、消费者和 unknown 恢复，见[节流计划](docs/系统优化/2026-10-21-Codex限流与新闻请求节流计划.md)。不通过改请求身份、重评、换账号或提高预算加速，不为测试修改生产开关。
 - 入口为 `ssh beans-nas`，部署目录 `/share/homes/tromso/apps/soymilk` 不是 Git checkout。统一用 `sh deploy/nas/compose.sh`，保留私有覆盖及最后的 `compose.release.yml`，核对 setup/API/worker/web 镜像和 setup 的 `--topics-only`。
-- 已恢复仅检查的最小 CI（PR 到 develop/main 或手动触发时运行类型、版本、后端、网页构建与网页测试，不部署），v* 标签触发 GHCR 镜像构建，所有者说发布后在 NAS 运行 `deploy/nas/auto-release.sh`（2026-10-29 所有者批准，新增迁移随发布自动执行）；CI 不连接 NAS、GitHub 不存放密钥。仓库不得提交 IP、主机名、用户名、端口、密钥路径、代理地址或令牌。发布、基础 Compose 及受保护定制变更仍须具体授权；按[手动部署流程](docs/运维部署/生产环境手动部署.md)验证、排空 worker、备份、切换和验收。仅回退兼容应用，保留新状态、迟到分析过滤、轮次及回执消费者；不恢复旧库、删除付费记录或批量重开历史终态。
+- 已恢复仅检查的最小 CI（PR 到 develop/main 或手动触发时运行类型、版本、后端、网页构建与网页测试，不部署），CI 全绿即合并并发布；打 `v*` 标签后由运维侧在 NAS 运行 `deploy/nas/auto-release.sh <版本>`，发布后项目经理验证生产环境（health、网页、worker 队列、近期模型调用失败），异常则拆任务修复后再发布，严重问题（服务不可用、数据风险、回退失败）立即通知所有者。v* 标签触发 GHCR 镜像构建；CI 不连接 NAS、GitHub 不存放密钥。仓库不得提交 IP、主机名、用户名、端口、密钥路径、代理地址或令牌。基础 Compose 及受保护定制变更仍须具体授权；按[手动部署流程](docs/运维部署/生产环境手动部署.md)验证、排空 worker、备份、切换和验收。仅回退兼容应用，保留新状态、迟到分析过滤、轮次及回执消费者；不恢复旧库、删除付费记录或批量重开历史终态。
 - **Hermes 已不在 NAS 部署**。旧文档的固定网络、启动与原生客户端验收要求不再适用；仓库示例仅供可选接入，公开 MCP 五个匿名只读工具继续保留。
 - 不读取或输出生产 `.env`、密钥、Codex `auth.json`、令牌、完整 Docker inspect／Compose config 或未筛选日志。通过 `bootstrapBudgetStatus()`、`modelsOverview().tokenSummary` 等状态接口输出必要统计，运行计数和预算标注查询时间。
 
@@ -153,7 +153,7 @@ HTTP 验收自行迁移，重跑另建空库。按[接口验收指南](docs/开�
 
 - 先检查 `git status`、`git branch -a` 和所有未提交／未跟踪改动，保留用户工作。从最新 `develop` 切 `feature/`、`bugfix/`、`refactor/`、`docs/`、`test/` 或 `chore/` 分支，不在 `main`、`develop` 直接提交。
 - 一个任务一个分支。**仅在用户明确要求时提交**；分项提交获授权后，每项验证并提交再开始下一项。使用 Conventional Commits，逐文件暂存，检查 `git diff --staged` 与 `git diff --check`；不提交 `.env`、密钥、授权缓存、`.data/` 和日志。
-- 日常 PR 指向 `develop`；`release/vX.Y.Z` 从 `develop` 发往 `main`，`hotfix/` 从 `main` 切出，发布后回合 `develop`。推送、合并、标签／发版、删除远程分支或改写已推送历史须经所有者明确批准，不跳过钩子或强推共享分支。
+- 日常 PR 指向 `develop`；`release/vX.Y.Z` 从 `develop` 发往 `main`，`hotfix/` 从 `main` 切出，发布后回合 `develop`。CI 全绿即合并并发布，打 `v*` 标签后由运维侧在 NAS 运行 `deploy/nas/auto-release.sh <版本>`；删除远程分支或改写已推送历史仍须经所有者明确批准，不跳过钩子或强推共享分支。
 - 上游改动手动移植，先读[上游审查台账](docs/问题修复/上游审查台账.md)，按完整 SHA 续查、复核待办，逐项记录后推进游标。审核、实现和部署分别记录，不重新引入下线功能。
 - 同步相关中文文档和索引链接。用户可见变更更新 `industry/changelog.json`，最新条目置顶；维护配置或测试调整记入[维护变更记录](docs/历史记录/维护变更记录.md)。
 - 发版按 SemVer，同步根 `package.json`、锁文件根包、`PUBLIC_VERSIONS.v1OpenApi`、网站日志顶层及最新条目的 `version`，运行 `npm run check:version`。`latestVersion` 为北京时间日期时间；纯文档不升应用版本，不补造历史公告。
