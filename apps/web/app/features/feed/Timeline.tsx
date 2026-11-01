@@ -11,7 +11,7 @@ import { IconChevronDown } from "../../components/icons";
 import { RingMark } from "../../components/Logo";
 import { EmptyState } from "../../components/ui/Page";
 import { beijingDate, beijingTime, beijingWeekday, fullDateTime, monthDay } from "../../lib/format";
-import { markRead, useReadSet } from "../../lib/local-state";
+import { markRead, setUnreadOnly, useReadSet, useUnreadOnly } from "../../lib/local-state";
 import { isHydrated, isReload, markHydrated, readSnapshot, restoreAnchor, saveSnapshot } from "./restore";
 
 const AUTO_BATCHES = 3;
@@ -22,7 +22,6 @@ interface ListState {
   dayCounts: Record<string, number>;
   collapsed: string[];
   batches: number;
-  unreadOnly: boolean;
 }
 
 function filterQuery(f: TimelineFilters, extra: Record<string, string | number | null | undefined> = {}) {
@@ -35,8 +34,13 @@ function filterQuery(f: TimelineFilters, extra: Record<string, string | number |
   return sp.toString();
 }
 
-function fromResponse(r: TimelineResponse, unreadOnly = false): ListState {
-  return { cards: r.cards, nextCursor: r.nextCursor, dayCounts: r.dayCounts, collapsed: [], batches: 1, unreadOnly };
+function fromResponse(r: TimelineResponse): ListState {
+  return { cards: r.cards, nextCursor: r.nextCursor, dayCounts: r.dayCounts, collapsed: [], batches: 1 };
+}
+
+/** 仅恢复列表字段，旧快照中的未读开关不再保存或应用。 */
+function fromSnapshot({ cards, nextCursor, dayCounts, collapsed, batches }: ListState): ListState {
+  return { cards, nextCursor, dayCounts, collapsed, batches };
 }
 
 const WEEKDAY_SHORT = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
@@ -117,6 +121,7 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
   const location = useLocation();
   const navigation = useNavigation();
   const readSet = useReadSet();
+  const unreadOnly = useUnreadOnly();
   const historyKey = location.key;
 
   // Back navigation (client side): restore synchronously from the snapshot. A full reload restores
@@ -124,7 +129,7 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
   const [state, setState] = useState<ListState>(() => {
     if (isHydrated()) {
       const snap = readSnapshot<ListState>(historyKey);
-      if (snap && snap.data.cards.length > 0) return snap.data;
+      if (snap && snap.data.cards.length > 0) return fromSnapshot(snap.data);
     }
     return fromResponse(initial);
   });
@@ -151,10 +156,10 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
       setLoadError(false);
       const snap = readSnapshot<ListState>(historyKey);
       if (snap && snap.data.cards.length > 0) {
-        setState(snap.data);
+        setState(fromSnapshot(snap.data));
         restoreAnchor(snap.anchor, snap.scrollY);
       } else {
-        setState(fromResponse(initial, stateRef.current.unreadOnly ?? false));
+        setState(fromResponse(initial));
       }
     }
   }, [filterKey, initial, historyKey]);
@@ -168,7 +173,7 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
       // A full load keeps the server's fresh list when the reader reloaded; after a back/forward
       // that reloaded the document, it restores the saved list and position.
       if (snap && snap.data.cards.length > 0 && !isReload()) {
-        setState(snap.data);
+        setState(fromSnapshot(snap.data));
         requestAnimationFrame(() => restoreAnchor(snap.anchor, snap.scrollY));
       }
       return;
@@ -220,7 +225,7 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
         const head = await fetch(`/api/site/timeline?${key}`, { signal: controller.signal });
         if (!head.ok) throw new Error(String(head.status));
         const page = (await head.json()) as TimelineResponse;
-        if (current()) setState(prev => ({ ...fromResponse(page, prev.unreadOnly), batches: prev.batches + 1 }));
+        if (current()) setState(prev => ({ ...fromResponse(page), batches: prev.batches + 1 }));
         return;
       }
       if (!res.ok) throw new Error(String(res.status));
@@ -261,7 +266,6 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
   }, [state.nextCursor, state.batches, loadMore]);
 
   const today = beijingDate(Date.now());
-  const unreadOnly = state.unreadOnly ?? false;
   const unreadVisible = useCallback((card: TimelineCard) => isUnreadCard(card, readSet), [readSet]);
   const days = useMemo(() => {
     const out: Array<{ day: string; cards: TimelineCard[] }> = [];
@@ -288,7 +292,7 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
   return (
     <div className="relative">
       <div className="mb-2 flex justify-end">
-        <button type="button" aria-pressed={unreadOnly} onClick={() => setState(s => ({ ...s, unreadOnly: !s.unreadOnly }))}
+        <button type="button" aria-pressed={unreadOnly} onClick={() => setUnreadOnly(!unreadOnly)}
           className={`rounded-full border px-3 py-1.5 text-[12.5px] ${unreadOnly ? "border-accent bg-accent-soft text-accent" : "border-line text-ink-3"}`}>
           只看未读
         </button>
