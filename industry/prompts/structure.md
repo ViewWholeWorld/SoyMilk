@@ -10,4 +10,4 @@
 
 {{> rules-tags}}
 
-只输出一个 JSON 对象，字段：category, tags, subjects, fact。
+只输出一个 JSON 对象，字段：category, tags, subjects, scope, fact。

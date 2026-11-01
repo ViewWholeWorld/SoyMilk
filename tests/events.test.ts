@@ -49,12 +49,12 @@ let factId: number;
 
 const randomText = () => Array.from({ length: 16 }, () => String.fromCharCode(65 + Math.floor(Math.random() * 26))).join("");
 
-async function report(suffix: string, title = FACT_TITLE, summary = "摘要", publishedAt = new Date()) {
+async function report(suffix: string, title = FACT_TITLE, summary = "摘要", publishedAt = new Date(), factFields: Record<string, unknown> = {}) {
   const { articleId } = await upsertMaterial({
     sourceId: SOURCE, url: `https://example.com/events-${T}-${suffix}`, title: `Model launch ${T} ${suffix}`, bodyText: "A new model.", bodyStatus: "ok", via: "fetch", publishedAt,
   });
   await sql`INSERT INTO analyses (article_id, input_revision, origin, relevance, category, title_zh, summary_zh, score, selected, output)
-            VALUES (${articleId}, 1, 'rule', 'pass', 'ai-models', ${title}, ${summary}, 80, false, ${sql.json({ fact: { title, subject: "测试", action: "发布", object: "模型" } })})`;
+            VALUES (${articleId}, 1, 'rule', 'pass', 'ai-models', ${title}, ${summary}, 80, false, ${sql.json({ fact: { title, subject: "测试", action: "发布", object: "模型", ...factFields } } as never)})`;
   await publishArticle(articleId);
   return articleId;
 }
@@ -130,6 +130,27 @@ test("an explicit regroup drops the automatic membership and decides again", asy
   assert.equal(memberships.length, 1, "the report has exactly one membership after the regroup");
   const signals = await sql<{ story_id: number }[]>`SELECT story_id FROM story_signals WHERE article_id = ${id}`;
   assert.deepEqual(signals.map((s) => Number(s.story_id)), [storyId]);
+});
+
+test("创建事实保存条件 JSON，加入已有事实使用该篇文章自己的 evidence，旧分析为空", async () => {
+  hold = gate(); hold.open();
+  const text = randomText();
+  const conditions = [{ quote: "Only paid users can preview." }];
+  const id = await report("quotes-root", text, text, new Date(), { evidence: "The first report.", conditions });
+  const first = await groupArticle(id);
+  assert.equal(first.verdict, "new-story");
+  const [fact] = await sql`SELECT conditions FROM facts WHERE id=${first.factId!}`;
+  assert.equal(fact!.conditions, JSON.stringify(conditions));
+  const secondId = await report("quotes-member", text, text, new Date(), { evidence: "The second report." });
+  assert.equal((await groupArticle(secondId)).factId, first.factId);
+  const evidence = await sql`SELECT article_id,evidence FROM fact_articles WHERE fact_id=${first.factId!} ORDER BY article_id`;
+  assert.equal(evidence.find(row => row.article_id === id)!.evidence, "The first report.");
+  assert.equal(evidence.find(row => row.article_id === secondId)!.evidence, "The second report.");
+  const oldText = randomText(), oldId = await report("quotes-legacy", oldText, oldText);
+  const old = await groupArticle(oldId);
+  const [legacy] = await sql`SELECT f.conditions,fa.evidence FROM facts f JOIN fact_articles fa ON fa.fact_id=f.id WHERE fa.article_id=${oldId}`;
+  assert.equal(old.verdict, "new-story");
+  assert.deepEqual(legacy, { conditions: null, evidence: null });
 });
 
 test("a report waiting for a regroup is not evidence for others, and its own turn decides it again", async () => {

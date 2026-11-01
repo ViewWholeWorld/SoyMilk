@@ -57,14 +57,15 @@ export const COMPATIBLE_PROMPT_VERSIONS = {
     "summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@e0af940ce3",
     "summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@e87bd8012c",
     "summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@6ff3bd3aad"],
-  structure: ["structure@64db76620a", "structure@6db1156d1c"],
+  structure: ["structure@64db76620a", "structure@6db1156d1c", "structure@07a70a730f"],
   combinedUnderstand: ["understand-structure+understand+structure@f57fd087c3", "understand-structure+understand-rules+structure-rules@4baa7350d1",
     "understand-structure+understand-rules+structure-rules@809996b152",
-    "understand-structure+understand-rules+structure-rules@3d5402719a"],
+    "understand-structure+understand-rules+structure-rules@3d5402719a", "understand-structure+understand-rules+structure-rules@7176ed3693"],
   combinedSummarize: ["summarize-structure+structure+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@4210decab2",
     "summarize-structure+structure-rules+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@282255e6f4",
     "summarize-structure+structure-rules+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@e77de6a2b8",
-    "summarize-structure+structure-rules+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@ce3c612b19"],
+    "summarize-structure+structure-rules+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@ce3c612b19",
+    "summarize-structure+structure-rules+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@1f85a31db9"],
 } as const;
 
 // ── Scoring ───────────────────────────────────────────────────────────────────────────────
@@ -140,6 +141,11 @@ const PrefilterSchema = z.object({
   reason: z.string().max(200).catch(""),
 });
 
+const QuoteFields = {
+  evidence: z.string().max(600).nullable().catch(null),
+  conditions: z.array(z.object({ quote: z.string().max(400) })).max(4).catch([]),
+};
+const ScopeSchema = z.enum(["single", "composite", "unknown"]).nullable().catch(null);
 const FactSchema = z
   .object({
     title: z.string().max(80),
@@ -147,14 +153,16 @@ const FactSchema = z
     action: z.string().max(80).nullable().optional(),
     object: z.string().max(160).nullable().optional(),
     occurredAt: z.string().nullable().optional(),
+    ...QuoteFields,
   })
   .nullable()
   .catch(null);
 
-const StructureSchema = z.object({
+export const StructureSchema = z.object({
   category: z.enum(CATEGORY_KEYS).nullable().catch(null),
   tags: z.array(z.string()).max(12).catch([]),
   subjects: z.array(z.string()).max(6).catch([]),
+  scope: ScopeSchema,
   fact: FactSchema,
 });
 
@@ -169,11 +177,12 @@ const UnderstandSchema = z.object({
 
 const SummarizeSchema = z.object({ titleZh: z.string(), summaryZh: z.string(), bodyZh: z.string() });
 // 合并输出不能沿用旧结构的静默缺省，否则正常文案会掩盖事实和分类缺失。
-const CombinedStructureSchema = z.object({
+export const CombinedStructureSchema = z.object({
   category: z.enum(CATEGORY_KEYS).nullable(), tags: z.array(z.string()).max(12),
   subjects: z.array(z.string()).max(6),
+  scope: ScopeSchema,
   fact: z.object({ title: z.string().min(1).max(80), subject: z.string().max(80).nullable().optional(),
-    action: z.string().max(80).nullable().optional(), object: z.string().max(160).nullable().optional(), occurredAt: z.string().nullable().optional() }).nullable(),
+    action: z.string().max(80).nullable().optional(), object: z.string().max(160).nullable().optional(), occurredAt: z.string().nullable().optional(), ...QuoteFields }).nullable(),
 });
 const CombinedUnderstandSchema = z.object({ writing: UnderstandSchema, structure: CombinedStructureSchema });
 const RecoverableUnderstandSchema = CombinedUnderstandSchema.extend({ writing: UnderstandSchema.extend({
@@ -181,6 +190,7 @@ const RecoverableUnderstandSchema = CombinedUnderstandSchema.extend({ writing: U
 }).strict() });
 const WRITING_FIELDS = ["itemType", "authorRole", "tags", "editorialJudgment", "titleZh", "summaryZh"];
 const STRUCTURE_FIELDS = ["category", "tags", "subjects", "fact"];
+const structureFields = (value: Record<string, unknown>) => [...STRUCTURE_FIELDS, ...(Object.hasOwn(value, "scope") ? ["scope"] : [])];
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const exactFields = (value: Record<string, unknown>, fields: string[]) =>
   Object.keys(value).length === fields.length && fields.every(key => Object.hasOwn(value, key));
@@ -193,14 +203,14 @@ function restoreCombinedUnderstandShape(value: unknown): unknown {
   if (!misplaced) return value;
   if (!exactFields(value, ["writing"])) throw new SyntaxError("合并结果包含重复或歧义结构");
   let candidate: unknown;
-  if (exactFields(writing, [...WRITING_FIELDS, "structure"]) && record(writing.structure) && exactFields(writing.structure, STRUCTURE_FIELDS)) {
+  if (exactFields(writing, [...WRITING_FIELDS, "structure"]) && record(writing.structure) && exactFields(writing.structure, structureFields(writing.structure))) {
     const { structure, ...copy } = writing;
     candidate = { writing: copy, structure };
-  } else if (exactFields(writing, [...WRITING_FIELDS, "category", "subjects", "fact"])) {
+  } else if (exactFields(writing, [...WRITING_FIELDS, ...structureFields(writing).filter(key => key !== "tags")])) {
     // 两套 tags 使用相同词表；只复用原数组，不能凭 itemType 生成缺失标签。
-    const { category, subjects, fact, ...copy } = writing;
+    const { category, subjects, fact, scope, ...copy } = writing;
     if (!Array.isArray(copy.tags) || !copy.tags.length || JSON.stringify(copy.tags) !== JSON.stringify(normalizeTags(copy.tags))) return value;
-    candidate = { writing: copy, structure: { category, tags: copy.tags, subjects, fact } };
+    candidate = { writing: copy, structure: { category, tags: copy.tags, subjects, fact, ...(Object.hasOwn(writing, "scope") ? { scope } : {}) } };
   } else return value;
   // 保留原值供调用方完整 schema 校验，不把无效分类或缺少事实字段修成默认值。
   return RecoverableUnderstandSchema.safeParse(candidate).success ? candidate : value;
@@ -256,6 +266,25 @@ const STRUCTURE_VALUES = {
 const STRUCTURE_SYSTEM = promptText("structure", STRUCTURE_VALUES);
 const STRUCTURE_RULES = promptText("structure-rules", STRUCTURE_VALUES);
 
+export type QuoteCheck = { kept: number; dropped: number };
+
+/** 只在实际送入提示词的正文中查找连续引文；帖子与引用帖分别匹配，禁止跨段拼接。 */
+export function checkStructureQuotes<T extends { fact: z.infer<typeof FactSchema> }>(structure: T, sourceText: string | string[]) {
+  const sources = (Array.isArray(sourceText) ? sourceText : [sourceText]).map(collapseWhitespace);
+  const counts: QuoteCheck = { kept: 0, dropped: 0 };
+  const matches = (quote: string) => {
+    const text = collapseWhitespace(quote);
+    const found = !!text && sources.some(source => source.includes(text));
+    counts[found ? "kept" : "dropped"]++;
+    return found;
+  };
+  const fact = structure.fact;
+  return { structure: { ...structure, fact: fact ? { ...fact,
+    evidence: fact.evidence != null && matches(fact.evidence) ? fact.evidence : null,
+    conditions: (fact.conditions ?? []).filter(condition => matches(condition.quote)),
+  } : null }, ...counts };
+}
+
 export interface AnalysisRun {
   combined?: "combinedUnderstand" | "combinedSummarize";
   prefilter: { label: "PASS" | "BLOCK" | "UNKNOWN"; reason: string; model: string; receiptId: number; reused: boolean };
@@ -279,7 +308,8 @@ export interface AnalysisRun {
     receiptIds: number[];
     reused: boolean;
   } | null;
-  structure: { model: string; category: string | null; tags: string[]; subjects: string[]; fact: z.infer<typeof FactSchema>; receiptId: number; reused: boolean } | null;
+  structure: { model: string; category: string | null; tags: string[]; subjects: string[]; scope: z.infer<typeof ScopeSchema>;
+    fact: z.infer<typeof FactSchema>; quoteCheck: QuoteCheck; receiptId: number; reused: boolean } | null;
 }
 
 const isContentFilter = (error: unknown) => error instanceof ProviderRejectedError && error.contentFiltered;
@@ -289,7 +319,11 @@ export function waitsForPage(a: AnalyzeInputArticle): boolean {
   return a.bodyStatus === "pending" && !a.bodyText && !a.xPost && pageFetchable(a.url, a.source.kind);
 }
 
-type StepOpts = { attemptTag?: string; scoreModel?: string };
+type StepOpts = { attemptTag?: string; scoreModel?: string; evaluation?: {
+  beforeCall: () => void;
+  onReceipt: (id: number) => void;
+  onParsed: (value: unknown) => void;
+} };
 type ReceiptObserver = (receiptId: number) => void;
 export class AnalysisInterruptedError extends Error {}
 
@@ -414,23 +448,30 @@ export async function runSelectionScores(
 async function runStructure(a: AnalyzeInputArticle, opts: StepOpts): Promise<NonNullable<AnalysisRun["structure"]>> {
   const model = await modelFor("structure");
   checkAnalysisRunning();
-  const user = buildMaterial(a);
-  const res = await savedStep(a, opts, "structure", StructureSchema, PROMPT_VERSIONS.structure, user) ?? await chatJson({
+  let sourceText: string[] = [];
+  const user = buildMaterial(a, texts => { sourceText = texts; });
+  const saved = opts.evaluation ? null : await savedStep(a, opts, "structure", StructureSchema, PROMPT_VERSIONS.structure, user);
+  if (!saved) opts.evaluation?.beforeCall();
+  const res = saved ?? await chatJson({
     model,
-    purpose: "structure_article",
-    subject: subjectOf(a),
+    purpose: opts.evaluation ? "structure_evidence_eval_structure" : "structure_article",
+    subject: opts.evaluation ? `structure-eval:${a.id}@${a.revision}` : subjectOf(a),
     promptVersion: PROMPT_VERSIONS.structure,
     system: STRUCTURE_SYSTEM,
     user,
     schema: StructureSchema,
     temperature: 0.2,
-    maxTokens: 800,
+    maxTokens: 1200,
     attemptTag: tagged(opts.attemptTag, "structure"),
-    exclusiveWith: exclusiveAnalysisSteps("structure", opts.attemptTag),
+    exclusiveWith: opts.evaluation ? undefined : exclusiveAnalysisSteps("structure", opts.attemptTag),
+    onReserved: opts.evaluation ? async (_db, id) => { opts.evaluation!.onReceipt(id); } : undefined,
     materialHash: materialHash(a),
   });
+  opts.evaluation?.onParsed(res.data);
+  const { structure: checked, kept, dropped } = checkStructureQuotes(res.data, sourceText);
   const subjects = [...new Set(res.data.subjects.map((s) => s.trim().toLowerCase()).filter((s) => s in ENTITIES))];
-  return { model: res.model, category: res.data.category, tags: normalizeTags(res.data.tags), subjects, fact: res.data.fact, receiptId: res.receiptId, reused: res.reused };
+  return { model: res.model, category: res.data.category, tags: normalizeTags(res.data.tags), subjects, scope: checked.scope,
+    fact: checked.fact, quoteCheck: { kept, dropped }, receiptId: res.receiptId, reused: res.reused };
 }
 
 /** The content understanding; null when the model's content filter declines the material. */
@@ -524,6 +565,14 @@ async function runCombined(a: AnalyzeInputArticle, opts: StepOpts, step: Combine
   const schema = step === "combinedUnderstand" ? CombinedUnderstandSchema : CombinedSummarizeSchema;
   const version = COMBINED_VERSIONS[step];
   const parse = step === "combinedUnderstand" ? parseCombinedUnderstandJson : undefined;
+  const t = translateInputOf(a);
+  let sourceText: string[] = [];
+  const onSourceText = (texts: string[]) => {
+    // 摘要模板可用标题兜底显示帖子，但它不能成为正文引文依据。
+    sourceText = step === "combinedSummarize" && t.sourceKind === "x_search" && a.xPost?.text == null ? ["", ...texts.slice(1)] : texts;
+  };
+  const text = step === "combinedUnderstand" ? understandUser(a, true, onSourceText) : isShortTweetInput(t) ? buildShortTweetPrompt(t, true, onSourceText)
+    : t.sourceKind === "x_search" ? buildLongTweetPrompt(t, true, onSourceText) : buildArticlePrompt(t, true, onSourceText);
   // 先读已接收结果；连接分配变化及供应商暂不可用均不妨碍本地消费。
   let res = savedId ? await reuseJsonReceipt(savedId, schema, version, { materialHash: materialHash(a), parse,
     recoverRejectedOutput: step === "combinedUnderstand",
@@ -532,10 +581,6 @@ async function runCombined(a: AnalyzeInputArticle, opts: StepOpts, step: Combine
   if (!res) {
     if (!(await canCombine(step))) throw new ProviderUnavailableError("configuration", "本轮已选择合并处理；需恢复兼容模型后重试");
     const model = await modelFor(combinedWriter(step));
-    const t = translateInputOf(a);
-    const short = isShortTweetInput(t);
-    const text = step === "combinedUnderstand" ? understandUser(a, true) : short ? buildShortTweetPrompt(t, true)
-      : t.sourceKind === "x_search" ? buildLongTweetPrompt(t, true) : buildArticlePrompt(t, true);
     // 主体正文只出现一次；补充原结构阶段单独读取的来源事实及已有译文。
     const user = `${text}\n\n【结构补充】来源类型=${a.source.kind}；分级=${a.source.tier}；一手来源=${a.source.firstParty ? "是" : "否"}${a.translationZh ? `\n已有中文译文：${a.translationZh.slice(0, 5000)}` : ""}\n最终输出格式以系统中的 writing／structure JSON 为准。`;
     const system = promptText(step === "combinedUnderstand" ? "understand-structure" : "summarize-structure", {
@@ -543,22 +588,26 @@ async function runCombined(a: AnalyzeInputArticle, opts: StepOpts, step: Combine
     });
     const call = (image: ContentPart | null) => {
       checkAnalysisRunning();
-      return chatJson({ model, purpose: ANALYSIS_PURPOSES[step], subject: subjectOf(a), promptVersion: version,
+      opts.evaluation?.beforeCall();
+      return chatJson({ model, purpose: opts.evaluation ? `structure_evidence_eval_${step}` : ANALYSIS_PURPOSES[step],
+        subject: opts.evaluation ? `structure-eval:${a.id}@${a.revision}` : subjectOf(a), promptVersion: version,
         system, user: image ? [{ type: "text", text: user }, image] : user, schema, parse, temperature: 0.2,
         maxTokens: step === "combinedUnderstand" ? 16_384 : 4096, timeoutMs: 180_000,
-        attemptTag: analysisTag(opts.attemptTag, step), exclusiveWith: exclusiveAnalysisSteps(step, opts.attemptTag), materialHash: materialHash(a) });
+        attemptTag: analysisTag(opts.attemptTag, step), exclusiveWith: opts.evaluation ? undefined : exclusiveAnalysisSteps(step, opts.attemptTag),
+        onReserved: opts.evaluation ? async (_db, id) => { opts.evaluation!.onReceipt(id); } : undefined, materialHash: materialHash(a) });
     };
     const image = step === "combinedUnderstand" && (await registeredModels())[model]?.vision !== false ? await firstImagePart(a) : null;
     try { res = await call(image); }
     catch (error) {
       // 与原理解路径一致：明确拒绝图片后仅去图重试，未知结果不降级重发。
-      if (!image || !(error instanceof ProviderRejectedError) || error.retryable || isContentFilter(error)) throw error;
+      if (opts.evaluation || !image || !(error instanceof ProviderRejectedError) || error.retryable || isContentFilter(error)) throw error;
       res = await call(null);
     }
   }
-  const s = res.data.structure;
+  opts.evaluation?.onParsed(res.data);
+  const { structure: s, kept, dropped } = checkStructureQuotes(res.data.structure, sourceText);
   const structure = { model: res.model, category: s.category, tags: normalizeTags(s.tags),
-    subjects: [...new Set(s.subjects.map(v => v.trim().toLowerCase()).filter(v => v in ENTITIES))], fact: s.fact,
+    subjects: [...new Set(s.subjects.map(v => v.trim().toLowerCase()).filter(v => v in ENTITIES))], scope: s.scope, fact: s.fact, quoteCheck: { kept, dropped },
     receiptId: res.receiptId, reused: res.reused };
   if (step === "combinedUnderstand") {
     const d = UnderstandSchema.parse(res.data.writing);
@@ -568,13 +617,24 @@ async function runCombined(a: AnalyzeInputArticle, opts: StepOpts, step: Combine
       itemType: d.itemType, authorRole: d.authorRole, receiptIds: [res.receiptId], reused: res.reused } };
   }
   const p = SummarizeSchema.parse(res.data.writing);
-  const t = translateInputOf(a);
   const main = collapseWhitespace(t.mainText || t.title);
   const draft = isShortTweetInput(t) ? { titleZh: p.titleZh || (looksZh(main) ? main : ""), summaryZh: p.bodyZh || p.summaryZh }
     : t.sourceKind === "x_search" ? { titleZh: p.titleZh, summaryZh: p.summaryZh || p.bodyZh }
     : { titleZh: p.titleZh || (looksZh(t.title) ? t.title : ""), summaryZh: p.summaryZh };
   return { combined: step, structure, writing: { kind: "summarize", model: res.model, ...finalizeCopy(t, draft),
     reasonZh: null, tags: null, receiptIds: [res.receiptId], reused: res.reused } };
+}
+
+/** 单篇只走指定的生产步骤；独立用途与轮次隔离回执，不评分、不保存分析或归组。 */
+export async function runStructureEvidenceEval(a: AnalyzeInputArticle, step: CombinedStep | "structure", opts: {
+  attemptTag: string; beforeCall: () => void; onReceipt: (id: number) => void;
+}) {
+  let raw: unknown;
+  const stepOpts: StepOpts = { attemptTag: opts.attemptTag, evaluation: { ...opts, onParsed: value => { raw = value; } } };
+  const checked = step === "structure" || !(await canCombine(step)) || (step === "combinedSummarize" && !hasModelWriting(a))
+    ? await runStructure(a, stepOpts) : (await runCombined(a, stepOpts, step)).structure!;
+  await completeReceipt(sql, checked.receiptId);
+  return { raw, checked, quoteCheck: checked.quoteCheck, receiptId: checked.receiptId };
 }
 
 /**
@@ -667,6 +727,7 @@ export function normalizeAnalysis(run: AnalysisRun) {
     scoreRefused: run.scores?.refused ?? false,
     threshold,
     category: run.structure?.category ?? null,
+    scope: run.structure?.scope ?? null,
     tags,
     subjects,
     titleZh,
@@ -716,6 +777,7 @@ export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Pr
     ...(w?.identityGuard?.outcome === "fallback" ? { identityGuard: w.identityGuard } : {}),
     ...(w?.priceEvidenceGuard?.outcome === "hold" ? { priceEvidenceGuard: w.priceEvidenceGuard } : {}),
     fact: out.fact,
+    ...(run.structure ? { scope: out.scope, quoteCheck: run.structure.quoteCheck } : {}),
     ...(run.combined ? { combinedStep: run.combined } : {}),
     receiptPromptVersions,
   };
