@@ -1,4 +1,5 @@
 // Web list pages: HTML with selectors, Markdown through Jina Reader, and Docusaurus changelogs.
+import { randomUUID } from "node:crypto";
 import * as cheerio from "cheerio";
 import { sql } from "../db.ts";
 import { guardedFetch } from "../lib/http-fetch.ts";
@@ -154,7 +155,7 @@ async function fetchListingText(source: SourceRow): Promise<{ text: string; viaJ
     // material is stored, so a fetch that ended with the outcome unknown (timeout after sending, a restart)
     // comes back to the same receipt instead of paying again; ops.recover releases it once.
     const pending = source.cursor?.jinaListingRound;
-    const round = typeof pending === "string" ? pending : new Date().toISOString();
+    const round = typeof pending === "string" ? pending : randomUUID();
     if (round !== pending) await sql`UPDATE sources SET cursor = coalesce(cursor, '{}'::jsonb) || jsonb_build_object('jinaListingRound', ${round}::text) WHERE id = ${source.id}`;
     // A listing parsed with selectors asks Jina for the rendered HTML (a site our resolver cannot reach
     // still gets its dates and titles from the markup); otherwise Jina's Markdown.
