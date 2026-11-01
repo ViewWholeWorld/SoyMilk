@@ -8,7 +8,7 @@ import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { ReportDetail, ReportKind, ReportNavigationEntry } from "@aihot/contracts/site";
 import { isoWeekLabel } from "@aihot/contracts/time";
-import { issueNumber, periodGrid } from "../app/features/report/format.ts";
+import { chipLabel, issueNumber, neighbourLabel, periodGrid } from "../app/features/report/format.ts";
 
 const kinds: ReportKind[] = ["daily", "weekly", "monthly"];
 const keys = Object.fromEntries(kinds.map((kind) => [kind, Array.from({ length: 405 }, (_, i) => {
@@ -23,6 +23,33 @@ function report(kind: ReportKind, key: string): ReportDetail {
     lead: null, overview: null, highlights: [], sections: [], stories: [], flashes: [], cover: null, metrics: {}, readingMinutes: 1, prev: null, next: null,
   };
 }
+
+test("日报切换 chip 按传入的今天判年，今天与同年日期保持原文案", () => {
+  const today = "2027-01-02";
+  assert.equal(chipLabel("daily", "2026-12-31", [], today), "2026年12月31日");
+  assert.equal(chipLabel("daily", "2027-01-01", [], today), "1月1日");
+  assert.equal(chipLabel("daily", today, [], today), "今天");
+});
+
+test("日报前后期日期以北京时间判年，同年不补年份", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-12-31T16:00:00Z") });
+  assert.equal(neighbourLabel("daily", "2026-12-31", "prev"), "前一日 · 2026年12月31日");
+  assert.equal(neighbourLabel("daily", "2027-01-02", "next"), "后一日 · 1月2日");
+  t.mock.timers.setTime(Date.parse("2026-12-31T15:59:59Z"));
+  assert.equal(neighbourLabel("daily", "2026-12-30", "prev"), "前一日 · 12月30日");
+  assert.equal(neighbourLabel("daily", "2027-01-01", "next"), "后一日 · 2027年1月1日");
+});
+
+test("日报日历提示在跨年时补年份，并保留期号和出刊状态", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-12-31T16:00:00Z") });
+  const grid = periodGrid("daily", "2026-12-31", [{ key: "2026-12-30", issueNumber: 404 }], 405);
+  assert.equal(grid.cells.find(cell => cell.key === "2026-12-31")!.label, "2026年12月31日 · 第 405 期");
+  assert.equal(grid.cells.find(cell => cell.key === "2026-12-30")!.label, "2026年12月30日 · 第 404 期");
+  assert.equal(grid.cells.find(cell => cell.key === "2026-12-29")!.label, "2026年12月29日 · 未出刊");
+  const sameYear = periodGrid("daily", "2027-01-01", [], 406);
+  assert.equal(sameYear.cells.find(cell => cell.key === "2027-01-01")!.label, "1月1日 · 第 406 期");
+  assert.equal(sameYear.cells.find(cell => cell.key === "2027-01-02")!.label, "1月2日 · 未出刊");
+});
 let web: ChildProcess;
 let origin: string;
 let logs = "";
