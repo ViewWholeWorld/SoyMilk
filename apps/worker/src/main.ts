@@ -17,7 +17,7 @@ import { shutdownSignal } from "@aihot/backend/lib/shutdown";
 assertProductionSecrets([["auth", "IMG_PROXY_SIGN_SECRET"]]);
 if (process.env.CODEX_REUSE_ENABLED === "true") startCodexWorker(Number(process.env.CODEX_CONCURRENCY || 1));
 
-const boss = await getBoss();
+const boss = await getBoss({ supervise: true });
 await retireQueuedJobs(boss);
 await registerContentJobs(boss);
 await registerPrefilterJobs(boss);
