@@ -17,6 +17,7 @@ export type EgressRoute = "egress" | "direct";
 
 let proxyAgent: ProxyAgent | null = null;
 let directAgent: Agent | null = null;
+let pinnedCurve: Agent | null = null;
 
 function proxied(url: URL, route: EgressRoute): boolean {
   if (route !== "egress" || !config.egressProxyUrl) return false;
@@ -33,6 +34,24 @@ function dispatcherFor(viaProxy: boolean): Dispatcher | undefined {
   // Direct connections resolve through the guarded lookup: the address actually dialled is checked.
   directAgent ??= new Agent({ connect: { lookup: guardedLookup as never } });
   return directAgent;
+}
+
+/** 固定 P-256 重试被拒绝的密钥交换，同时保留连接时的地址校验。 */
+function pinnedCurveAgent(): Agent | undefined {
+  if (config.allowPrivateNetworkFetch) return undefined;
+  pinnedCurve ??= new Agent({ connect: { lookup: guardedLookup as never, ecdhCurve: "prime256v1" } });
+  return pinnedCurve;
+}
+
+/** 仅匹配发送请求前的密钥交换错误；EPROTO 也可能出现在请求已发送后，不能重放。 */
+export function brokenHandshake(error: unknown): boolean {
+  let cause: unknown = error;
+  for (let depth = 0; depth < 4 && cause; depth++) {
+    const code = (cause as { code?: string }).code;
+    if (code === "ERR_SSL_BAD_ECPOINT") return true;
+    cause = (cause as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 export interface GuardedFetchOptions {
@@ -80,13 +99,20 @@ export async function guardedFetch(input: string, opts: GuardedFetchOptions = {}
   let method = (opts.method ?? "GET").toUpperCase();
   let requestBody = opts.body;
   for (let hop = 0; ; hop++) {
-    const res = await undiciFetch(url, {
+    const viaProxy = proxied(url, route);
+    const send = (dispatcher: Dispatcher | undefined) => undiciFetch(url, {
       method,
       headers,
       body: requestBody,
       redirect: "manual",
-      dispatcher: dispatcherFor(proxied(url, route)),
+      dispatcher,
       signal,
+    });
+    const res = await send(dispatcherFor(viaProxy)).catch((error: unknown) => {
+      // 仅直连且总超时尚未中止时重试一次；重试失败直接抛出。
+      const pinned = viaProxy || signal.aborted || !brokenHandshake(error) ? undefined : pinnedCurveAgent();
+      if (!pinned) throw error;
+      return send(pinned);
     });
     if ([301, 302, 303, 307, 308].includes(res.status) && res.headers.get("location")) {
       // Release the connection even when the next URL is refused or the redirect limit is reached.

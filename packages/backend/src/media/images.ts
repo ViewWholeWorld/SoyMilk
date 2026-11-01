@@ -25,6 +25,19 @@ const inflight = new Map<string, Promise<PreparedImage>>();
 const originals = new Map<string, Promise<GuardedResponse>>();
 const failures = new Map<string, { until: number; error: unknown }>();
 
+export class UpstreamStatus extends Error {
+  readonly status: number;
+  constructor(status: number) {
+    super(`upstream ${status}`);
+    this.status = status;
+  }
+}
+
+/** 拒绝访问或资源消失缓存六小时；超时、断连和服务端故障一分钟后可重试。 */
+export function failureSeconds(error: unknown): number {
+  return error instanceof UpstreamStatus && [401, 403, 404, 410].includes(error.status) ? 6 * 3600 : 60;
+}
+
 // Responsive candidates and a later lightbox can request the same source in successive turns.
 // Keep at most 32 MiB / 32 originals for one minute as well as sharing in-flight downloads.
 function pruneOriginals(now: number): void {
@@ -65,8 +78,8 @@ function original(url: string): Promise<GuardedResponse> {
       rememberOriginal(url, res);
       return res;
     }).catch((error: unknown) => {
-      // A failed original is not refetched for a minute; this also coalesces failures across signed modes.
-      failures.set(url, { until: Date.now() + 60_000, error });
+      // 按失败类型缓存原图错误，并在不同签名模式间复用，避免重复抓取。
+      failures.set(url, { until: Date.now() + failureSeconds(error) * 1000, error });
       if (failures.size > 512) failures.delete(failures.keys().next().value!);
       throw error;
     }).finally(() => originals.delete(url));
@@ -77,7 +90,7 @@ function original(url: string): Promise<GuardedResponse> {
 
 async function fetchOriginal(url: string): Promise<GuardedResponse> {
   const res = await guardedFetch(url, { timeoutMs: 20_000, maxBytes: 15 * 1024 * 1024, headers: { accept: "image/avif,image/webp,image/*,*/*;q=0.8" } });
-  if (res.status !== 200) throw new Error(`upstream ${res.status}`);
+  if (res.status !== 200) throw new UpstreamStatus(res.status);
   return res;
 }
 

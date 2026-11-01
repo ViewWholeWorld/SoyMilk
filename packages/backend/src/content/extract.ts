@@ -22,8 +22,8 @@ export interface ExtractedBody {
 
 const MIN_BODY_CHARS = 200;
 
-// 只匹配独立路径段，避免误伤 /auth-for-agents 等正常文章地址。
-const AUTH_PATH = /(?:^|\/)(?:login|log-in|signin|sign-in|register|signup|sign-up|authorize|oauth2?|sso|auth)(?:\/|$)/i;
+// 识别 Devise 下划线路径、WordPress 登录页和常见扩展名；仍按路径段匹配，避免误伤正常文章。
+const AUTH_PATH = /(?:^|\/)(?:login|log-in|log_in|signin|sign-in|sign_in|register|signup|sign-up|sign_up|authorize|oauth2?|sso|auth|wp-login(?:\.php)?)(?:\/|$|\.(?:php|aspx?|html?|jsp))/i;
 
 export function isSignInUrl(url: string): boolean {
   try { return AUTH_PATH.test(new URL(url).pathname); }
