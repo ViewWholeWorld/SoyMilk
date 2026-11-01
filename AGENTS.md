@@ -39,8 +39,8 @@ packages/
   contracts/src/           # 跨应用类型、HTTP 策略与 MCP 合约
   backend/src/
     sources/               # 信源采集、解析与健康诊断
-    content/               # 原文提取、清洗与材料管理；article-text.ts 统一模型文章输入边界
-    editorial/             # 预筛、评分、理解、写作与翻译；analyze.ts 有限恢复完整错层级，writing.ts 校验明确价格条件；prefilter-batch.ts 消费冻结批次结果
+    content/               # 原文提取、清洗与材料管理；article-text.ts 统一模型文章输入边界并返回截断后的引文正文
+    editorial/             # 预筛、评分、理解、写作与翻译；analyze.ts 恢复完整错层级并校验结构引文，input.ts/writing.ts 传递实际正文；prefilter-batch.ts 消费冻结批次结果
     events/                # 事件归组、关系、热度与综述
     reports/               # 日报、周报、月报生成
     providers/             # 模型适配、授权、回执、限流及 Codex 请求节流；P2a 可校验重读最新已收到但被解析拒绝的输出
@@ -54,8 +54,8 @@ packages/
     config.ts              # 后端配置
 industry/                  # 行业配置、提示词、品牌与条款
 database/migrations/       # 按编号追加的数据库增量迁移
-scripts/                   # 初始化、迁移、种子、冒烟、HTTP 验收；eval-tools/评测 core 复用生产规则；report-model-requests.ts 汇总北京日请求观察
-tests/                     # 后端回归；http/ 为真实 HTTP 验收，fixtures/ 为夹具
+scripts/                   # 初始化、迁移、种子、冒烟、HTTP 验收；eval-tools/评测 core 复用生产规则；eval-structure-evidence*.ts 只读抽样及隔离引文评测；report-model-requests.ts 汇总北京日请求观察
+tests/                     # 后端回归；structure-evidence.test.ts 覆盖结构引文与评测纯规则；http/ 为真实 HTTP 验收，fixtures/ 为夹具
 deploy/nas/                # NAS Dockerfile、Compose 入口、按需发布脚本及私有配置模板
 integrations/              # 可选接入示例，不代表生产已部署
 assets/                    # 字体等静态资源

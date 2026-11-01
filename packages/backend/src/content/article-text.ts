@@ -25,9 +25,14 @@ export function cleanArticleTextForLLM(text: string, documentUrl?: string): stri
 
 // 合并摘要与单项结构读取同一上限，避免 P2b 从旧结构的 7,000 回退为 6,000。
 export const ARTICLE_PROMPT_CHARS = 7000;
-export function articlePromptBody(text: string, documentUrl?: string): string {
+export function articlePromptMaterial(text: string, documentUrl?: string): { text: string; sourceText: string } {
   const clean = cleanArticleTextForLLM(text, documentUrl);
   const chars = Array.from(clean);
-  return chars.length <= ARTICLE_PROMPT_CHARS ? clean
-    : `${chars.slice(0, ARTICLE_PROMPT_CHARS).join("")}…\n【材料范围：正文已截断，未见的信息不能表述为原文没有。】`;
+  const sourceText = chars.length <= ARTICLE_PROMPT_CHARS ? clean : chars.slice(0, ARTICLE_PROMPT_CHARS).join("");
+  return { sourceText, text: chars.length <= ARTICLE_PROMPT_CHARS ? clean
+    : `${sourceText}…\n【材料范围：正文已截断，未见的信息不能表述为原文没有。】` };
+}
+
+export function articlePromptBody(text: string, documentUrl?: string): string {
+  return articlePromptMaterial(text, documentUrl).text;
 }
