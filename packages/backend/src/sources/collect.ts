@@ -1,7 +1,7 @@
 // Collection run for one source: fetch listing → filter → store material → enqueue processing.
 // A failed fetch never advances the success cursor; the source's health reflects consecutive failures.
 import { sql } from "../db.ts";
-import { identityKeyFor, upsertMaterial } from "../content/materials.ts";
+import { FUTURE_TOLERANCE_MS, identityKeyFor, upsertMaterial } from "../content/materials.ts";
 import { identityKeyForUrl } from "../lib/url.ts";
 import { enqueue, QUEUES, shutdownSignal } from "../jobs/queue.ts";
 import { queueProcessing } from "../jobs/content.ts";
@@ -117,7 +117,10 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
       candidates = rss.candidates;
       // The first import has a smaller backfill cap than later runs: allow the next run to read
       // the ordinary window before accepting 304s. Persist validators only after store succeeds.
-      if (!firstImport) nextCursor.rss = rss.validator;
+      // 未来日期尚未可信时继续完整读取，避免 304 使原文时间永久无法补全。
+      const futureCutoff = Date.now() + FUTURE_TOLERANCE_MS;
+      const hasFuture = candidates.some((c) => c.publishedAt && c.publishedAt.getTime() > futureCutoff);
+      if (!firstImport && !hasFuture) nextCursor.rss = rss.validator;
       else delete nextCursor.rss;
       if (rss.notModified) detail = { notModified: true, httpStatus: 304 };
     }
