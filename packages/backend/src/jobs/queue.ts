@@ -52,10 +52,11 @@ const QUEUE_OPTIONS: Record<QueueName, QueueOptions> = {
 
 const ensured = new Set<string>();
 
-export async function getBoss(): Promise<PgBoss> {
+/** Only the worker owns timer dispatch and queue maintenance; other processes submit work. */
+export async function getBoss({ supervise = false } = {}): Promise<PgBoss> {
   if (boss) return boss;
   starting ??= (async () => {
-    const b = new PgBoss({ connectionString: config.databaseUrl, max: 4, schema: "pgboss", application_name: "aihot-jobs" });
+    const b = new PgBoss({ connectionString: config.databaseUrl, max: 4, schema: "pgboss", application_name: "aihot-jobs", schedule: supervise, supervise });
     b.on("error", (err) => console.error("[pg-boss]", err));
     try {
       await b.start();
