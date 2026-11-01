@@ -52,16 +52,19 @@ export const COMBINED_VERSIONS = {
 // 只列明确核验的版本，未知版本仍等待兼容程序，不能换提示词重复付费。
 export const COMPATIBLE_PROMPT_VERSIONS = {
   prefilter: ["prefilter@3d2d544cbd", "prefilter@4778c7b014"],
-  understand: ["understand@323747ba4b", "understand@07ea8c327c"],
+  understand: ["understand@323747ba4b", "understand@07ea8c327c", "understand@6e8856459b"],
   summarize: ["summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@378efa398a",
     "summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@e0af940ce3",
-    "summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@e87bd8012c"],
+    "summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@e87bd8012c",
+    "summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@6ff3bd3aad"],
   structure: ["structure@64db76620a", "structure@6db1156d1c"],
   combinedUnderstand: ["understand-structure+understand+structure@f57fd087c3", "understand-structure+understand-rules+structure-rules@4baa7350d1",
-    "understand-structure+understand-rules+structure-rules@809996b152"],
+    "understand-structure+understand-rules+structure-rules@809996b152",
+    "understand-structure+understand-rules+structure-rules@3d5402719a"],
   combinedSummarize: ["summarize-structure+structure+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@4210decab2",
     "summarize-structure+structure-rules+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@282255e6f4",
-    "summarize-structure+structure-rules+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@e77de6a2b8"],
+    "summarize-structure+structure-rules+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@e77de6a2b8",
+    "summarize-structure+structure-rules+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@ce3c612b19"],
 } as const;
 
 // ── Scoring ───────────────────────────────────────────────────────────────────────────────

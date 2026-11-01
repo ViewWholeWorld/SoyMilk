@@ -2,8 +2,9 @@
 // is selected, for sources whose full text may be shown on the site; a page read never translates.
 // Bodies are translated block by block (paragraphs, headings, list items, captions, table cells) so the
 // sanitised structure stays as it is. Inside a block, images and inline code never reach the model
-// (placeholders) and links keep only their text and an id; a block whose answer loses or repeats any of
-// them is asked once more, then kept in the original. Each batch is a receipt, so a re-run reuses
+// (placeholders) and links keep only their text and an id.
+// 链接或占位符丢失、重复及条数不符时，用专用提示词重试一次，措辞更贴近原文；仍不可用则保留原文。
+// Each batch is a receipt, so a re-run reuses
 // answers already paid for. A translation missing any block is stored as incomplete, never as whole.
 // The post a selected X post quotes is translated too (once per quoted post, shared by every quote).
 import * as cheerio from "cheerio";
@@ -21,7 +22,7 @@ import { completeReceipt, ReceiptUnknownError, rejectReceivedResponse, requestWa
 import { promptText, promptVersion } from "./prompts.ts";
 import { observeRequest } from "../operations/request-observation.ts";
 
-export const TRANSLATE_PROMPT_VERSION = promptVersion("translate-body", "translate-post");
+export const TRANSLATE_PROMPT_VERSION = promptVersion("translate-body", "translate-body-retry", "translate-post");
 const BATCH_CHARS = 3500;
 /** Longer bodies get their first part translated and are marked incomplete. */
 const MAX_CHARS = 60_000;
@@ -36,7 +37,7 @@ const Output = z.object({ t: z.array(z.string()) });
 export class TranslationInterruptedError extends Error {}
 
 const SYSTEM_BODY = promptText("translate-body");
-
+const SYSTEM_RETRY = promptText("translate-body-retry");
 const SYSTEM_POST = promptText("translate-post");
 
 export interface TranslateResult {
@@ -248,10 +249,10 @@ async function prepareTranslation(articleId: string, expectedRevision: number | 
   };
   const answers = await translateAll(articleId, row.revision, shielded.map((b) => b.html), SYSTEM_BODY, work);
   const translations = answers.map((part, i) => restore(part, shielded[i]!));
-  // Blocks whose answer dropped a link or an image are asked once more, on their own receipt.
+  // 链接／占位符丢失或重复、条数不符的片段使用专用提示词重试，沿用独立回执。
   const missing = translations.flatMap((t, i) => (t === null ? [i] : []));
   if (missing.length) {
-    const again = await translateAll(articleId, row.revision, missing.map((i) => shielded[i]!.html), SYSTEM_BODY, work, "retry");
+    const again = await translateAll(articleId, row.revision, missing.map((i) => shielded[i]!.html), SYSTEM_RETRY, work, "retry");
     missing.forEach((i, k) => (translations[i] = restore(again[k]!, shielded[i]!)));
   }
   let done = 0;
