@@ -1,30 +1,104 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { beijingDate, beijingTime } from "@aihot/contracts/time";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { parseHTML } from "linkedom";
 
-const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+const globals = ["window", "document", "IS_REACT_ACT_ENVIRONMENT"];
+const originals = globals.map(key => Object.getOwnPropertyDescriptor(globalThis, key));
 after(() => {
-  if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
-  else Reflect.deleteProperty(globalThis, "window");
+  globals.forEach((key, i) => originals[i] ? Object.defineProperty(globalThis, key, originals[i]!) : Reflect.deleteProperty(globalThis, key));
 });
 
 let instance = 0;
-async function reader(starred: unknown[] = []) {
-  const values = new Map([["aihot-starred-items", JSON.stringify(starred)]]);
-  Object.defineProperty(globalThis, "window", {
-    configurable: true,
-    value: { localStorage: {
-      getItem: (key: string) => values.get(key) ?? null,
-      setItem: (key: string, value: string) => { values.set(key, value); },
-      removeItem: (key: string) => { values.delete(key); },
-    } },
-  });
-  // Reopening the page starts with an empty snapshot cache.
+async function reader(starred: unknown[] = [], values = new Map([["aihot-starred-items", JSON.stringify(starred)]])) {
+  const { window, document } = parseHTML('<html><body><div id="root"></div></body></html>');
+  Object.defineProperty(window, "localStorage", { configurable: true, value: {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
+  } });
+  for (const [key, value] of Object.entries({ window, document, IS_REACT_ACT_ENVIRONMENT: true })) {
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  // 重新打开页面会清空模块快照缓存，但保留同一份本地存储。
   const state: typeof import("../app/lib/local-state.ts") = await import(`../app/lib/local-state.ts?test=${instance++}`);
-  return { state, values };
+  return { state, values, window, document };
+}
+
+async function observeUnread(state: typeof import("../app/lib/local-state.ts")) {
+  const root = createRoot(document.getElementById("root")!);
+  function Preference() {
+    return createElement("output", null, String(state.useUnreadOnly()));
+  }
+  await act(async () => {
+    root.render(createElement("div", null, createElement(Preference), createElement(Preference)));
+  });
+  return {
+    values: () => Array.from(document.querySelectorAll("output"), output => output.textContent),
+    close: () => act(async () => { root.unmount(); }),
+  };
 }
 
 const displayDate = (value: string) => `${beijingDate(value)} ${beijingTime(value)}`;
+
+test("只看未读默认关闭，刷新或新标签页沿用本地偏好，关闭后仍能持久保存", async () => {
+  const { state, values } = await reader();
+  assert.equal(state.getUnreadOnly(), false);
+  state.setUnreadOnly(true);
+  assert.equal(values.get(state.KEYS.unreadOnly), "true");
+  const reopened = await reader([], values);
+  assert.equal(reopened.state.getUnreadOnly(), true);
+  reopened.state.setUnreadOnly(false);
+  assert.equal(values.has(state.KEYS.unreadOnly), false);
+  const nextTab = await reader([], values);
+  assert.equal(nextTab.state.getUnreadOnly(), false);
+});
+
+test("只看未读通知同页所有订阅者，不更改已有已读记录", async () => {
+  const { state, values } = await reader();
+  values.set(state.KEYS.read, JSON.stringify(["already-read"]));
+  const observed = await observeUnread(state);
+  try {
+    assert.deepEqual(observed.values(), ["false", "false"]);
+    await act(async () => { state.setUnreadOnly(true); });
+    assert.deepEqual(observed.values(), ["true", "true"]);
+    await act(async () => { state.setUnreadOnly(false); });
+    assert.deepEqual(observed.values(), ["false", "false"]);
+    assert.deepEqual(state.getReadIds(), ["already-read"]);
+  } finally {
+    await observed.close();
+  }
+});
+
+test("只看未读通过 storage 事件同步其他标签页的设置、删除和清空", async () => {
+  const { state, values, window } = await reader();
+  const observed = await observeUnread(state);
+  const notify = async (key: string | null) => {
+    await act(async () => {
+      const event = new window.Event("storage");
+      Object.assign(event, { key, storageArea: window.localStorage });
+      window.dispatchEvent(event);
+    });
+  };
+  try {
+    values.set(state.KEYS.unreadOnly, "true");
+    await notify(state.KEYS.unreadOnly);
+    assert.deepEqual(observed.values(), ["true", "true"]);
+    values.delete(state.KEYS.unreadOnly);
+    await notify(state.KEYS.unreadOnly);
+    assert.deepEqual(observed.values(), ["false", "false"]);
+    values.set(state.KEYS.unreadOnly, "true");
+    await notify(state.KEYS.unreadOnly);
+    assert.deepEqual(observed.values(), ["true", "true"]);
+    values.clear();
+    await notify(null);
+    assert.deepEqual(observed.values(), ["false", "false"]);
+  } finally {
+    await observed.close();
+  }
+});
 
 test("字体备份兼容旧格式，并尊重已经明确选择的网站字体", async () => {
   const { state } = await reader();

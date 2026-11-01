@@ -2,6 +2,7 @@ import { SITE, subjectAfter } from "@aihot/industry/site";
 // Names, dates and grouping for daily, weekly and monthly reports.
 import type { ReportNavigationEntry, ReportKind } from "@aihot/contracts/site";
 import { beijingWeekday } from "@aihot/contracts/time";
+import { monthDay } from "../../lib/format.ts";
 
 export const KINDS: ReportKind[] = ["daily", "weekly", "monthly"];
 export const KIND_PATH: Record<ReportKind, string> = { daily: "/daily", weekly: "/weekly", monthly: "/monthly" };
@@ -47,9 +48,9 @@ export function shortDay(iso: string): string {
   return `${pad(d.getUTCMonth() + 1)}.${pad(d.getUTCDate())}`;
 }
 
-/** Month-day label of a daily key: "9月26日". */
-export function dayLabel(key: string): string {
-  return `${Number(key.slice(5, 7))}月${Number(key.slice(8, 10))}日`;
+/** 日报日期同年显示月日，异年补年份；today 为北京时间日期字符串。 */
+export function dayLabel(key: string, today?: string): string {
+  return monthDay(key, today);
 }
 
 
@@ -102,7 +103,7 @@ export function archiveMark(kind: ReportKind, key: string): { big: string; small
 
 /** Short chip label for the phone switcher: "今天", "9月26日", "9月第2周", "8 月". */
 export function chipLabel(kind: ReportKind, key: string, index: ReportNavigationEntry[], today: string): string {
-  if (kind === "daily") return key === today ? "今天" : dayLabel(key);
+  if (kind === "daily") return key === today ? "今天" : dayLabel(key, today);
   if (kind === "monthly") return `${Number(key.slice(5, 7))} 月`;
   const group = archiveGroups("weekly", index).find((g) => g.entries.some((e) => e.key === key));
   const entry = group?.entries.find((e) => e.key === key);
@@ -202,7 +203,10 @@ export function periodGrid(kind: ReportKind, key: string, index: ReportNavigatio
     const lead = (new Date(Date.UTC(Number(year), m - 1, 1)).getUTCDay() + 6) % 7;
     const cells: PeriodCell[] = [
       ...Array.from({ length: lead }, (): PeriodCell => ({ key: null, label: "", state: "pad" })),
-      ...Array.from({ length: days }, (_, i) => cell(`${key.slice(0, 7)}-${pad(i + 1)}`, `${m}月${i + 1}日`)),
+      ...Array.from({ length: days }, (_, i) => {
+        const k = `${key.slice(0, 7)}-${pad(i + 1)}`;
+        return cell(k, dayLabel(k));
+      }),
     ];
     return { title: `${cnNumber(m)}月`, note: `本月 ${count(cells)} 期`, columns: 7, heads: ["一", "二", "三", "四", "五", "六", "日"], cells };
   }

@@ -17,10 +17,10 @@ const callback = source.slice(start, end + ending.length).replace(ending, "  });
 const script = stripTypeScriptTypes(`${factories}\n${callback}\nloadMore;`, { mode: "strip" });
 const readCard = { key: "read", item: { id: "read" }, group: null } as TimelineCard;
 const head = (): TimelineResponse => ({ cards: [readCard], nextCursor: "expired", dayCounts: {} }) as TimelineResponse;
-type State = TimelineResponse & { collapsed: string[]; batches: number; unreadOnly: boolean };
+type State = TimelineResponse & { collapsed: string[]; batches: number };
 
 function harness(answer: (url: string) => Promise<Response>) {
-  const stateRef = { current: { ...head(), collapsed: [], batches: 1, unreadOnly: true } as State };
+  const stateRef = { current: { ...head(), collapsed: [], batches: 1 } as State };
   const lastFilterKey = { current: "" };
   const pageRequest = { current: null as AbortController | null };
   let loading = false, error = false, requests = 0;
@@ -41,12 +41,12 @@ function harness(answer: (url: string) => Promise<Response>) {
 }
 const response = (page: TimelineResponse) => new Response(JSON.stringify(page), { status: 200 });
 
-test("持续 400 重启耗尽自动额度后停止，仍可手动重试并保留未读开关", async () => {
+test("持续 400 重启耗尽自动额度后停止，仍可手动重试且列表不携带未读偏好", async () => {
   const h = harness(async url => url.includes("cursor=") ? new Response(null, { status: 400 }) : response(head()));
   for (let attempt = 0; attempt < 10 && h.auto(); attempt++) await h.run();
   assert.equal(h.requests(), 4, "只允许两轮分页加首页请求，不能无限重启");
   assert.equal(h.stateRef.current.batches, 3);
-  assert.equal(h.stateRef.current.unreadOnly, true);
+  assert.equal("unreadOnly" in h.stateRef.current, false);
   assert.equal(h.auto(), false);
   await h.run();
   assert.equal(h.requests(), 6, "手动重试仍可发起请求");
@@ -64,7 +64,7 @@ test("单次游标失效后使用新首页游标继续取得未读材料", async
   await h.run();
   assert.equal(h.requests(), 3);
   assert.equal(h.stateRef.current.cards.at(-1)!.item.id, "unread");
-  assert.equal(h.stateRef.current.unreadOnly, true);
+  assert.equal("unreadOnly" in h.stateRef.current, false);
   assert.equal(h.auto(), false);
 });
 
