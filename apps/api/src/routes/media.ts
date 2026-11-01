@@ -2,7 +2,7 @@
 import type { FastifyInstance } from "fastify";
 import { createHash } from "node:crypto";
 import { enqueue, QUEUES } from "@aihot/backend/jobs/queue";
-import { produceImage } from "@aihot/backend/media/images";
+import { failureSeconds, produceImage } from "@aihot/backend/media/images";
 import { verifyProxyRequest } from "@aihot/backend/media/imgproxy";
 import { looseQuery } from "../http/respond.ts";
 
@@ -47,7 +47,9 @@ export function registerMedia(app: FastifyInstance) {
         .send(body);
     } catch (error) {
       req.log.warn({ err: String(error), host: new URL(verdict.url).hostname }, "img-proxy upstream failed");
-      return reply.code(502).header("Cache-Control", "public, max-age=300").type("text/plain; charset=utf-8").send("Upstream image unavailable");
+      const now = Math.floor(Date.now() / 1000);
+      const maxAge = Math.max(1, Math.min(failureSeconds(error), Number(q.exp) - now));
+      return reply.code(502).header("Cache-Control", `public, max-age=${maxAge}, s-maxage=${maxAge}`).type("text/plain; charset=utf-8").send("Upstream image unavailable");
     }
   });
 }
