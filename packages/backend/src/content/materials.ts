@@ -184,8 +184,8 @@ async function upsertIn(db: Db, m: MaterialInput): Promise<MaterialResult> {
     return { articleId: newId, created: true, revised: false, backfill: t.backfill };
   }
 
-  const [existing] = await db<{ id: string; source_id: string; url: string; revision: number; content_hash: string | null; backfill: boolean; title: string; body_text: string | null; excerpt: string | null; media: MediaItem[]; x_post: XPostData | null }[]>`
-    SELECT id, source_id, url, revision, content_hash, backfill, title, body_text, excerpt, media, x_post FROM articles WHERE identity_key = ${identityKey} FOR UPDATE`;
+  const [existing] = await db<{ id: string; source_id: string; url: string; published_at: Date | null; revision: number; content_hash: string | null; backfill: boolean; title: string; body_text: string | null; excerpt: string | null; media: MediaItem[]; x_post: XPostData | null }[]>`
+    SELECT id, source_id, url, published_at, revision, content_hash, backfill, title, body_text, excerpt, media, x_post FROM articles WHERE identity_key = ${identityKey} FOR UPDATE`;
   await db`INSERT INTO article_discoveries (article_id, source_id, via, discovered_at)
            VALUES (${existing!.id}, ${m.sourceId}, ${m.via}, ${discoveredAt}) ON CONFLICT DO NOTHING`;
   const unchanged: MaterialResult = { articleId: existing!.id, created: false, revised: false, backfill: existing!.backfill };
@@ -193,6 +193,11 @@ async function upsertIn(db: Db, m: MaterialInput): Promise<MaterialResult> {
   // discovery only: its title and summary are its own rendering, and taking them made the article flip
   // between the two sources' versions on every fetch. Only the article's own source revises it.
   if (existing!.source_id !== m.sourceId) return unchanged;
+  // 本源再次确认的日期已可信时只补全元数据，保留原有时间轴及处理状态。
+  if (existing!.published_at === null && m.publishedAt && m.publishedAt.getTime() <= Date.now() + FUTURE_TOLERANCE_MS) {
+    await db`UPDATE articles SET published_at = ${m.publishedAt}, published_at_claim = ${m.publishedAt}
+             WHERE id = ${existing!.id} AND published_at IS NULL`;
+  }
   // Canonical URLs identify material; its owner's current address remains usable for reading and
   // extraction. A corrected address alone is metadata, not a new input for paid analysis.
   if (existing!.url !== m.url) {
