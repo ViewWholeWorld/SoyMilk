@@ -48,6 +48,9 @@ export function cookie(name: string, value: string, maxAgeSeconds: number, secur
   return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secure ? "; Secure" : ""}`;
 }
 
+// Location 头过长会让反向代理报错。
+const MAX_RETURN_LENGTH = 2000;
+
 /** 只返回本站后台路径；代理传入的 HTTP(S) 完整地址先去除来源，其他目标回到 /admin。 */
 export function safeReturn(target: string): string {
   if (/[\\\x00-\x20\x7f]/.test(target)) return "/admin";
@@ -66,7 +69,8 @@ export function safeReturn(target: string): string {
     const normalized = new URL(path, "http://admin.local");
     if (normalized.origin !== "http://admin.local" || !/^\/admin(?:\/|$)/.test(normalized.pathname)
       || /^\/admin\/login(?:\/|$)/.test(normalized.pathname)) return "/admin";
-    return `${normalized.pathname}${normalized.search}${normalized.hash}`;
+    const kept = `${normalized.pathname}${normalized.search}${normalized.hash}`;
+    return kept.length <= MAX_RETURN_LENGTH ? kept : "/admin";
   } catch { return "/admin"; }
 }
 
