@@ -7,6 +7,7 @@ import { after, before, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
 import { upsertMaterial } from "@aihot/backend/content/materials";
 import { translatePending } from "@aihot/backend/editorial/translate";
+import { promptText } from "@aihot/backend/editorial/prompts";
 import { stopBoss } from "@aihot/backend/jobs/queue";
 import { publishArticle } from "@aihot/backend/publication/publish";
 import { buildApp } from "../apps/api/src/app.ts";
@@ -19,13 +20,16 @@ const URL_ = `https://example.com/translate-${T}`;
 let hold: ReturnType<typeof gate<void>> | null = null;
 const asked = gate();
 const asks = new Map<string, number>();
+const systems = new Map<string, string[]>();
 const provider = await stub(async (_hit, req) => {
-  const { segments } = JSON.parse(JSON.parse(req.body).messages[1].content) as { segments: string[] };
+  const { messages } = JSON.parse(req.body);
+  const { segments } = JSON.parse(messages[1].content) as { segments: string[] };
   if (hold) {
     asked.open();
     await hold.promise;
   }
   const t = segments.map((s) => {
+    systems.set(s, [...(systems.get(s) ?? []), messages[0].content]);
     // A block with a link and an image: the first answer drops the link, the second keeps everything.
     if (s.includes("Neuroglancer")) {
       const n = (asks.get(s) ?? 0) + 1;
@@ -107,6 +111,9 @@ test("links and images inside a paragraph survive the translation, or the paragr
             VALUES (${id}, 1, 'rule', 'pass', 'ai-models', ${`链接-${T}`}, '摘要', '理由', 90, true)`;
   await publishArticle(id, { releasedAt: new Date(Date.now() - 60_000) });
   await translatePending({ limit: 1 });
+  const neuroglancer = [...systems.entries()].find(([segment]) => segment.includes("Neuroglancer"))![1];
+  assert.deepEqual(neuroglancer, [promptText("translate-body"), promptText("translate-body-retry")]);
+  assert.notEqual(neuroglancer[0], neuroglancer[1]);
   const [tr] = await sql<{ body_html: string; complete: boolean }[]>`SELECT body_html, complete FROM translations WHERE article_id = ${id}`;
   assert.ok(tr!.body_html.includes('<a href="https://neuroglancer.dev/docs">Neuroglancer</a>'), tr!.body_html);
   assert.ok(tr!.body_html.includes(`chart-${T}.png`), "the chart stays");
