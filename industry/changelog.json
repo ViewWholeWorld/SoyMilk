@@ -1,7 +1,17 @@
 {
-  "version": "3.9.6",
-  "latestVersion": "2026-11-01T12:31",
+  "version": "3.9.7",
+  "latestVersion": "2026-11-01T13:43",
   "releases": [
+    {
+      "version": "3.9.7",
+      "date": "2026-11-01",
+      "time": "13:43",
+      "kind": "优化",
+      "title": "后台定时任务改由 worker 调度",
+      "body": [
+        "后台定时任务只由 worker 进程调度，发布或重启期间不再因 API 继续投递而积压。"
+      ]
+    },
     {
       "version": "3.9.6",
       "date": "2026-11-01",
