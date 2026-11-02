@@ -1,4 +1,4 @@
 {
   "extends": "../tsconfig.base.json",
-  "include": ["*.ts", "http/*.ts", "../scripts/test-http.ts", "../scripts/report-model-requests.ts"]
+  "include": ["*.ts", "http/*.ts", "../scripts/test-http.ts", "../scripts/report-model-requests.ts", "../scripts/eval-structure-evidence.ts"]
 }

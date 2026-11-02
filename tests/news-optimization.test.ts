@@ -5,10 +5,10 @@ import { after, before, test } from "node:test";
 import { sql, closeDb } from "@aihot/backend/db";
 import { config } from "@aihot/backend/config";
 import { upsertMaterial } from "@aihot/backend/content/materials";
-import { analyzeArticle, parseCombinedUnderstandJson, COMPATIBLE_PROMPT_VERSIONS, PROMPT_VERSIONS, COMBINED_VERSIONS } from "@aihot/backend/editorial/analyze";
+import { analyzeArticle, parseCombinedUnderstandJson, COMPATIBLE_PROMPT_VERSIONS, loadAnalyzeInput, runStructureEvidenceEval } from "@aihot/backend/editorial/analyze";
 import { analysisHistory, compatibleAnalysisModels, exclusiveAnalysisSteps } from "@aihot/backend/editorial/analysis-route";
 import { ModelOutputError } from "@aihot/backend/providers/llm";
-import { paidRequest, ProviderUnavailableError, ReceiptBusyError, ReceiptUnknownError, rejectReceivedResponse, storedReceipt } from "@aihot/backend/providers/receipts";
+import { paidRequest, ProviderUnavailableError, ReceiptBusyError, ReceiptUnknownError, rejectReceivedResponse } from "@aihot/backend/providers/receipts";
 import { receiptArticleSubject, processArticle } from "@aihot/backend/jobs/content";
 import { releaseReceipt } from "@aihot/backend/operations/recover";
 import { stopBoss } from "@aihot/backend/jobs/queue";
@@ -27,7 +27,7 @@ const samples = [
 type Sample = typeof samples[number];
 const requests: Array<{ step: string; marker: string; body: Record<string, unknown> }> = [];
 let fault: "none" | "missing" | "legacy" | "filter" | "malformedFilter" | "unusedBodyMissing" | "summaryMissing" | "emptyMember" | "missingWriterClose" | "invalidStructureWithEmptyMember" |
-  "nestedStructure" | "flatStructure" | "conflictingStructure" | "invalidNestedStructure" | "flatMissingTags" | "unsafePrice" | "emptySummary" | "rollbackFields" = "none";
+  "nestedStructure" | "flatStructure" | "conflictingStructure" | "invalidNestedStructure" | "flatMissingTags" | "unsafePrice" | "emptySummary" | "quotes" = "none";
 let combinedGate: { asked: ReturnType<typeof gate<void>>; hold: ReturnType<typeof gate<void>> } | null = null;
 const provider = await stub(async (_n, req) => {
   const body = JSON.parse(req.body);
@@ -45,9 +45,9 @@ const provider = await stub(async (_n, req) => {
   if (fault === "unsafePrice") writing.summaryZh = "联合会员券后268元，付款后兑换30元礼品卡，折合238元，需满足兑换条件且数量有限。";
   if (fault === "emptySummary") writing.summaryZh = writing.bodyZh = "";
   const structure = { category: sample.category, tags: ["产品更新", sample.topic], subjects: [],
-    ...(["rollbackFields", "nestedStructure", "flatStructure"].includes(fault) ? { scope: "composite" } : {}),
+    ...(fault === "quotes" ? { scope: "composite" } : {}),
     fact: { title: sample.title, subject: "测试主体", action: "发布", object: "限定范围的测试消息", occurredAt: null,
-      ...(["rollbackFields", "nestedStructure", "flatStructure"].includes(fault) ? { evidence: sample.text, conditions: [{ quote: sample.text }] } : {}) } };
+      ...(fault === "quotes" ? { evidence: sample.text, conditions: [{ quote: sample.text }, { quote: "这条条件不在正文中" }] } : {}) } };
   const combinedWriting = step === "combinedSummarize" && ["unusedBodyMissing", "summaryMissing"].includes(fault)
     ? Object.fromEntries(Object.entries(writing).filter(([key]) => key !== (fault === "unusedBodyMissing" ? "bodyZh" : "summaryZh"))) : writing;
   if (fault === "filter" && step === "combinedUnderstand") return new Reply(400, { error: { code: "1301", message: "contentFilter" } });
@@ -374,6 +374,9 @@ test("质量提示词升级后，旧合并与分步回执同材料零新增 atte
     if (combined) compatibleModels(); else separateModels();
     const id = await article(sample);
     const first = await analyzeArticle(id);
+    assert.equal(first!.output!.scope, null, "旧回执未输出 scope，不能推断 single");
+    assert.equal(first!.output!.fact!.evidence, null);
+    assert.deepEqual(first!.output!.fact!.conditions, []);
     const subject = `article:${id}@1`;
     const oldPrefilter = COMPATIBLE_PROMPT_VERSIONS.prefilter[0];
     await sql`UPDATE receipts SET request=jsonb_set(request,'{promptVersion}',${sql.json(oldPrefilter)}::jsonb)
@@ -387,7 +390,9 @@ test("质量提示词升级后，旧合并与分步回执同材料零新增 atte
     assert.deepEqual((await analyzeArticle(id))!.output, first!.output);
     assert.equal(provider.hits(), hits);
     assert.equal((await sql`SELECT count(*)::int AS n FROM receipt_attempts WHERE receipt_id=ANY(${first!.receiptIds}::bigint[])`)[0]!.n, attempts);
-    const [record] = await sql`SELECT prompt_version,output->'receiptPromptVersions' AS versions FROM analyses WHERE article_id=${id} ORDER BY id DESC LIMIT 1`;
+    const [record] = await sql`SELECT prompt_version,output->'receiptPromptVersions' AS versions,
+      output->'quoteCheck' AS "quoteCheck" FROM analyses WHERE article_id=${id} ORDER BY id DESC LIMIT 1`;
+    assert.deepEqual(record!.quoteCheck, { kept: 0, dropped: 0 });
     assert.ok(record!.prompt_version.includes(oldPrefilter), "旧输出不能标成新提示词已生效");
     assert.equal(record!.versions.length, first!.receiptIds.length);
     assert.deepEqual(record!.versions.map((r: { receiptId: number }) => r.receiptId).sort((a: number, b: number) => a - b), first!.receiptIds.toSorted((a, b) => a - b));
@@ -397,6 +402,46 @@ test("质量提示词升级后，旧合并与分步回执同材料零新增 atte
     await assert.rejects(analyzeArticle(id), ProviderUnavailableError);
     assert.equal(provider.hits(), hits);
   }
+});
+
+test("三条结构路径统一校验引文并保存顶层 scope 和计数，复用不新增 attempts", async () => {
+  fault = "quotes";
+  try {
+    for (const step of ["structure", "combinedUnderstand", "combinedSummarize"]) {
+      if (step === "structure") separateModels(); else compatibleModels();
+      const sample = step === "combinedSummarize" ? samples[2]! : samples[0]!;
+      const id = await article(sample), first = await analyzeArticle(id);
+      assert.equal(first!.output!.scope, "composite");
+      assert.equal(first!.output!.fact!.evidence, sample.text);
+      assert.deepEqual(first!.output!.fact!.conditions, [{ quote: sample.text }]);
+      const [saved] = await sql`SELECT output FROM analyses WHERE article_id=${id} ORDER BY id DESC LIMIT 1`;
+      assert.equal(saved!.output.scope, "composite");
+      assert.deepEqual(saved!.output.quoteCheck, { kept: 2, dropped: 1 });
+      const attempts = (await sql`SELECT count(*)::int AS n FROM receipt_attempts WHERE receipt_id=ANY(${first!.receiptIds}::bigint[])`)[0]!.n;
+      assert.deepEqual((await analyzeArticle(id))!.output, first!.output);
+      assert.equal((await sql`SELECT count(*)::int AS n FROM receipt_attempts WHERE receipt_id=ANY(${first!.receiptIds}::bigint[])`)[0]!.n, attempts);
+    }
+  } finally { fault = "none"; separateModels(); }
+});
+
+test("结构评测入口仅发一次隔离步骤，返回校验前后结果，不写 analyses 或正式回执消费者", async () => {
+  compatibleModels(); fault = "quotes";
+  try {
+    const id = await article(), input = await loadAnalyzeInput(id);
+    let calls = 0;
+    const receipts: number[] = [];
+    const answer = await runStructureEvidenceEval(input!, "combinedUnderstand", {
+      attemptTag: `eval-${T}`, beforeCall: () => { calls++; }, onReceipt: receiptId => { receipts.push(receiptId); },
+    });
+    assert.equal(calls, 1);
+    assert.deepEqual(receipts, [answer.receiptId]);
+    assert.equal((answer.raw as { structure: { fact: { conditions: unknown[] } } }).structure.fact.conditions.length, 2);
+    assert.equal(answer.checked.fact!.conditions.length, 1);
+    assert.equal((await sql`SELECT id FROM analyses WHERE article_id=${id}`).length, 0);
+    assert.equal((await analysisHistory(`article:${id}@1`)).length, 0);
+    const [receipt] = await sql`SELECT purpose,attempts,status FROM receipts WHERE id=${answer.receiptId}`;
+    assert.deepEqual(receipt, { purpose: "structure_evidence_eval_combinedUnderstand", attempts: 1, status: "completed" });
+  } finally { fault = "none"; separateModels(); }
 });
 
 test("旧预筛未知回执不能用新提示词或新轮次绕过，未增加模型请求", async () => {
@@ -600,68 +645,4 @@ test("保存连接的 low／medium 配置按能力生效，同一连接别名兼
     for (const name of ["PREFILTER_MODEL", "STRUCTURE_MODEL", "SUMMARIZE_MODEL", "UNDERSTAND_MODEL"]) process.env[name] = "default";
     config.allowPrivateNetworkFetch = oldPrivate;
   }
-});
-
-const rollbackVersions = {
-  structure: "structure@724c9ea146",
-  combinedUnderstand: "understand-structure+understand-rules+structure-rules@5637cb0a63",
-  combinedSummarize: "summarize-structure+structure-rules+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@a68e4691fa",
-} as const;
-
-test("兼容回退补丁：旧三路径提示词不变，新字段及 nested／flat 已收回执零新增 attempts 消费", async () => {
-  assert.equal(PROMPT_VERSIONS.structure, "structure@07a70a730f");
-  assert.equal(COMBINED_VERSIONS.combinedUnderstand, "understand-structure+understand-rules+structure-rules@7176ed3693");
-  assert.ok(COMBINED_VERSIONS.combinedSummarize.endsWith("@1f85a31db9"));
-  try {
-    for (const shape of ["structure", "combinedUnderstand", "combinedSummarize", "nestedStructure", "flatStructure"] as const) {
-      const step = shape === "nestedStructure" || shape === "flatStructure" ? "combinedUnderstand" : shape;
-      fault = shape === "nestedStructure" || shape === "flatStructure" ? shape : "rollbackFields";
-      if (step === "structure") separateModels(); else compatibleModels();
-      const id = await article(step === "combinedSummarize" ? samples[2] : samples[0]);
-      const first = await analyzeArticle(id);
-      const receipt = (await analysisHistory(`article:${id}@1`)).find(row => row.step === step)!;
-      assert.ok(receipt);
-      const [raw] = await sql`SELECT response->'choices'->0->'message'->>'content' AS content FROM receipts WHERE id=${receipt.id}`;
-      assert.ok(raw!.content.includes('"scope":"composite"'));
-      assert.ok(raw!.content.includes('"evidence"') && raw!.content.includes('"conditions"'));
-      assert.equal(Object.hasOwn(first!.output!, "scope"), false, "回退代码不启用新增字段业务功能");
-      assert.equal(Object.hasOwn(first!.output!.fact!, "evidence"), false);
-      await sql`UPDATE receipts SET status='received',completed_at=NULL,
-        request=jsonb_set(request,'{promptVersion}',${sql.json(rollbackVersions[step])}::jsonb) WHERE id=${receipt.id}`;
-      if (shape === "nestedStructure" || shape === "flatStructure") await rejectReceivedResponse(receipt.id, "unusable output: missing top-level structure");
-      const attempts = (await sql`SELECT count(*)::int AS n FROM receipt_attempts WHERE receipt_id=ANY(${first!.receiptIds}::bigint[])`)[0]!.n;
-      const hits = provider.hits();
-      separateModels();
-      assert.deepEqual((await analyzeArticle(id))!.output, first!.output);
-      assert.equal(provider.hits(), hits);
-      assert.equal((await sql`SELECT count(*)::int AS n FROM receipt_attempts WHERE receipt_id=ANY(${first!.receiptIds}::bigint[])`)[0]!.n, attempts);
-      assert.deepEqual((await sql`SELECT status,attempts FROM receipts WHERE id=${receipt.id}`)[0], { status: "completed", attempts: 1 });
-    }
-  } finally { fault = "none"; separateModels(); }
-});
-
-test("兼容回退补丁：新白名单不能绕过三路径 unknown／供应商 failed 或未知版本", async () => {
-  try {
-    for (const step of ["structure", "combinedUnderstand", "combinedSummarize"] as const) for (const state of ["unknown", "failed", "unsupported"] as const) {
-      fault = "rollbackFields";
-      if (step === "structure") separateModels(); else compatibleModels();
-      const id = await article(step === "combinedSummarize" ? samples[2] : samples[0]);
-      const first = await analyzeArticle(id);
-      const receipt = (await analysisHistory(`article:${id}@1`)).find(row => row.step === step)!;
-      const version = state === "unsupported" ? "unsupported-rollback-version" : rollbackVersions[step];
-      await sql`UPDATE receipts SET status=${state === "unsupported" ? "received" : state},completed_at=NULL,
-        error=${state === "failed" ? "HTTP 400: rejected" : null},
-        request=jsonb_set(request,'{promptVersion}',${sql.json(version)}::jsonb) WHERE id=${receipt.id}`;
-      if (state !== "unsupported") await sql`UPDATE receipt_attempts SET status=${state},error=${state === "failed" ? "HTTP 400: rejected" : null} WHERE receipt_id=${receipt.id}`;
-      const hits = provider.hits();
-      const attempts = (await sql`SELECT count(*)::int AS n FROM receipt_attempts WHERE receipt_id=ANY(${first!.receiptIds}::bigint[])`)[0]!.n;
-      separateModels();
-      if (state === "failed") {
-        assert.equal(await storedReceipt(receipt.id, { allowRejectedOutput: true }), null, "供应商失败不能当作收到的结果消费");
-        if (step !== "structure") await assert.rejects(analyzeArticle(id));
-      } else await assert.rejects(analyzeArticle(id));
-      assert.equal(provider.hits(), hits);
-      assert.equal((await sql`SELECT count(*)::int AS n FROM receipt_attempts WHERE receipt_id=ANY(${first!.receiptIds}::bigint[])`)[0]!.n, attempts);
-    }
-  } finally { fault = "none"; separateModels(); }
 });
