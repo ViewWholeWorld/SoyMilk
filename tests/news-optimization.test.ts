@@ -5,10 +5,10 @@ import { after, before, test } from "node:test";
 import { sql, closeDb } from "@aihot/backend/db";
 import { config } from "@aihot/backend/config";
 import { upsertMaterial } from "@aihot/backend/content/materials";
-import { analyzeArticle, parseCombinedUnderstandJson, COMPATIBLE_PROMPT_VERSIONS } from "@aihot/backend/editorial/analyze";
+import { analyzeArticle, parseCombinedUnderstandJson, COMPATIBLE_PROMPT_VERSIONS, PROMPT_VERSIONS, COMBINED_VERSIONS } from "@aihot/backend/editorial/analyze";
 import { analysisHistory, compatibleAnalysisModels, exclusiveAnalysisSteps } from "@aihot/backend/editorial/analysis-route";
 import { ModelOutputError } from "@aihot/backend/providers/llm";
-import { paidRequest, ProviderUnavailableError, ReceiptBusyError, ReceiptUnknownError, rejectReceivedResponse } from "@aihot/backend/providers/receipts";
+import { paidRequest, ProviderUnavailableError, ReceiptBusyError, ReceiptUnknownError, rejectReceivedResponse, storedReceipt } from "@aihot/backend/providers/receipts";
 import { receiptArticleSubject, processArticle } from "@aihot/backend/jobs/content";
 import { releaseReceipt } from "@aihot/backend/operations/recover";
 import { stopBoss } from "@aihot/backend/jobs/queue";
@@ -27,7 +27,7 @@ const samples = [
 type Sample = typeof samples[number];
 const requests: Array<{ step: string; marker: string; body: Record<string, unknown> }> = [];
 let fault: "none" | "missing" | "legacy" | "filter" | "malformedFilter" | "unusedBodyMissing" | "summaryMissing" | "emptyMember" | "missingWriterClose" | "invalidStructureWithEmptyMember" |
-  "nestedStructure" | "flatStructure" | "conflictingStructure" | "invalidNestedStructure" | "flatMissingTags" | "unsafePrice" | "emptySummary" = "none";
+  "nestedStructure" | "flatStructure" | "conflictingStructure" | "invalidNestedStructure" | "flatMissingTags" | "unsafePrice" | "emptySummary" | "rollbackFields" = "none";
 let combinedGate: { asked: ReturnType<typeof gate<void>>; hold: ReturnType<typeof gate<void>> } | null = null;
 const provider = await stub(async (_n, req) => {
   const body = JSON.parse(req.body);
@@ -45,7 +45,9 @@ const provider = await stub(async (_n, req) => {
   if (fault === "unsafePrice") writing.summaryZh = "联合会员券后268元，付款后兑换30元礼品卡，折合238元，需满足兑换条件且数量有限。";
   if (fault === "emptySummary") writing.summaryZh = writing.bodyZh = "";
   const structure = { category: sample.category, tags: ["产品更新", sample.topic], subjects: [],
-    fact: { title: sample.title, subject: "测试主体", action: "发布", object: "限定范围的测试消息", occurredAt: null } };
+    ...(["rollbackFields", "nestedStructure", "flatStructure"].includes(fault) ? { scope: "composite" } : {}),
+    fact: { title: sample.title, subject: "测试主体", action: "发布", object: "限定范围的测试消息", occurredAt: null,
+      ...(["rollbackFields", "nestedStructure", "flatStructure"].includes(fault) ? { evidence: sample.text, conditions: [{ quote: sample.text }] } : {}) } };
   const combinedWriting = step === "combinedSummarize" && ["unusedBodyMissing", "summaryMissing"].includes(fault)
     ? Object.fromEntries(Object.entries(writing).filter(([key]) => key !== (fault === "unusedBodyMissing" ? "bodyZh" : "summaryZh"))) : writing;
   if (fault === "filter" && step === "combinedUnderstand") return new Reply(400, { error: { code: "1301", message: "contentFilter" } });
@@ -598,4 +600,68 @@ test("保存连接的 low／medium 配置按能力生效，同一连接别名兼
     for (const name of ["PREFILTER_MODEL", "STRUCTURE_MODEL", "SUMMARIZE_MODEL", "UNDERSTAND_MODEL"]) process.env[name] = "default";
     config.allowPrivateNetworkFetch = oldPrivate;
   }
+});
+
+const rollbackVersions = {
+  structure: "structure@724c9ea146",
+  combinedUnderstand: "understand-structure+understand-rules+structure-rules@5637cb0a63",
+  combinedSummarize: "summarize-structure+structure-rules+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@a68e4691fa",
+} as const;
+
+test("兼容回退补丁：旧三路径提示词不变，新字段及 nested／flat 已收回执零新增 attempts 消费", async () => {
+  assert.equal(PROMPT_VERSIONS.structure, "structure@07a70a730f");
+  assert.equal(COMBINED_VERSIONS.combinedUnderstand, "understand-structure+understand-rules+structure-rules@7176ed3693");
+  assert.ok(COMBINED_VERSIONS.combinedSummarize.endsWith("@1f85a31db9"));
+  try {
+    for (const shape of ["structure", "combinedUnderstand", "combinedSummarize", "nestedStructure", "flatStructure"] as const) {
+      const step = shape === "nestedStructure" || shape === "flatStructure" ? "combinedUnderstand" : shape;
+      fault = shape === "nestedStructure" || shape === "flatStructure" ? shape : "rollbackFields";
+      if (step === "structure") separateModels(); else compatibleModels();
+      const id = await article(step === "combinedSummarize" ? samples[2] : samples[0]);
+      const first = await analyzeArticle(id);
+      const receipt = (await analysisHistory(`article:${id}@1`)).find(row => row.step === step)!;
+      assert.ok(receipt);
+      const [raw] = await sql`SELECT response->'choices'->0->'message'->>'content' AS content FROM receipts WHERE id=${receipt.id}`;
+      assert.ok(raw!.content.includes('"scope":"composite"'));
+      assert.ok(raw!.content.includes('"evidence"') && raw!.content.includes('"conditions"'));
+      assert.equal(Object.hasOwn(first!.output!, "scope"), false, "回退代码不启用新增字段业务功能");
+      assert.equal(Object.hasOwn(first!.output!.fact!, "evidence"), false);
+      await sql`UPDATE receipts SET status='received',completed_at=NULL,
+        request=jsonb_set(request,'{promptVersion}',${sql.json(rollbackVersions[step])}::jsonb) WHERE id=${receipt.id}`;
+      if (shape === "nestedStructure" || shape === "flatStructure") await rejectReceivedResponse(receipt.id, "unusable output: missing top-level structure");
+      const attempts = (await sql`SELECT count(*)::int AS n FROM receipt_attempts WHERE receipt_id=ANY(${first!.receiptIds}::bigint[])`)[0]!.n;
+      const hits = provider.hits();
+      separateModels();
+      assert.deepEqual((await analyzeArticle(id))!.output, first!.output);
+      assert.equal(provider.hits(), hits);
+      assert.equal((await sql`SELECT count(*)::int AS n FROM receipt_attempts WHERE receipt_id=ANY(${first!.receiptIds}::bigint[])`)[0]!.n, attempts);
+      assert.deepEqual((await sql`SELECT status,attempts FROM receipts WHERE id=${receipt.id}`)[0], { status: "completed", attempts: 1 });
+    }
+  } finally { fault = "none"; separateModels(); }
+});
+
+test("兼容回退补丁：新白名单不能绕过三路径 unknown／供应商 failed 或未知版本", async () => {
+  try {
+    for (const step of ["structure", "combinedUnderstand", "combinedSummarize"] as const) for (const state of ["unknown", "failed", "unsupported"] as const) {
+      fault = "rollbackFields";
+      if (step === "structure") separateModels(); else compatibleModels();
+      const id = await article(step === "combinedSummarize" ? samples[2] : samples[0]);
+      const first = await analyzeArticle(id);
+      const receipt = (await analysisHistory(`article:${id}@1`)).find(row => row.step === step)!;
+      const version = state === "unsupported" ? "unsupported-rollback-version" : rollbackVersions[step];
+      await sql`UPDATE receipts SET status=${state === "unsupported" ? "received" : state},completed_at=NULL,
+        error=${state === "failed" ? "HTTP 400: rejected" : null},
+        request=jsonb_set(request,'{promptVersion}',${sql.json(version)}::jsonb) WHERE id=${receipt.id}`;
+      if (state !== "unsupported") await sql`UPDATE receipt_attempts SET status=${state},error=${state === "failed" ? "HTTP 400: rejected" : null} WHERE receipt_id=${receipt.id}`;
+      const hits = provider.hits();
+      const attempts = (await sql`SELECT count(*)::int AS n FROM receipt_attempts WHERE receipt_id=ANY(${first!.receiptIds}::bigint[])`)[0]!.n;
+      separateModels();
+      if (state === "failed") {
+        assert.equal(await storedReceipt(receipt.id, { allowRejectedOutput: true }), null, "供应商失败不能当作收到的结果消费");
+        if (step !== "structure") await assert.rejects(analyzeArticle(id));
+      } else await assert.rejects(analyzeArticle(id));
+      assert.equal(provider.hits(), hits);
+      assert.equal((await sql`SELECT count(*)::int AS n FROM receipt_attempts WHERE receipt_id=ANY(${first!.receiptIds}::bigint[])`)[0]!.n, attempts);
+    }
+  } finally { fault = "none"; separateModels(); }
 });

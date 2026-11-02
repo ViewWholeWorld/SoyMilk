@@ -47,7 +47,19 @@ process.env.GROUP_REVIEW_MODEL = "deepseek-flash";
 let storyId: number;
 let factId: number;
 
-const randomText = () => Array.from({ length: 16 }, () => String.fromCharCode(65 + Math.floor(Math.random() * 26))).join("");
+// 召回比较字符二元组，随机大写字母会偶发碰撞；改用其他测试及固定文本未用的
+// 彝文音节 U+A000–U+A48C，每个字符在本文件一轮内只抽一次，隔离各用例。
+const drawn = new Set<number>();
+function randomText() {
+  const chars: number[] = [];
+  while (chars.length < 16) {
+    const c = 0xa000 + Math.floor(Math.random() * 0x48d);
+    if (drawn.has(c)) continue;
+    drawn.add(c);
+    chars.push(c);
+  }
+  return String.fromCharCode(...chars);
+}
 
 async function report(suffix: string, title = FACT_TITLE, summary = "摘要", publishedAt = new Date()) {
   const { articleId } = await upsertMaterial({
@@ -136,7 +148,7 @@ test("a report waiting for a regroup is not evidence for others, and its own tur
   hold = gate();
   hold.open();
   // Text no other report shares (the test database may keep rows of earlier runs; recall is lexical here).
-  const text = Array.from({ length: 16 }, () => String.fromCharCode(65 + Math.floor(Math.random() * 26))).join("");
+  const text = randomText();
   const waiting = await report("waiting", text, text);
   const [story] = await sql<{ id: number }[]>`INSERT INTO stories (public_id, title, first_report_at, latest_at) VALUES (${randomUUID()}, ${text}, now(), now()) RETURNING id`;
   const [fact] = await sql<{ id: number }[]>`INSERT INTO facts (public_id, story_id, title) VALUES (${`fw-${T}`}, ${story!.id}, ${text}) RETURNING id`;
@@ -164,7 +176,7 @@ test("a report waiting for a regroup is not evidence for others, and its own tur
 test("a development attaches to the story's earliest fact that still holds reports", async () => {
   hold = gate();
   hold.open();
-  const text = Array.from({ length: 16 }, () => String.fromCharCode(65 + Math.floor(Math.random() * 26))).join("");
+  const text = randomText();
   // A story whose first fact was emptied (a regroup, a detach, or a merge carried it over).
   const [story] = await sql<{ id: number }[]>`INSERT INTO stories (public_id, title, first_report_at, latest_at) VALUES (${randomUUID()}, ${text}, now(), now()) RETURNING id`;
   await sql`INSERT INTO facts (public_id, story_id, title) VALUES (${`fe-${T}`}, ${story!.id}, 'emptied')`;
