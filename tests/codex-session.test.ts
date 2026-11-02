@@ -185,7 +185,7 @@ test("worker 在建立连接前拒绝非法启动间隔", () => {
 
 test("节流等待中收到上游限流时不占用后续付费回执", async () => {
   const service = "session-paced-limit-"+T;
-  const pool = worker({ concurrency: 2, minStartIntervalMs: 100 });
+  const pool = worker({ concurrency: 2, minStartIntervalMs: 10_000 });
   const send = (value: string) => pool.call(server => paidRequest({service, purpose:"paced-limit", identity:{T,value}},
     async () => ({response: await requestCodex(server,"fixture-model","",value,true,2000)})));
   try {

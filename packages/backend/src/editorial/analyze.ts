@@ -57,14 +57,15 @@ export const COMPATIBLE_PROMPT_VERSIONS = {
     "summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@e0af940ce3",
     "summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@e87bd8012c",
     "summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@6ff3bd3aad"],
-  structure: ["structure@64db76620a", "structure@6db1156d1c"],
+  structure: ["structure@64db76620a", "structure@6db1156d1c", "structure@724c9ea146"],
   combinedUnderstand: ["understand-structure+understand+structure@f57fd087c3", "understand-structure+understand-rules+structure-rules@4baa7350d1",
     "understand-structure+understand-rules+structure-rules@809996b152",
-    "understand-structure+understand-rules+structure-rules@3d5402719a"],
+    "understand-structure+understand-rules+structure-rules@3d5402719a", "understand-structure+understand-rules+structure-rules@5637cb0a63"],
   combinedSummarize: ["summarize-structure+structure+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@4210decab2",
     "summarize-structure+structure-rules+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@282255e6f4",
     "summarize-structure+structure-rules+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@e77de6a2b8",
-    "summarize-structure+structure-rules+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@ce3c612b19"],
+    "summarize-structure+structure-rules+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@ce3c612b19",
+    "summarize-structure+structure-rules+summarize-article+summarize-article-empty+summarize-short-post+summarize-short-post-quoted+summarize-long-post+summarize-long-post-quoted+identity-context@a68e4691fa"],
 } as const;
 
 // ── Scoring ───────────────────────────────────────────────────────────────────────────────
@@ -181,6 +182,8 @@ const RecoverableUnderstandSchema = CombinedUnderstandSchema.extend({ writing: U
 }).strict() });
 const WRITING_FIELDS = ["itemType", "authorRole", "tags", "editorialJudgment", "titleZh", "summaryZh"];
 const STRUCTURE_FIELDS = ["category", "tags", "subjects", "fact"];
+// 只允许已核验的新结构可选 scope；仍要求完整字段集合，旧 schema 自行忽略新增字段。
+const structureFields = (value: Record<string, unknown>) => [...STRUCTURE_FIELDS, ...(Object.hasOwn(value, "scope") ? ["scope"] : [])];
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const exactFields = (value: Record<string, unknown>, fields: string[]) =>
   Object.keys(value).length === fields.length && fields.every(key => Object.hasOwn(value, key));
@@ -193,14 +196,14 @@ function restoreCombinedUnderstandShape(value: unknown): unknown {
   if (!misplaced) return value;
   if (!exactFields(value, ["writing"])) throw new SyntaxError("合并结果包含重复或歧义结构");
   let candidate: unknown;
-  if (exactFields(writing, [...WRITING_FIELDS, "structure"]) && record(writing.structure) && exactFields(writing.structure, STRUCTURE_FIELDS)) {
+  if (exactFields(writing, [...WRITING_FIELDS, "structure"]) && record(writing.structure) && exactFields(writing.structure, structureFields(writing.structure))) {
     const { structure, ...copy } = writing;
     candidate = { writing: copy, structure };
-  } else if (exactFields(writing, [...WRITING_FIELDS, "category", "subjects", "fact"])) {
+  } else if (exactFields(writing, [...WRITING_FIELDS, ...structureFields(writing).filter(key => key !== "tags")])) {
     // 两套 tags 使用相同词表；只复用原数组，不能凭 itemType 生成缺失标签。
-    const { category, subjects, fact, ...copy } = writing;
+    const { category, subjects, fact, scope, ...copy } = writing;
     if (!Array.isArray(copy.tags) || !copy.tags.length || JSON.stringify(copy.tags) !== JSON.stringify(normalizeTags(copy.tags))) return value;
-    candidate = { writing: copy, structure: { category, tags: copy.tags, subjects, fact } };
+    candidate = { writing: copy, structure: { category, tags: copy.tags, subjects, fact, ...(Object.hasOwn(writing, "scope") ? { scope } : {}) } };
   } else return value;
   // 保留原值供调用方完整 schema 校验，不把无效分类或缺少事实字段修成默认值。
   return RecoverableUnderstandSchema.safeParse(candidate).success ? candidate : value;

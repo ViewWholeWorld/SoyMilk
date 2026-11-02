@@ -22,6 +22,12 @@ export interface CollectResult {
 }
 
 
+export function collectErrorMessage(error: unknown): string {
+  const message = String(error instanceof Error ? error.message : error).slice(0, 1000);
+  const code = (error instanceof Error ? error.cause as { code?: unknown } | undefined : undefined)?.code;
+  return typeof code === "string" && code.length > 0 ? `${message} (${code})` : message;
+}
+
 export function noiseFiltered(c: Candidate, source: SourceRow): boolean {
   const f = source.config.ingestNoiseFilter;
   const cats: string[] = c.categories ?? [];
@@ -221,7 +227,7 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
     return { sourceId, status: "ok", found, created, revised };
   } catch (error) {
     if (shutdownSignal.signal.aborted) throw error;
-    const message = String(error instanceof Error ? error.message : error).slice(0, 1000);
+    const message = collectErrorMessage(error);
     const wait = collectionWait(error);
     if (wait) {
       await recordWait(sourceId, run!.id, wait, message, { found, created });
