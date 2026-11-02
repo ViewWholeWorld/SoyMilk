@@ -4,7 +4,7 @@
 import { CATEGORY_TAGS, ENTITY_TAGS, IDENTITY_CONTEXT_ALIASES, IDENTITY_LEXICON, PUBLISHER_DOMAINS, TOPIC_TAGS } from "@aihot/industry/taxonomy";
 import type { AnalyzeInputArticle } from "./input.ts";
 import { promptText } from "./prompts.ts";
-import { articlePromptBody, cleanArticleTextForLLM } from "../content/article-text.ts";
+import { articlePromptMaterial, cleanArticleTextForLLM } from "../content/article-text.ts";
 export { cleanArticleTextForLLM } from "../content/article-text.ts";
 
 // 历史 X 长文只有链接而缺少正文时，仍保持无法确认内容的边界。
@@ -86,7 +86,7 @@ export function renderSourceContext(a: AnalyzeInputArticle): string {
 }
 
 /** The material as the prefilter and the content understanding read it. */
-export function renderContext(a: AnalyzeInputArticle, opts: { annotateQuoted?: boolean; omitSource?: boolean } = {}): string {
+export function renderContext(a: AnalyzeInputArticle, opts: { annotateQuoted?: boolean; omitSource?: boolean; onSourceText?: (texts: string[]) => void } = {}): string {
   const lines: string[] = opts.omitSource ? [] : [renderSourceContext(a)];
   const name = a.xPost?.authorName || a.author;
   const handle = a.xPost?.handle;
@@ -112,7 +112,10 @@ export function renderContext(a: AnalyzeInputArticle, opts: { annotateQuoted?: b
   lines.push("");
   lines.push(opts.annotateQuoted && quoted ? "【正文（作者自己的内容）】" : "【正文】");
   const body = a.xPost ? String(a.xPost.text ?? a.title) : (a.bodyText ?? a.excerpt ?? "(无正文)");
-  lines.push(capBody(opts.annotateQuoted && !a.xPost ? cleanArticleTextForLLM(body, a.url) : body));
+  const text = capBody(opts.annotateQuoted && !a.xPost ? cleanArticleTextForLLM(body, a.url) : body);
+  lines.push(text);
+  opts.onSourceText?.([a.xPost ? a.xPost.text == null ? "" : text : a.bodyText == null && a.excerpt == null ? "" : text,
+    quoted ? String(quoted.text) : ""]);
   lines.push("");
   lines.push(`【材料质量】${materialQuality(a)}`);
   return lines.join("\n");
@@ -126,8 +129,8 @@ export function missingEvidence(a: AnalyzeInputArticle): boolean {
   return !a.bodyText?.trim() && !a.excerpt?.trim() && !String(a.xPost?.text ?? "").trim() && !String(a.xPost?.quoted?.text ?? "").trim();
 }
 
-export const understandUser = (a: AnalyzeInputArticle, combined = false) =>
-  [combined ? "请按系统规则同时完成以下单篇材料的 writing 和 structure。" : "请按系统规则理解以下单篇材料，一次返回全部六个字段。", renderContext(a, { annotateQuoted: true })].join("\n\n");
+export const understandUser = (a: AnalyzeInputArticle, combined = false, onSourceText?: (texts: string[]) => void) =>
+  [combined ? "请按系统规则同时完成以下单篇材料的 writing 和 structure。" : "请按系统规则理解以下单篇材料，一次返回全部六个字段。", renderContext(a, { annotateQuoted: true, onSourceText })].join("\n\n");
 
 // ── Identity context and guard ────────────────────────────────────────────────────────────────
 
@@ -293,7 +296,9 @@ function anchorDate(d: Date | undefined): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
 }
 
-export function buildArticlePrompt(input: TranslateInput, combined = false): string {
+export function buildArticlePrompt(input: TranslateInput, combined = false, onSourceText?: (texts: string[]) => void): string {
+  const material = articlePromptMaterial(input.text, input.documentUrl);
+  onSourceText?.([material.sourceText]);
   return promptText("summarize-article", {
     outputFormat: combined ? "写作结果填入系统 JSON 的 writing.titleZh 和 writing.summaryZh；普通文章的 writing.bodyZh 为空字符串。只使用系统定义的 writing／structure 两个并列对象。" : "输出格式（严格遵守）：\ntitle_zh: <中文标题>\nsummary_zh: <80-160字、最多3句的中文摘要>",
     publishedDate: anchorDate(input.publishedAt),
@@ -301,26 +306,32 @@ export function buildArticlePrompt(input: TranslateInput, combined = false): str
     sourceName: sourceName(input.sourceName),
     identity: identityPrompt(input),
     title: input.title,
-    body: input.text.trim() ? articlePromptBody(input.text, input.documentUrl) : promptText("summarize-article-empty"),
+    body: input.text.trim() ? material.text : promptText("summarize-article-empty"),
   });
 }
 
 /** The quoted post's block, appended after a blank line when there is one. */
-function quotedBlock(input: TranslateInput, name: string): string {
-  if (!input.quotedText) return "";
-  return `\n\n${promptText(name, { quotedLabel: input.quotedAuthor ? `@${input.quotedAuthor}` : "引用推文", quotedText: clampText(input.quotedText, 1500) })}`;
+function quotedBlock(input: TranslateInput, name: string, quotedText: string): string {
+  if (!quotedText) return "";
+  return `\n\n${promptText(name, { quotedLabel: input.quotedAuthor ? `@${input.quotedAuthor}` : "引用推文", quotedText })}`;
 }
 
-export function buildShortTweetPrompt(input: TranslateInput, combined = false): string {
+export function buildShortTweetPrompt(input: TranslateInput, combined = false, onSourceText?: (texts: string[]) => void): string {
   const post = clampText(input.mainText || input.text || input.title, 4000);
+  const quoted = input.quotedText ? clampText(input.quotedText, 1500) : "";
+  onSourceText?.([input.mainText || input.text ? post === (input.mainText || input.text) ? post : post.slice(0, -1) : "",
+    quoted === (input.quotedText ?? "") ? quoted : quoted.slice(0, -1)]);
   const outputFormat = combined ? "写作结果填入系统 JSON 的 writing.titleZh 和 writing.bodyZh；writing.summaryZh 为空字符串。只使用系统定义的 writing／structure 两个并列对象。" : "输出格式（严格遵守）：\ntitle_zh: <中文标题>\nbody_zh: <中文翻译>";
-  return promptText("summarize-short-post", { sourceName: sourceName(input.sourceName), identity: identityPrompt(input), post, outputFormat }) + quotedBlock(input, "summarize-short-post-quoted");
+  return promptText("summarize-short-post", { sourceName: sourceName(input.sourceName), identity: identityPrompt(input), post, outputFormat }) + quotedBlock(input, "summarize-short-post-quoted", quoted);
 }
 
-export function buildLongTweetPrompt(input: TranslateInput, combined = false): string {
+export function buildLongTweetPrompt(input: TranslateInput, combined = false, onSourceText?: (texts: string[]) => void): string {
   const post = clampText(input.mainText || input.text || input.title, 4000);
+  const quoted = input.quotedText ? clampText(input.quotedText, 1500) : "";
+  onSourceText?.([input.mainText || input.text ? post === (input.mainText || input.text) ? post : post.slice(0, -1) : "",
+    quoted === (input.quotedText ?? "") ? quoted : quoted.slice(0, -1)]);
   const outputFormat = combined ? "写作结果填入系统 JSON 的 writing.titleZh 和 writing.summaryZh；writing.bodyZh 为空字符串。只使用系统定义的 writing／structure 两个并列对象。" : "输出格式（严格遵守）：\ntitle_zh: <中文标题>\nsummary_zh: <中文摘要>";
-  return promptText("summarize-long-post", { sourceName: sourceName(input.sourceName), identity: identityPrompt(input), post, outputFormat }) + quotedBlock(input, "summarize-long-post-quoted");
+  return promptText("summarize-long-post", { sourceName: sourceName(input.sourceName), identity: identityPrompt(input), post, outputFormat }) + quotedBlock(input, "summarize-long-post-quoted", quoted);
 }
 
 /** Prompt lines a model sometimes repeats after its answer (来源：…, 【已核验身份上下文】…, 原始标题：…). */

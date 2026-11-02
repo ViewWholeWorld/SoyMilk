@@ -7,6 +7,7 @@ dist/
 .DS_Store
 .data/
 work/
+outputs/structure-evidence-eval/
 .docker/
 backups/
 deploy/nas/compose.override.yml

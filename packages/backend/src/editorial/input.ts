@@ -4,7 +4,7 @@ import { sql, type Db } from "../db.ts";
 import { collapseWhitespace, truncate } from "../lib/text.ts";
 import { produceImage } from "../media/images.ts";
 import type { ContentPart } from "../providers/llm.ts";
-import { articlePromptBody } from "../content/article-text.ts";
+import { articlePromptMaterial } from "../content/article-text.ts";
 
 export interface AnalyzeInputArticle {
   id: string;
@@ -76,7 +76,7 @@ const KIND_LABEL: Record<string, string> = {
 };
 
 /** The material as the structure step reads it (source facts, text, link). */
-export function buildMaterial(a: AnalyzeInputArticle): string {
+export function buildMaterial(a: AnalyzeInputArticle, onSourceText?: (texts: string[]) => void): string {
   const lines: string[] = [];
   lines.push("<source>");
   lines.push(`名称：${a.source.name}`);
@@ -86,14 +86,20 @@ export function buildMaterial(a: AnalyzeInputArticle): string {
   if (a.publishedAt) lines.push(`发布时间：${beijingDate(a.publishedAt)} ${beijingTime(a.publishedAt)}（北京时间）`);
   if (a.author) lines.push(`作者：${a.author}`);
   if (a.xPost) {
+    const post = truncate(String(a.xPost.text ?? a.title), 4000);
+    const quoted = a.xPost.quoted?.text ? truncate(String(a.xPost.quoted.text), 2000) : "";
+    onSourceText?.([a.xPost.text == null ? "" : post === String(a.xPost.text) ? post : post.slice(0, -1),
+      quoted === String(a.xPost.quoted?.text ?? "") ? quoted : quoted.slice(0, -1)]);
     lines.push(`作者：${a.xPost.authorName ?? ""} (@${a.xPost.handle ?? ""})`);
-    lines.push(`帖子：\n${truncate(String(a.xPost.text ?? a.title), 4000)}`);
-    if (a.xPost.quoted?.text) lines.push(`引用的帖子（@${a.xPost.quoted.handle ?? ""}）：\n${truncate(String(a.xPost.quoted.text), 2000)}`);
+    lines.push(`帖子：\n${post}`);
+    if (quoted) lines.push(`引用的帖子（@${a.xPost.quoted.handle ?? ""}）：\n${quoted}`);
     if (a.translationZh) lines.push(`帖子中文译文：\n${truncate(a.translationZh, 4000)}`);
   } else {
     lines.push(`标题：${collapseWhitespace(a.title)}`);
     const body = a.bodyText ?? a.excerpt ?? "";
-    lines.push(body ? `正文：\n${articlePromptBody(body, a.url)}` : "正文：（无）");
+    const material = articlePromptMaterial(body, a.url);
+    onSourceText?.([material.sourceText]);
+    lines.push(body ? `正文：\n${material.text}` : "正文：（无）");
     if (a.translationZh && !a.bodyText) lines.push(`正文中文译文：\n${truncate(a.translationZh, 5000)}`);
   }
   lines.push(`原文链接：${a.url}`);
