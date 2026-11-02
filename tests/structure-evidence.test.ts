@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { spawnSync } from "node:child_process";
 import { checkStructureQuotes, StructureSchema, CombinedStructureSchema, normalizeAnalysis, parseCombinedUnderstandJson,
   type AnalysisRun } from "@aihot/backend/editorial/analyze";
 import { buildMaterial, type AnalyzeInputArticle } from "@aihot/backend/editorial/input";
 import { buildArticlePrompt, buildLongTweetPrompt, buildShortTweetPrompt, understandUser, translateInputOf } from "@aihot/backend/editorial/writing";
 import { structureStratum, sampleStructureCases, summarizeStructureEvidence,
+  parseStructureEvidenceCases, validateStructureEvidenceRun, structureEvidenceFingerprint, assertStructureEvidenceDatabase,
   type StructureEvidenceCase, type StructureEvidenceRow } from "../scripts/eval-structure-evidence-core.ts";
 
 const structure = (evidence: string | null, conditions: string[] = []) => StructureSchema.parse({
@@ -93,8 +95,10 @@ test("评测按关键词或 ROUNDUP 分层、固定种子抽样及含失败的�
   assert.equal(structureStratum("Preview available in Japan"), "conditions");
   assert.equal(structureStratum("某公司发布新产品"), "single");
   const cases = Array.from({ length: 60 }, (_, id): StructureEvidenceCase => ({ caseId: String(id), articleId: String(id),
-    stratum: id < 20 ? "composite" : id < 40 ? "conditions" : "single", oldAnalysisId: id + 1,
-    oldTitleZh: null, oldSummaryZh: null, oldFact: null, combinedStep: "combinedUnderstand" }));
+    stratum: id < 20 ? "composite" : id < 40 ? "conditions" : "single", schemaVersion: 1, frozenAt: new Date(),
+    input: { ...article, id: String(id) }, baseline: { id: id + 1, articleId: String(id), inputRevision: 1,
+      promptVersion: "old", model: "fixture", receiptIds: [], createdAt: new Date(), titleZh: null, summaryZh: null, output: { combinedStep: "combinedUnderstand" } },
+    combinedStep: "combinedUnderstand" }));
   const sampled = sampleStructureCases(cases, 7);
   assert.deepEqual(sampleStructureCases([...cases].reverse(), 7), sampled);
   assert.deepEqual(["composite", "conditions", "single"].map(s => sampled.filter(c => c.stratum === s).length), [15, 15, 10]);
@@ -108,4 +112,57 @@ test("评测按关键词或 ROUNDUP 分层、固定种子抽样及含失败的�
   assert.equal(summary.truncated, 1);
   assert.equal(summary.droppedQuoteRatio, 0.333);
   assert.deepEqual(summary.scopeByStratum.conditions, { single: 1, composite: 0, unknown: 0, null: 1 });
+});
+
+const frozenCases = (): StructureEvidenceCase[] => Array.from({ length: 40 }, (_, i) => ({
+  schemaVersion: 1, frozenAt: new Date("2026-11-01T01:00:00Z"), caseId: `case-${i}`, articleId: `article-${i}`,
+  stratum: i < 15 ? "composite" : i < 30 ? "conditions" : "single", combinedStep: "structure",
+  input: { ...article, id: `article-${i}`, publishedAt: new Date("2026-10-31T22:00:00Z"), discoveredAt: new Date("2026-11-01T00:00:00Z") },
+  baseline: { id: i + 1, articleId: `article-${i}`, inputRevision: 1, promptVersion: "structure@old", model: "fixture", receiptIds: [], createdAt: new Date("2026-11-01T00:10:00Z"),
+    titleZh: "旧标题", summaryZh: "旧摘要", output: { fact: { title: "旧事实" } } },
+}));
+
+test("冻结 JSONL 恢复完整材料和日期，重排或重导出时间不改变身份", () => {
+  const cases = frozenCases();
+  const restored = parseStructureEvidenceCases(cases.map(row => JSON.stringify(row)).join("\n"));
+  assert.deepEqual(restored, cases);
+  assert.ok(restored[0]!.input.publishedAt instanceof Date);
+  assert.equal(structureEvidenceFingerprint(cases), structureEvidenceFingerprint([...restored].reverse().map(row => ({ ...row, frozenAt: new Date() }))));
+  const bad = JSON.parse(JSON.stringify(cases[0])); bad.input.publishedAt = "invalid-date";
+  assert.throws(() => parseStructureEvidenceCases(JSON.stringify(bad)));
+  delete bad.input.bodyText;
+  assert.throws(() => parseStructureEvidenceCases(JSON.stringify(bad)));
+});
+
+test("实测完整门槛拒绝缺额、重复、修订错配和 stale，预算不能截断或超限", () => {
+  assert.equal(validateStructureEvidenceRun(frozenCases(), 40).length, 40);
+  const variants = [frozenCases().slice(1), frozenCases().map((row, i) => i === 0 ? { ...row, stratum: "single" as const } : row),
+    frozenCases().map((row, i) => ({ ...row, caseId: i === 1 ? "case-0" : row.caseId })),
+    frozenCases().map((row, i, all) => i === 1 ? { ...all[0]!, caseId: row.caseId } : row),
+    frozenCases().map((row, i) => i === 0 ? { ...row, input: { ...row.input, revision: 2 } } : row),
+    frozenCases().map((row, i) => i === 0 ? { ...row, baseline: { ...row.baseline, articleId: "wrong" } } : row),
+    frozenCases().map((row, i) => i === 0 ? { ...row, baseline: { ...row.baseline, output: { stale: true } } } : row)];
+  for (const rows of variants) assert.throws(() => validateStructureEvidenceRun(rows, 50));
+  for (const cap of [1, 39, 51, 1.5]) assert.throws(() => validateStructureEvidenceRun(frozenCases(), cap));
+  for (const url of [undefined, "", "postgres://example.invalid/soymilk", "invalid-private-value",
+    "postgres://example.invalid/%zz_test", "https://example.invalid/soymilk_test"]) {
+    assert.throws(() => assertStructureEvidenceDatabase(url), /SOYMILK_EVAL_DATABASE_URL/);
+  }
+  for (const url of ["postgres://example.invalid/soymilk_test", "postgresql://example.invalid/soymilk_ci"]) {
+    assert.doesNotThrow(() => assertStructureEvidenceDatabase(url));
+  }
+});
+
+test("CLI 在读取样本和导入数据库前拒绝缺失或非法评测环境变量，不回退源连接且不泄露值", () => {
+  const invalidValues = [undefined, "", "invalid-private-value", "postgres://fixture:private-password@example.invalid/soymilk",
+    "postgres://fixture:private-password@example.invalid/%zz_test"];
+  for (const value of invalidValues) {
+    const env: NodeJS.ProcessEnv = { ...process.env, DATABASE_URL: "postgres://example.invalid/fallback_test" };
+    delete env.SOYMILK_EVAL_DATABASE_URL;
+    if (value !== undefined) env.SOYMILK_EVAL_DATABASE_URL = value;
+    const result = spawnSync(process.execPath, ["scripts/eval-structure-evidence.ts", "--cases", "nonexistent-eval-cases.jsonl"], { env, encoding: "utf8" });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /SOYMILK_EVAL_DATABASE_URL/);
+    assert.doesNotMatch(result.stderr + result.stdout, /private-password|invalid-private-value|example\.invalid|ENOENT/);
+  }
 });

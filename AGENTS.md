@@ -54,8 +54,8 @@ packages/
     config.ts              # 后端配置
 industry/                  # 行业配置、提示词、品牌与条款
 database/migrations/       # 按编号追加的数据库增量迁移
-scripts/                   # 初始化、迁移、种子、冒烟、HTTP 验收；eval-tools/评测 core 复用生产规则；eval-structure-evidence*.ts 只读抽样及隔离引文评测；report-model-requests.ts 汇总北京日请求观察
-tests/                     # 后端回归；structure-evidence.test.ts 覆盖结构引文与评测纯规则；http/ 为真实 HTTP 验收，fixtures/ 为夹具
+scripts/                   # 初始化、迁移、种子、冒烟、HTTP 验收；eval-tools/评测 core 复用生产规则；eval-structure-evidence*.ts 负责 CLI、冻结 schema／配额和只读导出／持久占位隔离调用；report-model-requests.ts 汇总北京日请求观察
+tests/                     # 后端回归；structure-evidence*.test.ts 覆盖引文纯规则、冻结导出、隔离调用及失败／unknown 防重发；http/ 为真实 HTTP 验收，fixtures/ 为夹具
 deploy/nas/                # NAS Dockerfile、Compose 入口、按需发布脚本及私有配置模板
 integrations/              # 可选接入示例，不代表生产已部署
 assets/                    # 字体等静态资源

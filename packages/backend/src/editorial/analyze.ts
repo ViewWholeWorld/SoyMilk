@@ -12,8 +12,8 @@ import { z } from "zod";
 import { CATEGORY_KEYS } from "@aihot/contracts/taxonomy";
 import { CATEGORIES } from "@aihot/industry/taxonomy";
 import { SELECTION } from "@aihot/industry/selection";
-import { sql } from "../db.ts";
-import { chatJson, extractJson, registeredModels, ModelOutputError, reuseJsonReceipt, type ContentPart } from "../providers/llm.ts";
+import { sql, type Db } from "../db.ts";
+import { chatJson, extractJson, registeredModels, modelConfigurationHash, ModelOutputError, reuseJsonReceipt, type ContentPart } from "../providers/llm.ts";
 import { completeReceipt, ProviderRejectedError, ProviderUnavailableError, ReceiptUnknownError, storedReceipt, rejectedByContentFilter, receiptAttemptTag } from "../providers/receipts.ts";
 import { collapseWhitespace } from "../lib/text.ts";
 import { modelFor } from "./models.ts";
@@ -323,6 +323,8 @@ type StepOpts = { attemptTag?: string; scoreModel?: string; evaluation?: {
   beforeCall: () => void;
   onReceipt: (id: number) => void;
   onParsed: (value: unknown) => void;
+  plan: StructureEvidenceEvalPlan;
+  onReserved: (db: Db, id: number) => Promise<void>;
 } };
 type ReceiptObserver = (receiptId: number) => void;
 export class AnalysisInterruptedError extends Error {}
@@ -446,7 +448,7 @@ export async function runSelectionScores(
 }
 
 async function runStructure(a: AnalyzeInputArticle, opts: StepOpts): Promise<NonNullable<AnalysisRun["structure"]>> {
-  const model = await modelFor("structure");
+  const model = opts.evaluation?.plan.model ?? await modelFor("structure");
   checkAnalysisRunning();
   let sourceText: string[] = [];
   const user = buildMaterial(a, texts => { sourceText = texts; });
@@ -464,7 +466,8 @@ async function runStructure(a: AnalyzeInputArticle, opts: StepOpts): Promise<Non
     maxTokens: 1200,
     attemptTag: tagged(opts.attemptTag, "structure"),
     exclusiveWith: opts.evaluation ? undefined : exclusiveAnalysisSteps("structure", opts.attemptTag),
-    onReserved: opts.evaluation ? async (_db, id) => { opts.evaluation!.onReceipt(id); } : undefined,
+    configurationHash: opts.evaluation?.plan.configurationHash,
+    onReserved: opts.evaluation?.onReserved,
     materialHash: materialHash(a),
   });
   opts.evaluation?.onParsed(res.data);
@@ -580,7 +583,7 @@ async function runCombined(a: AnalyzeInputArticle, opts: StepOpts, step: Combine
     compatiblePromptVersions: COMPATIBLE_PROMPT_VERSIONS[step] }) : null;
   if (!res) {
     if (!(await canCombine(step))) throw new ProviderUnavailableError("configuration", "本轮已选择合并处理；需恢复兼容模型后重试");
-    const model = await modelFor(combinedWriter(step));
+    const model = opts.evaluation?.plan.model ?? await modelFor(combinedWriter(step));
     // 主体正文只出现一次；补充原结构阶段单独读取的来源事实及已有译文。
     const user = `${text}\n\n【结构补充】来源类型=${a.source.kind}；分级=${a.source.tier}；一手来源=${a.source.firstParty ? "是" : "否"}${a.translationZh ? `\n已有中文译文：${a.translationZh.slice(0, 5000)}` : ""}\n最终输出格式以系统中的 writing／structure JSON 为准。`;
     const system = promptText(step === "combinedUnderstand" ? "understand-structure" : "summarize-structure", {
@@ -594,7 +597,8 @@ async function runCombined(a: AnalyzeInputArticle, opts: StepOpts, step: Combine
         system, user: image ? [{ type: "text", text: user }, image] : user, schema, parse, temperature: 0.2,
         maxTokens: step === "combinedUnderstand" ? 16_384 : 4096, timeoutMs: 180_000,
         attemptTag: analysisTag(opts.attemptTag, step), exclusiveWith: opts.evaluation ? undefined : exclusiveAnalysisSteps(step, opts.attemptTag),
-        onReserved: opts.evaluation ? async (_db, id) => { opts.evaluation!.onReceipt(id); } : undefined, materialHash: materialHash(a) });
+        configurationHash: opts.evaluation?.plan.configurationHash,
+        onReserved: opts.evaluation?.onReserved, materialHash: materialHash(a) });
     };
     const image = step === "combinedUnderstand" && (await registeredModels())[model]?.vision !== false ? await firstImagePart(a) : null;
     try { res = await call(image); }
@@ -625,16 +629,49 @@ async function runCombined(a: AnalyzeInputArticle, opts: StepOpts, step: Combine
     reasonZh: null, tags: null, receiptIds: [res.receiptId], reused: res.reused } };
 }
 
-/** 单篇只走指定的生产步骤；独立用途与轮次隔离回执，不评分、不保存分析或归组。 */
+export type StructureEvidenceEvalStep = CombinedStep | "structure";
+export interface StructureEvidenceEvalPlan {
+  step: StructureEvidenceEvalStep; model: string; promptVersion: string; configurationHash: string;
+}
+
+/** 在整批调用前检查实际路径，冻结配置摘要；不允许评测悄悄改走单项结构。 */
+export async function structureEvidenceEvalPlan(a: AnalyzeInputArticle, step: StructureEvidenceEvalStep): Promise<StructureEvidenceEvalPlan> {
+  if (step !== "structure" && (!(await canCombine(step)) || step === "combinedSummarize" && !hasModelWriting(a))) {
+    throw new ProviderUnavailableError("configuration", "指定的结构评测合并路径不可用，拒绝回落单项结构");
+  }
+  const model = await modelFor(step === "structure" ? "structure" : combinedWriter(step));
+  return { step, model, promptVersion: step === "structure" ? PROMPT_VERSIONS.structure : COMBINED_VERSIONS[step],
+    configurationHash: await modelConfigurationHash(model) };
+}
+
+/** 单篇只走指定步骤；评测占位额外拒绝所有既有尝试，不改变生产 paidRequest 的重试规则。 */
 export async function runStructureEvidenceEval(a: AnalyzeInputArticle, step: CombinedStep | "structure", opts: {
   attemptTag: string; beforeCall: () => void; onReceipt: (id: number) => void;
+  plan?: StructureEvidenceEvalPlan; onReserved?: (db: Db, id: number) => Promise<void>;
 }) {
+  if (!/_(test|ci)$/.test(decodeURIComponent(new URL(process.env.DATABASE_URL ?? "postgres://unset/unset").pathname.slice(1)))) {
+    throw new Error("结构评测仅允许显式指定 *_test 或 *_ci 隔离数据库");
+  }
+  const [database] = await sql<{ name: string }[]>`SELECT current_database() AS name`;
+  if (!database || !/_(test|ci)$/.test(database.name)) throw new Error("实际连接的数据库不是隔离库");
+  const plan = await structureEvidenceEvalPlan(a, step);
+  if (opts.plan && stableJson(plan) !== stableJson(opts.plan)) throw new ProviderUnavailableError("configuration", "结构评测冻结后模型配置或路径改变");
   let raw: unknown;
-  const stepOpts: StepOpts = { attemptTag: opts.attemptTag, evaluation: { ...opts, onParsed: value => { raw = value; } } };
-  const checked = step === "structure" || !(await canCombine(step)) || (step === "combinedSummarize" && !hasModelWriting(a))
-    ? await runStructure(a, stepOpts) : (await runCombined(a, stepOpts, step)).structure!;
+  const stepOpts: StepOpts = { attemptTag: opts.attemptTag, evaluation: { ...opts, plan, onParsed: value => { raw = value; },
+    onReserved: async (db, id) => {
+      const subject = `structure-eval:${a.id}@${a.revision}`;
+      await db`SELECT pg_advisory_xact_lock(hashtext(${subject}))`;
+      const prior = await db`SELECT r.id FROM receipts r WHERE r.subject=${subject}
+        AND r.purpose LIKE 'structure_evidence_eval_%'
+        AND (r.id<>${id} OR EXISTS(SELECT 1 FROM receipt_attempts t WHERE t.receipt_id=r.id)) LIMIT 1`;
+      if (prior.length) throw new ProviderUnavailableError("configuration", "该篇已有结构评测占位，禁止更换轮次、目录、模型或路径重发");
+      await opts.onReserved?.(db, id);
+      opts.onReceipt(id);
+    },
+  } };
+  const checked = step === "structure" ? await runStructure(a, stepOpts) : (await runCombined(a, stepOpts, step)).structure!;
   await completeReceipt(sql, checked.receiptId);
-  return { raw, checked, quoteCheck: checked.quoteCheck, receiptId: checked.receiptId };
+  return { raw, checked, quoteCheck: checked.quoteCheck, receiptId: checked.receiptId, actualStep: step, plan };
 }
 
 /**
