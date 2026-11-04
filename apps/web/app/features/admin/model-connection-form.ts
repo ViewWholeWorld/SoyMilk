@@ -19,7 +19,7 @@ export function connectionDraftFor(connection?: AdminModelConnection): Connectio
   const official = officialSupplierId(type, baseUrl);
   // 仅旧配置缺少模式时沿用推断；新配置保留自动未知与手动官方归属的区别。
   const autoSupplier = connection?.autoSupplier ?? (connection?.supplierId === undefined || (official !== null && connection.supplierId === official));
-  return { id: connection?.id, name: connection?.name ?? "", type, model: connection?.model ?? "", baseUrl, apiKey: "",
+  return { id: connection?.id ?? crypto.randomUUID(), name: connection?.name ?? "", type, model: connection?.model ?? "", baseUrl, apiKey: "",
     jsonMode: connection?.jsonMode ?? true, vision: connection?.vision ?? false, reasoningEffort: connection?.reasoningEffort ?? null,
     supplierId: autoSupplier ? official : connection?.supplierId ?? null, autoSupplier };
 }

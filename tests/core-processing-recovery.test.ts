@@ -1,12 +1,13 @@
 // Recovery must finish the same evaluation that failed, and commit the release, queue and audit together.
 import { gate, Reply, stub, tag, useModelStubs } from "./setup.ts";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { after, afterEach, before, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
 import { upsertMaterial } from "@aihot/backend/content/materials";
 import { rerun } from "@aihot/backend/admin/content";
-import { processArticle, queueProcessing, registerContentJobs, stopOnUnknownReceipt, sweepUnprocessed } from "@aihot/backend/jobs/content";
+import { processArticle, queueProcessing, registerContentJobs, resumeAfterRelease, stopOnUnknownReceipt, sweepUnprocessed } from "@aihot/backend/jobs/content";
 import { enqueue, getBoss, QUEUES, stopBoss } from "@aihot/backend/jobs/queue";
 import { recoverStaleWork, releaseReceipt } from "@aihot/backend/operations/recover";
 import { ReceiptUnknownError } from "@aihot/backend/providers/receipts";
@@ -157,6 +158,21 @@ test("an already released receipt wakes its failed grouping job once, with the o
   await boss.fail(QUEUES.group, jobId!, new ReceiptUnknownError(receipt!.id, "failed again after release"));
   await recoverStaleWork();
   assert.equal((await boss.getJobById(QUEUES.group, jobId!))!.state, "failed", "the old release cannot create an endless retry loop");
+});
+
+test("released grouping and digest receipts restore their own queue payloads", async () => {
+  const id = await article("release-event");
+  const boss = await getBoss();
+  assert.equal(await resumeAfterRelease({ id: 1, purpose: "group_article", subject: `article:${id}@1` }, sql), true);
+  const [group] = await boss.findJobs<{ articleId: string }>(QUEUES.group, { key: id, queued: true });
+  assert.deepEqual(group?.data, { articleId: id, signalOnly: false });
+  if (group) await boss.cancel(QUEUES.group, group.id);
+
+  const [story] = await sql<{ id: number }[]>`INSERT INTO stories(public_id,title) VALUES(${randomUUID()},'release story') RETURNING id`;
+  assert.equal(await resumeAfterRelease({ id: 2, purpose: "story_digest", subject: `story:${story!.id}@1` }, sql), true);
+  const [digest] = await boss.findJobs<{ storyId: number }>(QUEUES.digest, { key: `story:${story!.id}`, queued: true });
+  assert.equal(digest?.data.storyId, story!.id);
+  if (digest) await boss.cancel(QUEUES.digest, digest.id);
 });
 
 test("a temporary provider failure resumes the manual evaluation instead of reinstalling the old verdict", async () => {

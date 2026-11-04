@@ -5,7 +5,7 @@ import type { z } from "zod";
 import type { ReasoningEffort } from "@aihot/contracts/admin";
 import { config, credential } from "../config.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
-import { completeReceipt, paidRequest, ProviderRejectedError, ProviderUnavailableError, rejectReceivedResponse, requestWait, storedReceipt } from "./receipts.ts";
+import { completeReceipt, paidRequest, parseRetryAfter, ProviderRejectedError, ProviderUnavailableError, rejectReceivedResponse, requestWait, storedReceipt } from "./receipts.ts";
 import { sql, type Db } from "../db.ts";
 import { chatGPTAccess } from "./chatgpt-auth.ts";
 import { chatGPTBody, requestChatGPT } from "./chatgpt.ts";
@@ -306,7 +306,9 @@ async function executeChatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>, sp
       purpose: opts.purpose,
       subject: opts.subject,
       identity: { model: spec.model, promptVersion: opts.promptVersion, system: sha256(opts.system), user: sha256(userText), temperature, maxTokens, extra: spec.extra ?? null, ...(spec.reasoningEffort ? { reasoningEffort: spec.reasoningEffort } : {}), ...(access ? { transport: "chatgpt-responses-v1", registrationHash: sha256(access.registration) } : {}), ...(spec.connection ? { connection: spec.connection.generation } : {}), ...(codex ? { transport: "codex-app-server", account: codex.generation } : {}) },
-      requestSummary: { promptVersion: opts.promptVersion, systemHash: sha256(opts.system), userHash: sha256(userText), userChars: userText.length, temperature, maxTokens, reasoningEffort: spec.reasoningEffort ?? null, modelKey: opts.model, providerScope, ...(opts.materialHash ? { materialHash: opts.materialHash } : {}) },
+      requestSummary: { promptVersion: opts.promptVersion, systemHash: sha256(opts.system), userHash: sha256(userText), systemChars: opts.system.length,
+        userChars: userText.length, promptChars: opts.system.length + userText.length, temperature, maxTokens, reasoningEffort: spec.reasoningEffort ?? null,
+        modelKey: opts.model, providerScope, ...(opts.materialHash ? { materialHash: opts.materialHash } : {}) },
       attemptTag: opts.attemptTag,
       exclusiveWith: opts.exclusiveWith,
       consumerSubjects: opts.consumerSubjects,
@@ -348,7 +350,8 @@ async function executeChatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>, sp
       if (res.status < 200 || res.status >= 300) {
         const retryable = res.status === 429 || res.status >= 500;
         throw new ProviderRejectedError(spec.connection ? `模型接口返回 HTTP ${res.status}` : `HTTP ${res.status}: ${text.slice(0, 500)}`,
-          res.status, retryable, !retryable && /contentFilter|"1301"/.test(text), spendingRefusal(billingContext.officialProviderId ?? spec.service, res.status, text));
+          res.status, retryable, !retryable && /contentFilter|"1301"/.test(text), spendingRefusal(billingContext.officialProviderId ?? spec.service, res.status, text),
+          { retryAfterSeconds: parseRetryAfter(res.headers.get("retry-after")) });
       }
       let json: Record<string, unknown>;
       try {

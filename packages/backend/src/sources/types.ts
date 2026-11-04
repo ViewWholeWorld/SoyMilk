@@ -1,5 +1,9 @@
 import type { MaterialInput } from "../content/materials.ts";
 
+export const MAX_SOURCE_CANDIDATES = 500;
+export const MAX_STORED_CANDIDATES = 200;
+export const MAX_DETAIL_FETCHES = 50;
+
 export interface SourceRow {
   id: string;
   name: string;

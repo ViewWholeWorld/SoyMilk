@@ -5,7 +5,7 @@
 import { config, credential } from "../config.ts";
 import { sql } from "../db.ts";
 import { sha256 } from "../lib/ids.ts";
-import { completeReceipt, paidRequest, ProviderRejectedError } from "./receipts.ts";
+import { completeReceipt, paidRequest, parseRetryAfter, ProviderRejectedError } from "./receipts.ts";
 import { environmentCooldownScope, spendingRefusal } from "./provider-cooldown.ts";
 import { officialModelProvider } from "./model-supplier.ts";
 
@@ -57,7 +57,8 @@ async function embedBatch(texts: string[], subject: string): Promise<{ vectors: 
       });
       const text = await res.text();
       if (!res.ok) throw new ProviderRejectedError(`embeddings HTTP ${res.status}: ${text.slice(0, 200)}`, res.status, res.status === 429 || res.status >= 500,
-        false, spendingRefusal(officialModelProvider("api-key", base) ?? SERVICE, res.status, text));
+        false, spendingRefusal(officialModelProvider("api-key", base) ?? SERVICE, res.status, text),
+        { retryAfterSeconds: parseRetryAfter(res.headers.get("retry-after")) });
       const json = JSON.parse(text) as { data: Array<{ embedding: number[]; index: number }>; usage?: Record<string, unknown> };
       return { response: json, usage: json.usage ?? null, cost: null };
     },

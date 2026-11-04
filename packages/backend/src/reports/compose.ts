@@ -10,11 +10,41 @@ import { addDays, beijingDate, beijingMidnight, isoWeekLabel, isoWeekRange } fro
 import { sql } from "../db.ts";
 import { Conflict } from "../audit.ts";
 import { chatJson, ModelOutputError } from "../providers/llm.ts";
-import { completeReceipt, rejectReceivedResponse } from "../providers/receipts.ts";
+import { completeReceipt, ProviderRejectedError, rejectReceivedResponse } from "../providers/receipts.ts";
 import { shutdownSignal } from "../jobs/queue.ts";
 import { publicReportContent } from "../publication/report-prose.ts";
 
 export const REPORT_VERSION = promptVersion("report-daily-lead", "report-period");
+export const REPORT_FAILURE_LIMIT = 3;
+
+interface ReportFailureState { kind: ReportKind; key: string; count: number; lastError: string; updatedAt: string; retryAt?: string }
+
+const reportFailureSetting = (kind: ReportKind, key: string) => `report.failure.${kind}.${key}`;
+
+async function reportFailureState(kind: ReportKind, key: string): Promise<ReportFailureState | null> {
+  const [row] = await sql<{ value: ReportFailureState }[]>`SELECT value FROM settings WHERE key=${reportFailureSetting(kind, key)}`;
+  return row?.value ?? null;
+}
+
+async function recordReportFailure(kind: ReportKind, key: string, error: unknown): Promise<ReportFailureState> {
+  return sql.begin(async (tx) => {
+    const setting = reportFailureSetting(kind, key);
+    await tx`SELECT pg_advisory_xact_lock(hashtext(${setting}))`;
+    const [row] = await tx<{ value: ReportFailureState }[]>`SELECT value FROM settings WHERE key=${setting}`;
+    const state: ReportFailureState = {
+      kind, key, count: (row?.value.count ?? 0) + 1,
+      lastError: String(error instanceof Error ? error.message : error).slice(0, 500), updatedAt: new Date().toISOString(),
+      ...(error instanceof ProviderRejectedError && error.retryAfterSeconds ? { retryAt: new Date(Date.now() + error.retryAfterSeconds * 1000).toISOString() } : {}),
+    };
+    await tx`INSERT INTO settings(key,value,updated_by) VALUES(${setting},${tx.json(state as never)},'reports.catch-up')
+      ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_by=EXCLUDED.updated_by,updated_at=now()`;
+    return state;
+  });
+}
+
+async function clearReportFailure(kind: ReportKind, key: string): Promise<void> {
+  await sql`DELETE FROM settings WHERE key=${reportFailureSetting(kind, key)}`;
+}
 
 const SECTION_OF: Record<string, string> = Object.fromEntries(CATEGORIES.map((c) => [c.key, c.section]));
 const SECTION_ORDER = [...new Set(CATEGORIES.map((c) => c.section))];
@@ -201,6 +231,7 @@ export async function composeDaily(date: string, reason = "scheduled"): Promise<
     generator: { version: REPORT_VERSION, model, repeatsSuppressed: all.length - fresh.length },
   };
   await saveReport("daily", date, start, end, content, reason, model, lead.receiptId, previous?.revision ?? 0);
+  await clearReportFailure("daily", date);
   return { key: date, entries: ordered.length };
 }
 
@@ -267,6 +298,7 @@ async function composePeriod(kind: "weekly" | "monthly", key: string, startDate:
     generator: { version: REPORT_VERSION, model },
   };
   await saveReport(kind, key, start, end, content, reason, model, res.receiptId, previous?.revision ?? 0);
+  await clearReportFailure(kind, key);
   return { key, entries: top.length };
 }
 
@@ -354,18 +386,34 @@ export async function catchUpReports(now = new Date(), limit = 8): Promise<{ gen
   const failed: string[] = [];
   const skipped: Array<{ report: string; reason: string }> = [];
   const startedAt = await reportingStartedAt();
-  const kinds: Array<{ kind: "daily" | "weekly" | "monthly"; due: string; next: (k: string) => string; compose: (k: string, reason: string) => Promise<unknown> }> = [
-    { kind: "daily", due: dueDaily(now), next: (k) => addDays(k, 1), compose: composeDaily },
-    { kind: "weekly", due: dueWeekly(now), next: nextWeek, compose: composeWeekly },
-    { kind: "monthly", due: dueMonthly(now), next: nextMonth, compose: composeMonthly },
+  const kinds: Array<{ kind: "daily" | "weekly" | "monthly"; due: string; next: (k: string) => string; compose: (k: string, reason: string) => Promise<unknown>; keys: string[] }> = [
+    { kind: "daily", due: dueDaily(now), next: (k) => addDays(k, 1), compose: composeDaily, keys: [] },
+    { kind: "weekly", due: dueWeekly(now), next: nextWeek, compose: composeWeekly, keys: [] },
+    { kind: "monthly", due: dueMonthly(now), next: nextMonth, compose: composeMonthly, keys: [] },
   ];
-  kinds: for (const k of kinds) {
+  for (const k of kinds) {
     const have = new Set((await sql<{ key: string }[]>`SELECT key FROM reports WHERE kind = ${k.kind}`).map((r) => r.key));
     const first = [...have].sort()[0] ?? k.due;
-    for (let key = first; key <= k.due; key = k.next(key)) {
-      if (have.has(key)) continue;
-      if (shutdownSignal.signal.aborted || generated.length >= limit) break kinds;
+    k.keys = [];
+    for (let key = first; key <= k.due; key = k.next(key)) if (!have.has(key)) k.keys.push(key);
+  }
+  let progressed = true;
+  while (progressed && generated.length < limit && !shutdownSignal.signal.aborted) {
+    progressed = false;
+    for (const k of kinds) {
+      const key = k.keys.shift();
+      if (!key || generated.length >= limit || shutdownSignal.signal.aborted) continue;
+      progressed = true;
       try {
+        const previousFailure = await reportFailureState(k.kind, key);
+        if (previousFailure?.retryAt && Date.parse(previousFailure.retryAt) > now.getTime()) {
+          skipped.push({ report: `${k.kind}:${key}`, reason: `供应商要求等待至 ${previousFailure.retryAt}` });
+          continue;
+        }
+        if ((previousFailure?.count ?? 0) >= REPORT_FAILURE_LIMIT) {
+          skipped.push({ report: `${k.kind}:${key}`, reason: `连续失败 ${REPORT_FAILURE_LIMIT} 次，已暂停自动重试；请人工处理` });
+          continue;
+        }
         if (await emptyBeforeStart(k.kind, key, startedAt)) {
           skipped.push({ report: `${k.kind}:${key}`, reason: "报告周期早于建站，且没有可用精选" });
           continue;
@@ -373,8 +421,9 @@ export async function catchUpReports(now = new Date(), limit = 8): Promise<{ gen
         await k.compose(key, "catch-up");
         generated.push(`${k.kind}:${key}`);
       } catch (error) {
+        const failure = await recordReportFailure(k.kind, key, error);
         failed.push(`${k.kind}:${key}`);
-        console.error(JSON.stringify({ level: "error", msg: "report catch-up failed", report: `${k.kind}:${key}`, error: String(error).slice(0, 300) }));
+        console.error(JSON.stringify({ level: "error", msg: "report catch-up failed", report: `${k.kind}:${key}`, failures: failure.count, error: String(error).slice(0, 300) }));
       }
     }
   }

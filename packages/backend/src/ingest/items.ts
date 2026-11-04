@@ -5,6 +5,7 @@ import { sql } from "../db.ts";
 import { upsertMaterial } from "../content/materials.ts";
 import { queueProcessing } from "../jobs/content.ts";
 import { normalizeUrl } from "../lib/url.ts";
+import { parseLooseDate } from "../sources/web-list.ts";
 
 export const MAX_ITEMS = 50;
 
@@ -62,7 +63,7 @@ export async function ingestItems(body: unknown): Promise<{ ok: true; created: n
     }
     if (!canonicalUrl || seen.has(canonicalUrl)) continue;
     seen.add(canonicalUrl);
-    const published = typeof it.publishedAt === "string" ? new Date(it.publishedAt) : null;
+    const published = typeof it.publishedAt === "string" ? parseLooseDate(it.publishedAt) : null;
     const flags = it.raw?._aihot ?? {};
     const res = await upsertMaterial({
       sourceId: source!.id,

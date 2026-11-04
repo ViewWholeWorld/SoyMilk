@@ -40,8 +40,8 @@ export function isPoolEligible(input: {
  * with or without a Chinese summary (noindex unless indexable). hot_signal material is heat evidence
  * only and has none. A paused source keeps its pages.
  */
-export function hasItemPage(p: { visibility: string; sourceMode: string }): boolean {
-  return p.visibility !== "withdrawn" && p.sourceMode === "editorial";
+export function hasItemPage(p: { visibility: string; sourceMode: string; visibleAfter?: Date | null }, now = new Date()): boolean {
+  return p.visibility !== "withdrawn" && p.sourceMode === "editorial" && (p.visibleAfter === undefined || p.visibleAfter === null || p.visibleAfter <= now);
 }
 
 /** Selected: pool eligible, judged selected, and the source tier may enter the selection. */

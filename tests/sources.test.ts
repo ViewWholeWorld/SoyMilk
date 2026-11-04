@@ -38,6 +38,14 @@ const pages: Record<string, (cdn: string) => string> = {
     `<content type="html"><![CDATA[<p>${"The feed carries this post whole, paragraph after paragraph. ".repeat(30)}</p>]]></content></entry></feed>`,
   // A list API that gives calendar days as yyyymmdd.
   "/days.json": () => JSON.stringify({ data: { list: [{ seq: 695, ttl: "MCFlow", day: "20260922" }, { seq: 1, ttl: "Bad day", day: "20260230" }] } }),
+  "/scheme.json": () => JSON.stringify({ items: [
+    { title: "safe", href: "https://example.org/safe", published: "2026-09-28 10:00" },
+    { title: "javascript", href: "javascript:alert(1)", published: "2026-09-28 10:00" },
+    { title: "data", href: "data:text/html,unsafe", published: "2026-09-28 10:00" },
+  ] }),
+  "/zone.xml": () => `<?xml version="1.0"?><rss version="2.0"><channel><item><title>zone</title><link>https://example.org/zone</link><pubDate>2026-09-28 10:00</pubDate></item></channel></rss>`,
+  "/nested/final-list.html": () => `<html><body><ul><li><a href="article-one">Final article</a></li></ul></body></html>`,
+  "/many.json": () => JSON.stringify({ items: Array.from({ length: 501 }, (_, i) => ({ title: `item-${i}`, href: `https://example.org/item-${i}` })) }),
   // Google Developers Blog: no date in the feed or in meta tags, only in JSON-LD.
   "/ld-post": () =>
     `<html><head><script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","name":"Blog"},` +
@@ -68,6 +76,11 @@ const pages: Record<string, (cdn: string) => string> = {
 };
 const server = http.createServer((req, res) => {
   const path = req.url ?? "";
+  if (path === "/redirect-list") {
+    res.writeHead(302, { location: "/nested/final-list.html" });
+    res.end();
+    return;
+  }
   const found = Object.hasOwn(pages, path);
   res.writeHead(found ? 200 : 404, { "content-type": path.endsWith(".js") ? "application/javascript" : "text/html; charset=utf-8" });
   res.end(found ? pages[path]!(`${site}/cdn/`) : "");
@@ -228,4 +241,25 @@ test("dates in yyyymmdd and in JSON-LD are read", async () => {
   assert.deepEqual(days.map((c) => c.publishedAt?.toISOString() ?? null), ["2026-09-22T00:00:00.000Z", null], "February 30 is no date");
   const got = await fetchDetail(`${site}/ld-post`, { id: "test-feed", config: { detail: { maxFetches: 20 } } } as never, { date: true, title: false, summary: false, body: false });
   assert.equal(got.publishedAt?.toISOString(), "2026-09-24T00:00:00.000Z");
+});
+
+test("RSS and JSON boundaries keep only HTTP(S) links and parse unzoned time in the source offset", async () => {
+  const json = await fetchJsonList({ id: "scheme", config: {
+    url: `${site}/scheme.json`, itemsPath: "items", titlePaths: ["title"], urlTemplate: "{raw:href}", publishedAtPath: "published",
+  } } as never);
+  assert.deepEqual(json.map((item) => [item.url, item.publishedAt?.toISOString()]), [["https://example.org/safe", "2026-09-28T02:00:00.000Z"]]);
+
+  const rss = await fetchRss({ id: "zone", config: { feedUrl: `${site}/zone.xml` }, participation_mode: "editorial", cursor: null } as never, { force: true });
+  assert.deepEqual(rss.candidates.map((item) => [item.url, item.publishedAt?.toISOString()]), [["https://example.org/zone", "2026-09-28T02:00:00.000Z"]]);
+});
+
+test("listing candidate output has a hard limit before collection can enqueue it", async () => {
+  await assert.rejects(fetchJsonList({ id: "many", config: {
+    url: `${site}/many.json`, itemsPath: "items", titlePaths: ["title"], urlTemplate: "{raw:href}",
+  } } as never), /candidate limit exceeded/);
+});
+
+test("web lists resolve relative links against the final response URL", async () => {
+  const out = await fetchWebList(source({ url: `${site}/redirect-list`, parseMode: "html", itemSelector: "li", linkSelector: "a", titleSelector: "a" }));
+  assert.deepEqual(out.map((item) => item.url), [`${site}/nested/article-one`]);
 });

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
-import { after, test } from "node:test";
+import { after, before, test } from "node:test";
 import { config } from "@aihot/backend/config";
 import { closeDb, sql } from "@aihot/backend/db";
 import { sha256 } from "@aihot/backend/lib/ids";
@@ -30,7 +30,11 @@ async function expire(cooldown: ProviderCooldownScope) {
 }
 after(async () => {
   if (keys.size) await sql`DELETE FROM settings WHERE key IN ${sql([...keys])}`;
+  await sql`DELETE FROM budgets WHERE service=${service}`;
   await closeDb();
+});
+before(async () => {
+  await sql`INSERT INTO budgets(service,per_minute,per_hour,per_day,note) VALUES(${service},1000,1000,1000,'test')`;
 });
 
 test("额度拒绝分类只接受 402 和 429 的可靠资金代码", () => {
@@ -171,6 +175,25 @@ test("非模型重试冻结每次账号scope，旧回执字段变化不重写历
   assert.deepEqual(rows.map(row => row.snapshot.providerScope.accountFingerprint), [current.accountFingerprint, changed.accountFingerprint]);
   assert.ok(rows.every(row => row.snapshot.supplierId === current.supplierId && row.billing_kind === null && row.estimated_cost === null));
   assert.ok(rows.every(row => !Object.hasOwn(row.snapshot, "inputPerMtok")));
+});
+
+test("未决请求只阻止同一 provider scope，切换 provider 可以继续且报告修订不互锁", async () => {
+  const first = scope();
+  const subject = `${service}:pending-${tag()}`;
+  const started = gate();
+  const release = gate();
+  const requestFor = (cooldown: ProviderCooldownScope, purpose = "cooldown_test") => ({
+    service, model: cooldown.model, purpose, subject, identity: { prompt: tag() }, cooldown,
+  });
+  const running = paidRequest(requestFor(first), async () => { started.open(); await release.promise; return success(); });
+  await started.promise;
+  try {
+    await assert.rejects(paidRequest(requestFor(first), success), /in flight/);
+    const switched = { ...first, providerKey: "connection:other" };
+    assert.equal((await paidRequest(requestFor(switched), success)).reused, false);
+    const correction = requestFor(first, "report_lead");
+    assert.equal((await paidRequest(correction, success)).reused, false);
+  } finally { release.open(); await running; }
 });
 
 test("新进程读取持久冷却，不能因重启立即发送", async () => {

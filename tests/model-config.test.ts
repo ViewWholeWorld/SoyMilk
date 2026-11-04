@@ -35,6 +35,8 @@ let existingUsers: number[];
 const servers: CodexServer[] = [];
 before(async () => {
   existingUsers = (await sql<{ id: number }[]>`SELECT id FROM admin_users`).map((u) => Number(u.id));
+  await sql`INSERT INTO budgets(service,per_minute,per_hour,per_day,note) VALUES('usage-fixture',1000,1000,1000,'test')
+    ON CONFLICT(service) DO UPDATE SET per_minute=1000,per_hour=1000,per_day=1000`;
   const login = await passwordLogin(config.adminPassword!, "/admin", "test");
   token = login.token; userId = Number(login.userId); csrf = (await sessionPrincipal(`${SESSION_COOKIE}=${token}`))!.csrf;
 });
@@ -44,6 +46,7 @@ after(async () => {
   Object.assign(config, { dataDir: old.dataDir, adminPassword: old.password, devAdmin: old.dev, allowPrivateNetworkFetch: old.private, egressProxyUrl: old.proxy, modelCallsEnabled: false });
   await sql`DELETE FROM admin_sessions WHERE user_id=${userId}`;
   if (!existingUsers.includes(userId)) await sql`DELETE FROM admin_users WHERE id=${userId}`;
+  await sql`DELETE FROM budgets WHERE service='usage-fixture'`;
   await closeDb(); await rm(dir, { recursive: true, force: true });
 });
 const sample = { name: "测试 API", type: "api-key" as const, model: "fixture-model", baseUrl: "https://fixture.example/v1", apiKey: "fake-private-api-key", jsonMode: true, vision: false };
@@ -75,6 +78,16 @@ test("invalid URLs, embedded credentials, and unknown connections cannot be save
   for (const baseUrl of ["file:///etc/passwd", "https://user:password@example.com/v1", "https://example.com/v1?api_key=secret", "https://example.com/#secret"]) await assert.rejects(saveModelConnection({ ...sample, baseUrl }));
   await assert.rejects(saveModelConnection({ ...sample, apiKey: "" }), /API Key/);
   await assert.rejects(selectModelConnection("00000000-0000-0000-0000-000000000000"), /不存在/);
+});
+
+test("a client-generated id makes a new save retryable without a duplicate connection", async () => {
+  const id = "00000000-0000-4000-8000-000000000042";
+  const first = await saveModelConnection({ ...sample, id });
+  const retried = await saveModelConnection({ ...sample, id, name: "retried" });
+  assert.equal(first.id, id);
+  assert.equal(retried.id, id);
+  assert.equal((await readModelConfig()).connections.filter((c) => c.id === id).length, 1);
+  assert.equal((await readModelConfig()).connections.find((c) => c.id === id)!.name, "retried");
 });
 test("closed model valve prevents API and Codex calls", async () => {
   config.modelCallsEnabled = false;

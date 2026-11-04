@@ -1,6 +1,32 @@
 import postgres from "postgres";
 import { config } from "./config.ts";
 
+export interface DatabaseSettings {
+  poolMax: number;
+  statementTimeoutMs: number;
+  lockTimeoutMs: number;
+}
+
+function boundedInteger(environment: NodeJS.ProcessEnv, name: string, fallback: number, min: number, max: number): number {
+  const raw = environment[name];
+  if (raw === undefined || raw === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`Environment variable ${name} must be an integer between ${min} and ${max}`);
+  }
+  return value;
+}
+
+export function databaseSettings(environment: NodeJS.ProcessEnv = process.env): DatabaseSettings {
+  return {
+    poolMax: boundedInteger(environment, "DATABASE_POOL_MAX", 10, 1, 50),
+    statementTimeoutMs: boundedInteger(environment, "DATABASE_STATEMENT_TIMEOUT_MS", 30_000, 100, 120_000),
+    lockTimeoutMs: boundedInteger(environment, "DATABASE_LOCK_TIMEOUT_MS", 5_000, 50, 30_000),
+  };
+}
+
+const settings = databaseSettings();
+
 // int8 and numeric come back as numbers: ids and scores in this schema stay far below 2^53.
 const numberType = (oid: number) => ({
   to: oid,
@@ -10,7 +36,7 @@ const numberType = (oid: number) => ({
 });
 
 export const sql = postgres(config.databaseUrl, {
-  max: Number(process.env.DATABASE_POOL_MAX || 10),
+  max: settings.poolMax,
   // Keep connections through quiet minutes: a reconnect costs a SCRAM exchange on the next request.
   idle_timeout: 600,
   connect_timeout: 10,
@@ -18,7 +44,10 @@ export const sql = postgres(config.databaseUrl, {
   // Prepared statements keep PostgreSQL's plan cache: planning a detail read took longer than running
   // it. Searches plan every execution instead (withCustomPlans). JIT compilation costs more than
   // these short queries ever run.
-  connection: { jit: "off" },
+  connection: {
+    jit: "off",
+    options: `-c statement_timeout=${settings.statementTimeoutMs} -c lock_timeout=${settings.lockTimeoutMs}`,
+  },
   types: {
     int8: numberType(20),
     numeric: numberType(1700),

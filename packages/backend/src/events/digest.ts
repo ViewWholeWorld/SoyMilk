@@ -9,6 +9,8 @@ import { promptText, promptVersion } from "../editorial/prompts.ts";
 import { buildDigestInput, DigestSchema } from "./digest-input.ts";
 import { looksZh } from "../editorial/writing.ts";
 import { observeDigestInputs } from "../operations/digest-observation.ts";
+import { evidenceCondition, listedCondition, storyReportCondition } from "../publication/scope.ts";
+import { enqueue, QUEUES } from "../jobs/queue.ts";
 
 export const DIGEST_PROMPT_VERSION = promptVersion("story-digest");
 
@@ -73,6 +75,26 @@ export async function composeStoryDigest(storyId: number, opts: { afterCorrectio
     if (res) await completeReceipt(tx, res.receiptId);
     return { updated: true, version };
   });
+}
+
+/** Requeues stories whose latest eligible membership has no matching digest version. */
+export async function sweepStoryDigests(limit = 100): Promise<{ enqueued: number }> {
+  const now = new Date();
+  const rows = await sql<{ id: number }[]>`
+    SELECT st.id FROM stories st
+    WHERE st.merged_into IS NULL
+      AND NOT EXISTS (SELECT 1 FROM story_digests d WHERE d.story_id=st.id AND d.version=st.version)
+      AND EXISTS (
+        SELECT 1 FROM facts f JOIN fact_articles fa ON fa.fact_id=f.id JOIN publications p ON p.article_id=fa.article_id
+        JOIN sources s ON s.id=p.source_id
+        WHERE f.story_id=st.id AND ${storyReportCondition(now)} AND ${listedCondition(now)} AND ${evidenceCondition()}
+      )
+    ORDER BY st.updated_at, st.id LIMIT ${limit}`;
+  let enqueued = 0;
+  for (const row of rows) {
+    if (await enqueue(QUEUES.digest, { storyId: row.id }, { singletonKey: `story:${row.id}`, startAfter: 0 })) enqueued++;
+  }
+  return { enqueued };
 }
 
 /** Periodic: statuses follow activity (持续更新 / 观察中 / 历史事件). */

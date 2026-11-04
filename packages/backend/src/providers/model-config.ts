@@ -9,7 +9,7 @@ import { config } from "../config.ts";
 import { atomicPrivateJson } from "./chatgpt-auth.ts";
 import { ProviderUnavailableError } from "./receipts.ts";
 import { sql } from "../db.ts";
-import { Conflict, NotFound, ValidationError } from "../lib/errors.ts";
+import { Conflict, ValidationError } from "../lib/errors.ts";
 import { officialSupplierId } from "./model-supplier.ts";
 
 export const ConnectionInput = z.object({
@@ -94,8 +94,9 @@ export async function saveModelConnection(input: unknown) {
   return privateLease("connections", async () => {
     const c = await readModelConfig();
     const old = c.connections.find((x) => x.id === v.id);
-    if (v.id && !old) throw new NotFound("连接不存在");
-    const next: ModelConnection = { ...v, id: old?.id ?? randomUUID(), apiKey: v.type === "api-key" ? v.apiKey || old?.apiKey : undefined, generation: old?.generation };
+    // A client-generated id is the idempotency key for a new save: the first request creates it,
+    // and a retry with the same payload updates the same row after a lost response.
+    const next: ModelConnection = { ...v, id: v.id ?? randomUUID(), apiKey: v.type === "api-key" ? v.apiKey || old?.apiKey : undefined, generation: old?.generation };
     // 旧客户端显式指定归属视为手动；两个字段都省略时保留已保存的选择。
     next.autoSupplier = v.autoSupplier ?? (v.supplierId !== undefined ? false : old?.autoSupplier);
     next.supplierId = v.autoSupplier === true ? officialSupplierId(v.type, v.baseUrl)

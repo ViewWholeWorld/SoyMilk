@@ -489,6 +489,9 @@ async function rematchSignals(articleId: string, revision: number, queryText: st
  * otherwise clear candidates are judged, and a nearly identical report attaches without a call.
  */
 async function groupSignal(a: ArticleRow, source: { id: string; signal_group_id: string | null }, observedAt: Date): Promise<GroupResult> {
+  // A new material revision must replace the prior heat evidence before the new target is written.
+  // The current article row is the authority; retaining the old story would count both revisions.
+  await sql`DELETE FROM story_signals WHERE article_id = ${a.id}`;
   // Discussion evidence obeys the same article lock and last-minute manual check as reports. The
   // evidence and decision commit together; a retry cannot leave half of a signal attached.
   const write = async (target: { factId: number; storyId: number } | null, verdict: "signal" | "signal-native" | "signal-unmatched", candidates: DecisionCandidate[], receiptId: number | null = null): Promise<GroupResult> => {

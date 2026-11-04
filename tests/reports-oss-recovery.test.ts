@@ -25,6 +25,8 @@ before(async () => {
 beforeEach(async () => {
   await sql`DELETE FROM reports`;
   await sql`DELETE FROM articles WHERE source_id = ${SOURCE}`;
+  await sql`DELETE FROM receipts WHERE subject LIKE 'report:%'`;
+  await sql`DELETE FROM settings WHERE key LIKE 'report.failure.%'`;
 });
 after(async () => { await provider.close(); await stopBoss(); await closeDb(); });
 
@@ -210,4 +212,37 @@ test("empty older gaps cannot starve a later daily, weekly or monthly, and failu
   for (const [kind, key] of [["daily", "2024-02-02"], ["weekly", "2024-W04"], ["monthly", "2024-01"]]) {
     assert.ok(await report(kind!, key!), `${kind} ${key} was recovered past the empty gaps`);
   }
+});
+
+test("catch-up gives weekly and monthly reports a turn after a daily failure and counts the limit by successes", async () => {
+  await item("2024-02-02T12:00:00Z");
+  await item("2024-02-03T12:00:00Z");
+  await item("2024-02-04T12:00:00Z");
+  await item("2024-02-05T12:00:00Z");
+  await item("2024-01-15T12:00:00Z");
+  await sql`INSERT INTO reports (kind,key,window_start,window_end,content,generated_at) VALUES
+    ('daily','2024-02-01',now(),now(),'{}',now()),('weekly','2024-W04',now(),now(),'{}',now()),('monthly','2023-12',now(),now(),'{}',now())`;
+  const original = answer;
+  answer = async (user) => user.split("\n").length <= 1 ? "not-json" as never : original(user);
+  try { await assert.rejects(catchUpReports(new Date("2024-02-06T03:00:00Z"), 2), /report catch-up:/); }
+  finally { answer = original; }
+  assert.ok(await report("weekly", "2024-W05"));
+  assert.ok(await report("monthly", "2024-01"));
+  assert.equal(await report("daily", "2024-02-02"), undefined);
+});
+
+test("连续坏报告达到上限后暂停自动付费重试并保留失败记录", async () => {
+  await item("2024-06-01T12:00:00Z");
+  const original = answer;
+  answer = async () => "not-json" as never;
+  try {
+    const before = provider.hits();
+    for (let i = 0; i < 3; i++) await assert.rejects(catchUpReports(new Date("2024-06-03T03:00:00Z")), /report catch-up:/);
+    const afterLimit = provider.hits();
+    await catchUpReports(new Date("2024-06-03T03:00:00Z")).catch(() => undefined);
+    assert.equal(provider.hits(), afterLimit);
+    assert.ok(afterLimit > before);
+    const failures = await sql<{ value: { count: number } }[]>`SELECT value FROM settings WHERE key LIKE 'report.failure.%'`;
+    assert.ok(failures.some((row) => row.value.count >= 3));
+  } finally { answer = original; }
 });

@@ -1,7 +1,7 @@
 // Image fetch, resize and cache, shared by the signed image proxy and the vision analysis: a (mode, url)
 // is fetched once through the egress route and both get the same file.
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import { config } from "../config.ts";
@@ -13,6 +13,11 @@ const CACHE_DIR = path.join(config.dataDir, "imgcache");
 const ORIGINAL_TTL_MS = 60_000;
 const ORIGINAL_MAX_BYTES = 32 * 1024 * 1024;
 const ORIGINAL_MAX_ENTRIES = 32;
+const RENDITION_MAX_BYTES = 512 * 1024 * 1024;
+const RENDITION_MAX_ENTRIES = 2048;
+const IMAGE_MAX_PIXELS = 40_000_000;
+const IMAGE_MAX_CHANNELS = 4;
+const IMAGE_CONCURRENCY = 8;
 const recentOriginals = new Map<string, { value: GuardedResponse; until: number }>();
 let originalBytes = 0;
 export interface PreparedImage {
@@ -24,6 +29,18 @@ export interface PreparedImage {
 const inflight = new Map<string, Promise<PreparedImage>>();
 const originals = new Map<string, Promise<GuardedResponse>>();
 const failures = new Map<string, { until: number; error: unknown }>();
+let activeImages = 0;
+const waitingImages: Array<() => void> = [];
+
+async function withImageSlot<T>(work: () => Promise<T>): Promise<T> {
+  if (activeImages >= IMAGE_CONCURRENCY) await new Promise<void>((resolve) => waitingImages.push(resolve));
+  activeImages += 1;
+  try { return await work(); }
+  finally {
+    activeImages -= 1;
+    waitingImages.shift()?.();
+  }
+}
 
 export class UpstreamStatus extends Error {
   readonly status: number;
@@ -139,7 +156,7 @@ export function produceImage(url: string, mode: string): Promise<PreparedImage> 
   const key = `${mode}|${url}`;
   let job = inflight.get(key);
   if (!job) {
-    job = produce(url, mode).finally(() => inflight.delete(key));
+    job = withImageSlot(() => produce(url, mode)).finally(() => inflight.delete(key));
     inflight.set(key, job);
   }
   return job;
@@ -173,7 +190,32 @@ async function produce(url: string, mode: string): Promise<PreparedImage> {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, image.body);
   await writeFile(`${file}.type`, image.type);
+  await pruneRenditionCache();
   return cachedImage(file, image.body, image.type);
+}
+
+async function pruneRenditionCache(): Promise<void> {
+  const groups = new Map<string, Array<{ path: string; bytes: number; mtimeMs: number }>>();
+  let total = 0;
+  for (const shard of await readdir(CACHE_DIR, { withFileTypes: true })) {
+    if (!shard.isDirectory()) continue;
+    for (const entry of await readdir(path.join(CACHE_DIR, shard.name), { withFileTypes: true })) {
+      if (!entry.isFile() || entry.name.endsWith(".tmp")) continue;
+      const file = path.join(CACHE_DIR, shard.name, entry.name);
+      const info = await stat(file);
+      const base = entry.name.replace(/\.(?:type|prepared)$/, "");
+      const list = groups.get(base) ?? [];
+      list.push({ path: file, bytes: info.size, mtimeMs: info.mtimeMs });
+      groups.set(base, list);
+      total += info.size;
+    }
+  }
+  if (total <= RENDITION_MAX_BYTES && groups.size <= RENDITION_MAX_ENTRIES) return;
+  const oldest = [...groups.entries()].sort((a, b) => Math.min(...a[1].map((f) => f.mtimeMs)) - Math.min(...b[1].map((f) => f.mtimeMs)));
+  while ((total > RENDITION_MAX_BYTES || groups.size > RENDITION_MAX_ENTRIES) && oldest.length) {
+    const [, files] = oldest.shift()!;
+    for (const file of files) { await rm(file.path, { force: true }); total -= file.bytes; }
+  }
 }
 
 /** Most frames × pixels an animation may have to be re-encoded (all frames are decoded at once). */
@@ -227,19 +269,22 @@ export async function resizeImage(body: Buffer, upstreamType: string, mode: stri
   const width = IMAGE_WIDTHS[mode as keyof typeof IMAGE_WIDTHS] ?? 1600;
   const raw = ico && !Buffer.isBuffer(ico) ? { raw: { width: ico.width, height: ico.height, channels: 4 as const } } : {};
   const input = ico && !Buffer.isBuffer(ico) ? ico.raw : ico ?? body;
-  const meta = await sharp(input, { ...raw, failOn: "none" }).metadata();
+  const meta = await sharp(input, { ...raw, failOn: "none", limitInputPixels: false, limitInputChannels: IMAGE_MAX_CHANNELS }).metadata();
   if (binary && !ico) {
     if (!meta.mediaType?.startsWith("image/")) throw new Error("upstream is not an image");
     type = meta.mediaType;
   }
   // A large animation can be hundreds of frames: do not silently replace it with a still or decode
   // all its frames on an HTTP request. Keep frame timing, loop count and transparency unchanged.
+  if ((meta.channels ?? 0) > IMAGE_MAX_CHANNELS) throw new Error("image has too many channels");
+  const pixels = (meta.width ?? 0) * (meta.pageHeight ?? meta.height ?? 0) * (meta.pages ?? 1);
   if ((meta.pages ?? 1) > 1 || type === "image/gif") return { body, type };
+  if (pixels > IMAGE_MAX_PIXELS) throw new Error("image exceeds pixel limit");
   // Small vectors are already compact and remain sharp at every zoom level. Rasterize oversized
   // SVGs (often screenshots embedded as base64) and avatars at their actual display rendition.
   if (type === "image/svg+xml" && !avatar && body.length <= 128 * 1024) return { body, type };
   const density = type === "image/svg+xml" && meta.width ? Math.max(72, Math.min(300, Math.ceil(width / meta.width * 72))) : 72;
-  let image = sharp(input, { ...raw, failOn: "none", density }).rotate();
+  let image = sharp(input, { ...raw, failOn: "none", density, limitInputPixels: IMAGE_MAX_PIXELS, limitInputChannels: IMAGE_MAX_CHANNELS }).rotate();
   image = avatar ? image.resize(width, width, { fit: "cover" }) : image.resize({ width, withoutEnlargement: true });
   // Screenshots and transparent PNGs benefit most from modern encoding. Already lossy JPEGs
   // measured larger at WebP 88, so retain their established encoder/quality instead of growing them.

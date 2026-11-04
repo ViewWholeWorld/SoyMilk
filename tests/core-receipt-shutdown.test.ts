@@ -8,10 +8,20 @@ import { closeDb, sql } from "@aihot/backend/db";
 import { shutdownSignal } from "@aihot/backend/jobs/queue";
 import { completeReceipt, paidRequest, ProviderRejectedError } from "@aihot/backend/providers/receipts";
 
-after(closeDb);
+const testBudgetServices = new Set<string>();
+async function ensureTestBudget(service: string): Promise<void> {
+  testBudgetServices.add(service);
+  await sql`INSERT INTO budgets(service,per_minute,per_hour,per_day,note) VALUES(${service},100,100,100,'test')
+    ON CONFLICT(service) DO UPDATE SET per_minute=EXCLUDED.per_minute,per_hour=EXCLUDED.per_hour,per_day=EXCLUDED.per_day`;
+}
+after(async () => {
+  if (testBudgetServices.size) await sql`DELETE FROM budgets WHERE service = ANY(${[...testBudgetServices]}::text[])`;
+  await closeDb();
+});
 
 test("shutdown drains and reuses paid results while refusing new pages and retries before budget reservation", async () => {
   const service = `shutdown-${tag()}`;
+  await ensureTestBudget(service);
   const request = (page: number) => ({ service, purpose: "source_fetch", identity: { page } });
   let calls = 0;
   await assert.rejects(paidRequest(request(0), async () => {

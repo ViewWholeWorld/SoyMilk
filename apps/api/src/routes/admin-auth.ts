@@ -27,15 +27,21 @@ const secure = () => config.siteUrl.startsWith("https://");
 const attempts = new Map<string, number[]>();
 function over(key: string, limit: number, now: number): boolean {
   const recent = (attempts.get(key) ?? []).filter((t) => now - t < 15 * 60_000);
+  if (recent.length >= limit) {
+    attempts.set(key, recent);
+    return true;
+  }
   recent.push(now);
   attempts.set(key, recent);
-  return recent.length > limit;
+  return false;
 }
-function tooManyAttempts(ip: string): boolean {
-  const now = Date.now();
-  if (attempts.size > 5000) attempts.clear();
+export function tooManyAttempts(ip: string, now = Date.now()): boolean {
+  if (attempts.size > 5000) {
+    for (const [key, recent] of attempts) if (recent.length === 0) attempts.delete(key);
+    if (attempts.size > 5000) attempts.clear();
+  }
   const perClient = over(`ip:${ip}`, 10, now);
-  return over("all", 50, now) || perClient;
+  return perClient || over("all", 50, now);
 }
 
 const loginPage = (returnTo: string, error?: string) => `/admin/login?${new URLSearchParams({ return: safeReturn(returnTo), ...(error ? { error } : {}) })}`;

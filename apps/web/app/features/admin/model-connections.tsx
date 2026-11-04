@@ -47,6 +47,7 @@ export function ModelConnections({ configuration: c, suppliers, onCodexModels }:
   const [manualModel, setManualModel] = useState(false);
   const [savingCodex, setSavingCodex] = useState(false);
   const savedCodex = useRef<AdminModelConnection | null>(null);
+  const codexDraftId = useRef(crypto.randomUUID());
   const code = useRef<HTMLInputElement>(null);
   useEffect(() => { setActive(c.active ?? ""); }, [c.active]);
   useEffect(() => { onCodexModels(catalog); }, [catalog, onCodexModels]);
@@ -104,7 +105,7 @@ export function ModelConnections({ configuration: c, suppliers, onCodexModels }:
       let connection = c.connections.find(matches) ?? (savedCodex.current && matches(savedCodex.current) ? savedCodex.current : null);
       if (!connection) {
         connection = await run<AdminModelConnection>("POST", `${ROOT}/connections`, {
-          name: `Codex · ${model}${effort ? ` · ${effort}` : ""}`.slice(0, 60), type: "codex", model, jsonMode: true, reasoningEffort: effort || null,
+          id: codexDraftId.current, name: `Codex · ${model}${effort ? ` · ${effort}` : ""}`.slice(0, 60), type: "codex", model, jsonMode: true, reasoningEffort: effort || null,
           vision: catalog.find((m) => m.model === model)?.vision ?? false,
         }, { revalidate: false });
         if (!connection) return;

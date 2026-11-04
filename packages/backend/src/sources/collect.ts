@@ -9,7 +9,7 @@ import { fetchRss } from "./rss.ts";
 import { allowed, fetchDetail, fetchWebList, type DetailNeed } from "./web-list.ts";
 import { unsupportedConfig } from "./config-keys.ts";
 import { fetchJsonList } from "./json-list.ts";
-import { FetchError, type Candidate, type SourceRow } from "./types.ts";
+import { FetchError, MAX_DETAIL_FETCHES, MAX_SOURCE_CANDIDATES, MAX_STORED_CANDIDATES, type Candidate, type SourceRow } from "./types.ts";
 import { collectionWait, MISCOUNTED_FETCH_WAIT } from "./wait.ts";
 
 export interface CollectResult {
@@ -133,7 +133,7 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
     else if (source.kind === "web_list") candidates = await fetchWebList(source);
     else candidates = await fetchJsonList(source);
     found = candidates.length;
-    candidates = candidates.filter((c) => allowed(c.url, source)).map((c) => rewriteUrl(c, source)).filter((c) => !noiseFiltered(c, source));
+    candidates = candidates.filter((c) => allowed(c.url, source)).map((c) => rewriteUrl(c, source)).filter((c) => allowed(c.url, source)).filter((c) => !noiseFiltered(c, source));
     // Some feeds include their entire archive. Apply an optional news window on every poll,
     // before first-import limits or paid processing; undated entries remain eligible.
     if (source.kind === "rss" && source.config.maxItemAgeDays !== undefined) {
@@ -151,6 +151,7 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
       if (!unique.has(identityKey)) unique.set(identityKey, { ...c, identityKey });
     }
     candidates = [...unique.values()];
+    if (candidates.length > MAX_STORED_CANDIDATES) throw new FetchError(`store candidate limit exceeded (${MAX_STORED_CANDIDATES})`);
     // First import of a new source: bounded, and archived by source time (never "today", never pushed).
     const backfillLimit = Number(source.config._aihot?.initialBackfillLimit ?? 30);
     const backfillMonths = Number(source.config._aihot?.initialBackfillMonths ?? 12);
@@ -163,22 +164,26 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
     // Detail pages only for material we have not seen (bounded per run), and only for what the listing lacks.
     const d = source.config.detail;
     const known = d ? await storedTitles(candidates.map((c) => c.identityKey!)) : new Map<string, string>();
-    const detailBudget = Number(d?.maxFetches ?? 0);
+    const configuredDetailBudget = Number(d?.maxFetches ?? 0);
+    const detailBudget = Math.min(configuredDetailBudget, MAX_DETAIL_FETCHES);
+    const limits: Record<string, number> = {};
+    if (configuredDetailBudget > MAX_DETAIL_FETCHES) limits.detailFetches = MAX_DETAIL_FETCHES;
+    if (candidates.length >= MAX_SOURCE_CANDIDATES) limits.listingCandidates = MAX_SOURCE_CANDIDATES;
+    if (candidates.length >= MAX_STORED_CANDIDATES) limits.storedCandidates = MAX_STORED_CANDIDATES;
     let detailUsed = 0;
     let detailFailures = 0;
     const detailErrors: Array<{ url: string; error: string }> = [];
     for (const c of candidates) {
-      // Listing dates the source marks unreliable are dropped; the detail page's rule decides.
-      if (d?.publishedAtAuthoritative === true) c.publishedAt = null;
       const stored = known.get(c.identityKey!);
-      if (stored !== undefined) {
+      const needsAuthoritativeDate = d?.publishedAtAuthoritative === true && !c.publishedAt && stored === undefined;
+      if (stored !== undefined && !needsAuthoritativeDate) {
         // The title came from the detail page: the listing's own rendering must not revise it back.
         if (d?.titleSelector || d?.titleRegex) c.title = stored;
         continue;
       }
       if (!d || detailUsed >= detailBudget) continue;
       const need: DetailNeed = {
-        date: !c.publishedAt || d.upgradeDatePrecision === true,
+        date: d.publishedAtAuthoritative === true || !c.publishedAt || d.upgradeDatePrecision === true,
         title: !!(d.titleSelector || d.titleRegex) && (d.titleAuthoritative === true || needsTitle(c.title)),
         summary: !!d.summarySelector && !c.excerpt,
         body: source.participation_mode === "editorial" && !c.bodyText && (!c.bodyStatus || c.bodyStatus === "pending"),
@@ -198,7 +203,8 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
           if (!c.media?.length) c.media = got.body.images;
         }
         // A date-only listing value gives way to the detail page's time on the same day.
-        if (got.publishedAt && (!c.publishedAt || Math.abs(got.publishedAt.getTime() - c.publishedAt.getTime()) < DAY_MS)) c.publishedAt = got.publishedAt;
+        if (d?.publishedAtAuthoritative === true) c.publishedAt = got.publishedAt;
+        else if (got.publishedAt && (!c.publishedAt || Math.abs(got.publishedAt.getTime() - c.publishedAt.getTime()) < DAY_MS)) c.publishedAt = got.publishedAt;
       } catch (error) {
         // 详情失败不阻塞整批，但记录真实失败供健康诊断；预算和停机只等待。
         if (!collectionWait(error) && !shutdownSignal.signal.aborted && !(error instanceof DOMException && error.name === "AbortError")) {
@@ -207,7 +213,7 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
         }
       }
     }
-    if (detailUsed) detail = { ...detail, detailAttempts: detailUsed, detailFailures, detailErrors };
+    if (detailUsed || Object.keys(limits).length) detail = { ...detail, ...(Object.keys(limits).length ? { limits } : {}), ...(detailUsed ? { detailAttempts: detailUsed, detailFailures, detailErrors } : {}) };
 
     ({ created, revised } = await store(sourceId, candidates, firstImport ? "first-import" : null));
 
@@ -226,7 +232,10 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
     });
     return { sourceId, status: "ok", found, created, revised };
   } catch (error) {
-    if (shutdownSignal.signal.aborted) throw error;
+    if (shutdownSignal.signal.aborted) {
+      await recordWait(sourceId, run!.id, { kind: "shutdown", retryAfterSeconds: 60 }, "shutdown", { found, created });
+      return { sourceId, status: "skipped", found, created, revised, error: "shutdown" };
+    }
     const message = collectErrorMessage(error);
     const wait = collectionWait(error);
     if (wait) {
