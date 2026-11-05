@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/../.."
+. ./deploy/nas/release-policy.sh
 
 if [ -f deploy/nas/auto-release.env ]; then
   # shellcheck disable=SC1091
@@ -11,6 +12,11 @@ GITHUB_REPO=${GITHUB_REPO:-ViewWholeWorld/SoyMilk}
 if [ "${SOYMILK_DOCKER+x}" = x ]; then export SOYMILK_DOCKER; fi
 WEB_SMOKE_BASE=${WEB_SMOKE_BASE:-http://localhost:3000}
 API_HEALTH_URL=${API_HEALTH_URL:-http://localhost:3001/api/health}
+SEED_TOPICS_ON_RELEASE=${SEED_TOPICS_ON_RELEASE:-false}
+case "$SEED_TOPICS_ON_RELEASE" in
+  true|false) ;;
+  *) printf 'SEED_TOPICS_ON_RELEASE 必须是 true 或 false\n' >&2; exit 2 ;;
+esac
 version=
 dry_run=false
 for arg do
@@ -49,6 +55,45 @@ $names"
     version=$(printf '%s\n' "$tags" | sed '/^$/d; s/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
   fi
   printf '%s\n' "$version" | LC_ALL=C grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+  verify_release_ref
+}
+
+verify_release_ref() {
+  tag="v$version"
+  tag_response=$(curl -fsS -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$GITHUB_REPO/git/ref/tags/$tag") || {
+    printf '无法读取发布标签 %s\n' "$tag" >&2
+    return 1
+  }
+  tag_sha=$(printf '%s' "$tag_response" | sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' | head -n 1)
+  tag_type=$(printf '%s' "$tag_response" | sed -n 's/.*"type"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' | head -n 1)
+  [ -n "$tag_sha" ] || { printf '发布标签 %s 没有可解析的提交\n' "$tag" >&2; return 1; }
+  if [ "$tag_type" = tag ]; then
+    tag_object=$(curl -fsS -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$GITHUB_REPO/git/tags/$tag_sha") || return 1
+    tag_sha=$(printf '%s' "$tag_object" | sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' | head -n 1)
+    [ -n "$tag_sha" ] || { printf '注释标签 %s 没有可解析的提交\n' "$tag" >&2; return 1; }
+  fi
+  compare_response=$(curl -fsS -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$GITHUB_REPO/compare/main...$tag") || return 1
+  compare_status=$(printf '%s' "$compare_response" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' | head -n 1)
+  compare_ahead_by=$(printf '%s' "$compare_response" | sed -n 's/.*"ahead_by"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1)
+  if ! release_ref_is_on_main "$compare_status" "${compare_ahead_by:-unknown}"; then
+    printf '发布标签 %s 不在 main 历史上（compare=%s ahead_by=%s）\n' "$tag" "${compare_status:-unknown}" "${compare_ahead_by:-unknown}" >&2
+    return 1
+  fi
+  ci_response=$(curl -fsS -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$GITHUB_REPO/actions/workflows/ci.yml/runs?head_sha=$tag_sha&per_page=100") || return 1
+  printf '%s' "$ci_response" | grep -Eq '"conclusion"[[:space:]]*:[[:space:]]*"success"' || {
+    printf '发布标签 %s 没有成功的 CI 运行\n' "$tag" >&2
+    return 1
+  }
+}
+
+version_not_lower() {
+  old_version=$1
+  new_version=$2
+  awk -F. -v old="$old_version" -v new="$new_version" 'BEGIN {
+    split(old, o); split(new, n);
+    if (n[1] > o[1] || (n[1] == o[1] && (n[2] > o[2] || (n[2] == o[2] && n[3] >= o[3])))) exit 0;
+    exit 1;
+  }'
 }
 
 if [ "$dry_run" = true ]; then
@@ -64,7 +109,9 @@ if [ "$dry_run" = true ]; then
   run cp '<镜像覆盖及三个私有覆盖>' 'backups/release-<时间>/'
   run docker_cmd run --rm --entrypoint ls "$image" /app/database/migrations
   run docker_cmd run --rm --entrypoint ls '<当前镜像ID>' /app/database/migrations
-  printf '计划：仅有新迁移时运行 pg_dump 和 pg_restore --list 非空检查；否则打印“无新迁移，跳过数据库备份”。\n'
+  printf '计划：有新迁移或 SEED_TOPICS_ON_RELEASE=true 时运行 pg_dump 和 pg_restore --list 非空检查；否则打印“无新迁移，跳过数据库备份”。\n'
+  printf '计划：新镜像 setup 默认只迁移；仅显式 SEED_TOPICS_ON_RELEASE=true 时同步 topics，并保留 topics 前后快照与差异。\n'
+  printf '计划：迁移完成后临时以旧镜像读取稳定表，兼容检查失败则只回退应用。\n'
   run docker_cmd inspect --format '{{.Id}} {{.Image}} {{.State.StartedAt}}' '<db容器，保存切换前状态>'
   run compose stop -t 230 worker
   run docker_cmd inspect --format '{{.State.ExitCode}}' '<worker容器，须为0>'
@@ -123,6 +170,16 @@ set_images() {
   ' "$release" > "$release.tmp" || return 1
   mv "$release.tmp" "$release"
 }
+set_setup_command() {
+  setup_command='node scripts/migrate.ts'
+  if [ "$SEED_TOPICS_ON_RELEASE" = true ]; then setup_command="$setup_command && node scripts/seed.ts --topics-only"; fi
+  awk -v command="$setup_command" '
+    /^  [^ ]/ { target = ($0 ~ /^  setup:/) }
+    target && /^    command:/ { print "    command: [\"sh\", \"-c\", \"" command "\"]"; target = 0; next }
+    { print }
+  ' "$release" > "$release.tmp" || return 1
+  mv "$release.tmp" "$release"
+}
 cleanup() {
   release_dirs=$(for dir in backups/release-*; do
     [ -d "$dir" ] || continue
@@ -144,12 +201,14 @@ cleanup() {
   fi
 }
 write_release() {
+  setup_command='node scripts/migrate.ts'
+  if [ "$SEED_TOPICS_ON_RELEASE" = true ]; then setup_command="$setup_command && node scripts/seed.ts --topics-only"; fi
   cat > "$release" <<YAML
 services:
   setup:
     image: $1
     pull_policy: never
-    command: ["sh", "-c", "node scripts/migrate.ts && node scripts/seed.ts --topics-only"]
+    command: ["sh", "-c", "$setup_command"]
   api:
     image: $1
     pull_policy: never
@@ -233,6 +292,10 @@ if [ -f "$release" ]; then
   [ "$actual" = "$previous_image" ]
 fi
 current_version=$(docker_cmd run --rm --entrypoint node "$previous_image" -p 'JSON.parse(require("fs").readFileSync("/app/package.json", "utf8")).version')
+if ! version_not_lower "$current_version" "$version"; then
+  printf '目标版本 %s 低于当前运行版本 %s，拒绝无确认降级\n' "$version" "$current_version" >&2
+  exit 1
+fi
 if [ "$current_version" = "$version" ]; then
   printf '已是最新\n'
   result=noop
@@ -242,6 +305,8 @@ fi
 step=pull
 run docker_cmd pull "$image"
 new_image=$(docker_cmd inspect --format '{{.Id}}' "$image")
+image_version=$(docker_cmd run --rm --entrypoint node "$image" -p 'JSON.parse(require("fs").readFileSync("/app/package.json", "utf8")).version')
+[ "$image_version" = "$version" ]
 step=backup-config
 for file in compose.release.yml compose.override.yml compose.codex-worker.yml compose.web-time.yml; do
   if [ -f "deploy/nas/$file" ]; then cp "deploy/nas/$file" "$backup/$file"; fi
@@ -258,10 +323,13 @@ if [ -s "$backup/migrations-added.txt" ]; then
   cat "$backup/migrations-added.txt"
 fi
 step=backup-data
-if [ "$new_migrations" = true ]; then
+if [ "$new_migrations" = true ] || [ "$SEED_TOPICS_ON_RELEASE" = true ]; then
   compose exec -T db pg_dump -U aihot -d aihot -Fc > "$backup/db.dump"
   compose exec -T db pg_restore --list < "$backup/db.dump" > "$backup/database-contents.txt"
   [ -s "$backup/database-contents.txt" ]
+  if [ "$SEED_TOPICS_ON_RELEASE" = true ]; then
+    compose exec -T db psql -X -U aihot -d aihot -At -F '\t' -c "SELECT slug,name,grp,entity_id,tags,definition,related,position FROM topics ORDER BY slug" > "$backup/topics-before.tsv"
+  fi
 else
   printf '无新迁移，跳过数据库备份\n'
 fi
@@ -283,9 +351,26 @@ rollback_needed=true
 step=stop
 run compose stop -t 30 api web
 step=override
-if [ -f "$release" ]; then set_images "$image"; else write_release "$image"; fi
+if [ -f "$release" ]; then set_images "$image"; set_setup_command; else write_release "$image"; fi
 step=setup
 run compose run --rm --no-deps setup </dev/null
+if [ "$SEED_TOPICS_ON_RELEASE" = true ]; then
+  compose exec -T db psql -X -U aihot -d aihot -At -F '\t' -c "SELECT slug,name,grp,entity_id,tags,definition,related,position FROM topics ORDER BY slug" > "$backup/topics-after.tsv"
+  if diff -u "$backup/topics-before.tsv" "$backup/topics-after.tsv" > "$backup/topics.diff"; then
+    printf 'topics 未变化\n'
+  else
+    diff_status=$?
+    [ "$diff_status" -eq 1 ] || exit "$diff_status"
+    printf 'topics 发生变化，差异保存在 %s/topics.diff\n' "$backup"
+  fi
+fi
+if [ "$new_migrations" = true ]; then
+  step=compatibility
+  # Apply the new schema first, then run the old image against it before starting the new services.
+  set_images "$previous_image"
+  run compose run --rm --no-deps --entrypoint node worker --input-type=module -e 'import postgres from "postgres"; const db=postgres(process.env.DATABASE_URL); await db`SELECT 1 FROM articles LIMIT 0`; await db`SELECT 1 FROM receipts LIMIT 0`; await db.end();'
+  set_images "$image"
+fi
 step=start
 run compose up -d --no-build --pull never setup api worker web
 step=verify

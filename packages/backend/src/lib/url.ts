@@ -4,6 +4,15 @@ import net from "node:net";
 
 const TRACKING_PARAMS = /^(utm_[a-z]+|spm|from|ref|ref_src|ref_url|source|share_source|share_token|fbclid|gclid|igshid|mc_cid|mc_eid|_hsenc|_hsmi|scene|chksm|sessionid|srcid|clicktime|enterid|mkt_tok)$/i;
 
+export function isHttpUrl(input: string): boolean {
+  try {
+    const protocol = new URL(input.trim()).protocol;
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 /** Canonical form used for identity: lower-case host, no fragment, no tracking params, no trailing slash. */
 export function normalizeUrl(input: string): string | null {
   let u: URL;

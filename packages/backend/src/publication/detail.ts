@@ -51,7 +51,7 @@ async function loadRow(id: string): Promise<DetailRow | null> {
  */
 export async function loadItemDetail(id: string, now = new Date()): Promise<DetailResult> {
   const row = await loadRow(id);
-  if (!row || !hasItemPage({ visibility: row.visibility, sourceMode: row.source_mode })) return { kind: "not_found" };
+  if (!row || !hasItemPage({ visibility: row.visibility, sourceMode: row.source_mode, visibleAfter: row.visible_after }, now)) return { kind: "not_found" };
 
   const summary = toItemSummary(row);
   if (row.channel === "x" && row.body_mode === "full") summary.x = xView(row, false, true);
@@ -147,17 +147,17 @@ export async function loadItemDetail(id: string, now = new Date()): Promise<Deta
  * (a summary, the post, or a full-text body).
  */
 export function markdownAvailable(row: {
-  visibility: string; source_mode: string; summary: string | null; body_mode: string; body_html?: string | null; channel: string; x_post: Record<string, any> | null;
-}): boolean {
-  if (row.visibility !== "public" || !hasItemPage({ visibility: row.visibility, sourceMode: row.source_mode })) return false;
+  visibility: string; source_mode: string; visible_after?: Date | null; summary: string | null; body_mode: string; body_html?: string | null; channel: string; x_post: Record<string, any> | null;
+}, now = new Date()): boolean {
+  if (row.visibility !== "public" || !hasItemPage({ visibility: row.visibility, sourceMode: row.source_mode, visibleAfter: row.visible_after }, now)) return false;
   return !!row.summary || (row.body_mode === "full" && ((row.channel === "x" && !!row.x_post?.text) || !!row.body_html));
 }
 
 const turndown = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced", bulletListMarker: "-" });
 
-export async function exportMarkdown(id: string): Promise<{ filename: string; body: string } | null> {
+export async function exportMarkdown(id: string, now = new Date()): Promise<{ filename: string; body: string } | null> {
   const row = await loadRow(id);
-  if (!row || !markdownAvailable(row)) return null;
+  if (!row || !markdownAvailable(row, now)) return null;
   const lines: string[] = [];
   lines.push(`# ${row.title}`, "");
   if (row.original_title) lines.push(`> 原标题：${row.original_title}`, "");

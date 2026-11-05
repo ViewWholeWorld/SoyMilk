@@ -1,0 +1,44 @@
+id	group	owner	status	verification
+SEC-01	boundary-and-cost	fullstack	verified	限流单测：连续错误请求后正确密码仍可登录；多 IP 仍有全局保护；观察桶内存与响应时间。
+SEC-04	boundary-and-cost	fullstack	verified	未鉴权向 admin/ingest 发送大 body，确认在路由限制处拒绝且不会产生业务副作用。
+SEC-09	boundary-and-cost	fullstack	verified	并发压测、不同 URL 缓存增长测试；验证像素/通道上限、并发信号量和缓存容量。
+JOB-01	jobs-and-events	fullstack	verified	分别构造三类 purpose 的 unknown→放行→恢复流程，确认任务和状态最终收敛。
+JOB-02	jobs-and-events	fullstack	verified	在发布循环不同位置中断，重跑可重入任务，确认 publications、故事和 digest 收敛。
+JOB-04	jobs-and-events	fullstack	verified	构造日报连续失败和周/月报待处理队列，验证不同报告类型的公平推进和延迟上限。
+JOB-05	jobs-and-events	fullstack	verified	对同一文章迁移事件的 fixture 重算 hot ranking，确认旧 signal 被回收且只计一次。
+JOB-06	jobs-and-events	fullstack	verified	构造失败批次，执行恢复后再次失败和成功两条路径，核对 failures、状态和重试次数。
+JOB-08	jobs-and-events	fullstack	verified	让 digest 重试耗尽，再运行补偿扫描，确认缺失事件被发现并只生成一次。
+WEB-01	boundary-and-cost	fullstack	verified	模拟服务端成功但客户端超时，重试保存，确认只存在一个连接。
+WEB-02	boundary-and-cost	fullstack	verified	在多个回执间切换并提交，验证每次必须显式选择且后端状态与审计一致。
+WEB-03	boundary-and-cost	fullstack	verified	反复打开/关闭对话框、输入非法和已合并编号，验证清空、校验和明确错误提示。
+BUD-01	boundary-and-cost	fullstack	verified	对额度、429、连接失败分别注入，确认非付费拒绝不落 unknown，多个 worker 共享冷却。
+BUD-02	boundary-and-cost	fullstack	verified	注入稳定坏输出，验证达到上限后停止付费重试并产生可见告警。
+BUD-03	boundary-and-cost	fullstack	verified	模拟 429/5xx 与 Retry-After，核对 attempt 数、等待时间和最终状态。
+BUD-05	boundary-and-cost	fullstack	verified	留下 pending 回执后切换供应商重试，确认同一 logical request 只允许一次付费尝试。
+BUD-06	boundary-and-cost	fullstack	verified	删除预算行启动/调用，确认 fail-closed、告警和管理员可见状态。
+BUD-07	boundary-and-cost	fullstack	verified	覆盖 pending/failed/completed/unknown 的状态转移矩阵，禁止非法转移。
+BUD-08	boundary-and-cost	fullstack	verified	将供应商返回 usage 与 receipt/ledger 汇总逐笔对账，失败和 unknown 单列。
+COLL-01	collection-and-publication	fullstack	verified	并发 `fetchNow` 与定时采集，统计相同列表的付费请求和 round 是否始终唯一。
+COLL-02	collection-and-publication	fullstack	verified	构造 8 MB/数万条 feed，验证每次候选、入库、详情抓取和队列均有上限并有诊断。
+COLL-03	collection-and-publication	fullstack	verified	对 RSS/JSON/ingest 和重写后的 URL 注入 `javascript:`、`data:`、协议相对 URL，确认全部拒绝或过滤。
+COLL-04	collection-and-publication	fullstack	verified	预算耗尽、详情失败和后续补抓三种路径验证日期保留、补齐和时间线归档。
+COLL-05	collection-and-publication	fullstack	verified	用 301/302 到新路径或新主机的列表测试相对链接解析结果。
+COLL-06	collection-and-publication	fullstack	verified	用北京、UTC、夏令时和无时区样本核对 RSS/JSON/ingest 与网页列表的统一结果。
+COLL-09	collection-and-publication	fullstack	verified	在采集中停止 worker，重启后验证状态收敛、可恢复且不会重复采集。
+PUB-01	collection-and-publication	fullstack	verified	将信源设为 isolated，验证 about/hot/stats、头像和旧 ranking 均不再出现。
+PUB-02	collection-and-publication	fullstack	verified	对闸门内 ID 逐一访问四类入口，确认一致返回 404/不可用；闸门后正常返回。
+PUB-03	collection-and-publication	fullstack	verified	fuzz cursor 类型、负数、超大值和重复值，验证范围校验与响应上限。
+PUB-05	collection-and-publication	fullstack	verified	发送超过 256KB 的 parsedBody 和 raw body，确认在预期限制处拒绝。
+OPS-02	ops-and-docs	fullstack	verified	用上一版本数据升级到新 schema，再启动旧应用并执行回退演练。
+OPS-04	ops-and-docs	fullstack	verified	并发运行迁移、插入低编号/修改文件，确认互斥、checksum 和顺序检查有效。
+OPS-05	ops-and-docs	fullstack	verified	构造非 main 标签、未通过 CI 标签和高版本旧标签，确认发布拒绝并给出原因。
+OPS-06	ops-and-docs	fullstack	verified	在生产副本执行发布前后 seed，比较 topics diff、备份存在性和回滚结果。
+OPS-07	ops-and-docs	fullstack	verified	输出各容器 env、volume 和写权限清单，确认 web 只得到必要变量和只读资源。
+OPS-08	ops-and-docs	fullstack	verified	缺失密码启动应失败；检查自定义特殊字符密码连接串和容器网络访问。
+OPS-09	ops-and-docs	fullstack	verified	对 abc、0、负数、超大值和锁竞争做启动与运行测试，确认边界拒绝和超时。
+CFG-01	ops-and-docs	fullstack	verified	新装演练：只配置 key 启动，确认默认不自动采集/付费，显式开启后才运行。
+DOC-01	ops-and-docs	fullstack	verified	统一版本来源后运行 `npm run check:version`，检查关键文档无旧版本。
+DOC-02	ops-and-docs	fullstack	verified	更新后运行文档路径存在性检查，确认 README 不再引用已删除文件。
+PROMPT-01	prompt-contracts	fullstack	verified	装配检查确保每类任务只有一个长度范围；冻结样本比较长度分布、格式拒绝率和总 token。
+PROMPT-02	prompt-contracts	fullstack	verified	装配检查包含枚举；冻结样本和线上拒绝率确认中文标签错误下降；映射计数单独监控。
+PROMPT-05	prompt-contracts	fullstack	verified	每个 prompt 记录装配字符数和回执 token；按步骤对账未知 usage，报告总 token 变化。

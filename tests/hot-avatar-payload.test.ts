@@ -57,6 +57,12 @@ test('faces are 精选组 sources by tier (T1, T1.5, T2), at most 6; 氛围组 o
     await sql`INSERT INTO fact_articles (fact_id,article_id,role) VALUES (${fact!.id},${sourceId(1)},'report')`;
     for (const [p, person] of inputs.entries()) await sql`INSERT INTO story_signals(story_id,article_id,participant_key,source_id,kind,observed_at)
       VALUES(${story!.id},${sourceId(p)},${sourceId(p)},${sourceId(p)},${person.kind},${at})`;
+    for (const [p, person] of inputs.entries()) if (person.kind === 'editorial' && p !== 1) {
+      await sql`INSERT INTO fact_articles (fact_id,article_id,role) VALUES (${fact!.id},${sourceId(p)},'report')`;
+      await sql`INSERT INTO publications (article_id,source_id,title,url,timeline_at,discovered_at,sort_at,eligible,channel)
+        VALUES (${sourceId(p)},${sourceId(p)},${name(p)},${'https://example.org/'+sourceId(p)},now(),now(),now(),true,'news')
+        ON CONFLICT (article_id) DO NOTHING`;
+    }
     entries.push({ rank:i+1,storyId:story!.id,storyPublicId:story!.public_id,title:t,heat:10,trend:'flat',trendPct:0,badges:[],
       participantCount:12,sourceCount:8,signalCount:2,reportCount:5,sourceNames:inputs.map((_,n)=>name(n)),latestAt:at.toISOString(),firstReportAt:at.toISOString(),
       representativeItemId:null,representativeUrl:null,representativeSource:null,participants:inputs.map((p,n)=>({name:name(n),kind:p.kind,tier:p.tier})) });

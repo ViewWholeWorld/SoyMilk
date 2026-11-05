@@ -3,10 +3,21 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { sql, closeDb } from "@aihot/backend/db";
 import { paidRequest, logicalKeyFor, markStalePendingReceipts, ReceiptBusyError, ReceiptUnknownError } from "@aihot/backend/providers/receipts";
-after(closeDb);
+
+const testBudgetServices = new Set<string>();
+async function ensureTestBudget(service: string): Promise<void> {
+  testBudgetServices.add(service);
+  await sql`INSERT INTO budgets(service,per_minute,per_hour,per_day,note) VALUES(${service},100,100,100,'test')
+    ON CONFLICT(service) DO UPDATE SET per_minute=EXCLUDED.per_minute,per_hour=EXCLUDED.per_hour,per_day=EXCLUDED.per_day`;
+}
+after(async () => {
+  if (testBudgetServices.size) await sql`DELETE FROM budgets WHERE service = ANY(${[...testBudgetServices]}::text[])`;
+  await closeDb();
+});
 
 test("a new prompt hash waits for an older in-flight or unknown article response without another attempt", async () => {
   const req = { service: `prompt-upgrade-${tag()}`, purpose: "translate_body", subject: `article:${tag()}@1#0`, identity: { prompt: "old" }, requestSummary: { promptVersion: "old" } };
+  await ensureTestBudget(req.service);
   const changed = { ...req, identity: { prompt: "new" }, requestSummary: { promptVersion: "new" } };
   const asked = gate(); const release = gate();
   let calls = 0;
@@ -26,6 +37,7 @@ test("a new prompt hash waits for an older in-flight or unknown article response
 test("a changed article identity cannot resend while a same-version receipt is pending", async () => {
   const subject = `article:${tag()}@1`;
   const req = { service: `same-version-pending-${tag()}`, purpose: "group_article", subject, identity: { candidates: ["old"] }, requestSummary: { promptVersion: "same" } };
+  await ensureTestBudget(req.service);
   const changed = { ...req, identity: { candidates: ["new"] } };
   const asked = gate(); const release = gate();
   let calls = 0;
@@ -43,6 +55,7 @@ test("changed review candidates wait on primary and shared article receipts unti
   for (const shared of [false, true]) {
     const article = `article:${tag()}`;
     const req = { service: `review-candidate-${tag()}`, purpose: "group_review", subject: `${article}:fact:1`, identity: { pair: "old" } };
+    await ensureTestBudget(req.service);
     const target = shared ? `article:${tag()}` : article;
     const changed = { ...req, subject: `${target}:fact:2`, identity: { pair: "new" } };
     const asked = gate(); const release = gate();
@@ -75,6 +88,7 @@ test("changed review candidates wait on primary and shared article receipts unti
 test("review receipt guards preserve article, revision, purpose and service boundaries", async () => {
   const article = `article:${tag()}`;
   const req = { service: `review-boundaries-${tag()}`, purpose: "group_review", subject: `${article}@1:fact:1`, identity: { pair: "old" } };
+  await ensureTestBudget(req.service);
   await assert.rejects(paidRequest(req, async () => { throw new Error("fixture lost review"); }), ReceiptUnknownError);
   const variants = [
     { subject: `${article}0@1:fact:2` },
@@ -83,6 +97,7 @@ test("review receipt guards preserve article, revision, purpose and service boun
     { service: `other-service-${tag()}` },
   ];
   for (const [i, variant] of variants.entries()) {
+    await ensureTestBudget(typeof variant.service === "string" ? variant.service : req.service);
     const result = await paidRequest({ ...req, ...variant, identity: { pair: i } }, async () => ({ response: { pair: i } }));
     assert.equal(result.reused, false);
     assert.deepEqual(result.response, { pair: i });
@@ -98,8 +113,9 @@ test("review receipt guards preserve article, revision, purpose and service boun
 
 for (const withModelContext of [false, true]) {
 test(`stale recovery waiting on a response transaction preserves its committed answer and attempt${withModelContext ? " with model context" : ""}`, async () => {
-  const request = { service: "invariant-recovery-race", purpose: "invariant_test", identity: { race: tag() },
+  const request = { service: `invariant-recovery-race-${tag()}`, purpose: "invariant_test", identity: { race: tag() },
     billingContext: withModelContext ? { providerKey: "environment:default", requestedModel: "fixture-model", providerLabel: "Fixture", billingKind: "api" as const } : undefined };
+  await ensureTestBudget(request.service);
   const asked = gate();
   const answer = gate();
   let sent = 0;

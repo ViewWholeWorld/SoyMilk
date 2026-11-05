@@ -3,12 +3,14 @@ import { randomUUID } from "node:crypto";
 import * as cheerio from "cheerio";
 import { sql } from "../db.ts";
 import { guardedFetch } from "../lib/http-fetch.ts";
-import { normalizeUrl } from "../lib/url.ts";
+import { isHttpUrl, normalizeUrl } from "../lib/url.ts";
 import { collapseWhitespace, stripTags } from "../lib/text.ts";
 import { isSignInRedirect, isSignInUrl, readable, type ExtractedBody } from "../content/extract.ts";
 import { sanitizeBody } from "../content/sanitize.ts";
 import { jinaRead } from "../providers/jina.ts";
-import { FetchError, type Candidate, type SourceRow } from "./types.ts";
+import { FetchError, MAX_SOURCE_CANDIDATES, type Candidate, type SourceRow } from "./types.ts";
+import { collectionWait } from "./wait.ts";
+import { shutdownSignal } from "../lib/shutdown.ts";
 import { contentDocument } from "../lib/page-content.ts";
 
 const JINA_PREFIX = "https://r.jina.ai/";
@@ -101,6 +103,7 @@ export function jsonLdPublished($: cheerio.CheerioAPI, html: string): string | n
 const overHttps = (url: string) => url.replace(/^http:\/\//i, "https://");
 
 export function allowed(url: string, source: SourceRow): boolean {
+  if (!isHttpUrl(url)) return false;
   const allow: string[] = (source.config.allowUrlPrefixes ?? []).map(overHttps);
   const deny: string[] = (source.config.denyUrlPrefixes ?? []).map(overHttps);
   const target = overHttps(url);
@@ -155,19 +158,30 @@ async function fetchListingText(source: SourceRow): Promise<{ text: string; viaJ
     // material is stored, so a fetch that ended with the outcome unknown (timeout after sending, a restart)
     // comes back to the same receipt instead of paying again; ops.recover releases it once.
     const pending = source.cursor?.jinaListingRound;
-    const round = typeof pending === "string" ? pending : randomUUID();
-    if (round !== pending) await sql`UPDATE sources SET cursor = coalesce(cursor, '{}'::jsonb) || jsonb_build_object('jinaListingRound', ${round}::text) WHERE id = ${source.id}`;
+    let round = typeof pending === "string" ? pending : randomUUID();
+    if (pending === undefined) {
+      const [saved] = await sql<{ round: string }[]>`UPDATE sources
+        SET cursor = coalesce(cursor, '{}'::jsonb) || jsonb_build_object('jinaListingRound', ${round}::text)
+        WHERE id = ${source.id} AND coalesce(cursor->>'jinaListingRound', '') = ''
+        RETURNING cursor->>'jinaListingRound' AS round`;
+      if (!saved) {
+        const [current] = await sql<{ round: string | null }[]>`SELECT cursor->>'jinaListingRound' AS round FROM sources WHERE id = ${source.id}`;
+        if (current?.round) round = current.round;
+      } else round = saved.round;
+    }
     // A listing parsed with selectors asks Jina for the rendered HTML (a site our resolver cannot reach
     // still gets its dates and titles from the markup); otherwise Jina's Markdown.
     const format = source.config.parseMode === "html" ? "html" : undefined;
     const page = await jinaRead(target, { purpose: "source_listing", subject: `source:${source.id}`, cacheToleranceSeconds: source.config.cacheToleranceSeconds, round, format });
-    return { text: page.markdown, viaJina: true, base: source.config.baseUrl ?? target, round };
+    return { text: page.markdown, viaJina: true, base: page.url ?? source.config.baseUrl ?? target, round };
   }
   const res = await guardedFetch(url, { headers: { accept: "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8" }, timeoutMs: 25_000 });
   if (res.status !== 200) throw new FetchError(`HTTP ${res.status}`, res.status);
   if (isSignInRedirect(url, res.url)) throw new FetchError("Listing redirected to a sign-in page");
   if (/html/i.test(res.headers.get("content-type") ?? "")) contentDocument(res.text());
-  return { text: res.text(), viaJina: false, base: source.config.baseUrl ?? url };
+  // An explicit baseUrl is a deliberate source contract; otherwise relative links follow the final
+  // response URL so redirects to another path or host cannot resolve against the stale config URL.
+  return { text: res.text(), viaJina: false, base: source.config.baseUrl ?? res.url };
 }
 
 export function fromMarkdown(md: string, base: string, source: SourceRow): Candidate[] {
@@ -361,14 +375,18 @@ export async function fetchWebList(source: SourceRow, opts: { preview?: boolean 
     else if (mode === "docusaurus_changelog") out = fromDocusaurusChangelog(text, base, source);
     else out = fromHtml(text, base, source);
     if (out.length === 0) throw new FetchError(`no items matched (${mode})`);
+    if (out.length > MAX_SOURCE_CANDIDATES) throw new FetchError(`candidate limit exceeded (${MAX_SOURCE_CANDIDATES})`);
     // A preview has no material commit; a successfully parsed page finishes its round here.
     if (round && opts.preview) await sql`UPDATE sources SET cursor = cursor - 'jinaListingRound'
       WHERE id = ${source.id} AND cursor->>'jinaListingRound' = ${round}`;
     return out;
   } catch (error) {
-    // An unusable rendering needs a fresh read; a valid one stays reusable until collectSource commits.
-    if (round) await sql`UPDATE sources SET cursor = cursor - 'jinaListingRound'
-      WHERE id = ${source.id} AND cursor->>'jinaListingRound' = ${round}`;
+    // A malformed rendering can be refreshed; an in-flight, unknown, budget, configuration or
+    // shutdown outcome must keep its round so the next run reuses the same paid request.
+    if (round && !collectionWait(error) && !shutdownSignal.signal.aborted && !(error instanceof DOMException && error.name === "AbortError")) {
+      await sql`UPDATE sources SET cursor = cursor - 'jinaListingRound'
+        WHERE id = ${source.id} AND cursor->>'jinaListingRound' = ${round}`;
+    }
     throw error;
   }
 }

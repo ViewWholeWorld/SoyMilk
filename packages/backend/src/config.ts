@@ -11,6 +11,20 @@ const env = process.env;
 
 export const isProduction = env.NODE_ENV === "production";
 
+/** Build a Docker-friendly connection string without exposing password delimiters to URL parsing. */
+export function databaseUrlFromEnv(environment: NodeJS.ProcessEnv): string {
+  const host = environment.DATABASE_HOST;
+  const password = environment.DATABASE_PASSWORD;
+  if (host && password !== undefined) {
+    const user = environment.DATABASE_USER || "aihot";
+    const port = environment.DATABASE_PORT || "5432";
+    const database = environment.DATABASE_NAME || "aihot";
+    return `postgres://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${encodeURIComponent(database)}`;
+  }
+  if (environment.DATABASE_URL) return environment.DATABASE_URL;
+  return "postgres://127.0.0.1:5432/aihot";
+}
+
 function str(name: string, fallback?: string): string {
   const value = env[name];
   if (value !== undefined && value !== "") return value;
@@ -34,7 +48,7 @@ function bool(name: string, fallback: boolean): boolean {
 
 
 export const config = {
-  databaseUrl: str("DATABASE_URL", "postgres://127.0.0.1:5432/aihot"),
+  databaseUrl: databaseUrlFromEnv(env),
   apiPort: int("API_PORT", 3001),
   webPort: int("WEB_PORT", 3000),
   apiBaseUrl: str("API_BASE_URL", "http://127.0.0.1:3001"),

@@ -19,7 +19,14 @@ const T = `suppliers_${tag()}`;
 const ids: string[] = [];
 const a = await createModelSupplier({ name: T + " YosHub" }); ids.push(a.id);
 const b = await createModelSupplier({ name: T + " Other" }); ids.push(b.id);
+const testBudgetServices = new Set<string>();
+async function ensureTestBudget(service: string): Promise<void> {
+  testBudgetServices.add(service);
+  await sql`INSERT INTO budgets(service,per_minute,per_hour,per_day,note) VALUES(${service},100,100,100,'test')
+    ON CONFLICT(service) DO UPDATE SET per_minute=EXCLUDED.per_minute,per_hour=EXCLUDED.per_hour,per_day=EXCLUDED.per_day`;
+}
 after(async () => {
+  if (testBudgetServices.size) await sql`DELETE FROM budgets WHERE service = ANY(${[...testBudgetServices]}::text[])`;
   await sql`DELETE FROM receipts WHERE service=${T}`;
   await sql`DELETE FROM model_suppliers WHERE id IN ${sql(ids)}`;
   await closeDb();
@@ -87,6 +94,7 @@ test("自动未知与手动官方归属保存选择模式，模式编辑不改�
 });
 
 test("请求冻结供应商，更换或删除连接不改历史，复用与重试保持原回执行为", async () => {
+  await ensureTestBudget(T);
   const sample = { name: T, type: "api-key" as const, model: T, baseUrl: "https://proxy.example/v1", apiKey: "test-only", supplierId: a.id };
   const connection = await saveModelConnection(sample);
   const spec = (await registeredModels())[`connection:${connection.id}`]!;

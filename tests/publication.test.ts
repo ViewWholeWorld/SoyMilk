@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
+import { encodeCursor, queryBinding } from "@aihot/backend/lib/cursor";
 import { setVisibility } from "@aihot/backend/admin/content";
 import { updateSource } from "@aihot/backend/admin/sources";
 import { upsertMaterial } from "@aihot/backend/content/materials";
@@ -312,6 +313,42 @@ test("item pages follow the live rule: unsummarised editorial items keep one, ho
   assert.equal(storyPage.status, 200, "a story whose only page is unsummarised still has a page");
   assert.ok(storyPage.body.includes(plain), "it lists the unsummarised editorial report");
   assert.ok(!storyPage.body.includes(signal) && !storyPage.body.includes(`SIGNAL-SUMMARY-${T}`), "and not the hot_signal one");
+});
+
+test("the 180-second release gate covers detail, original, Markdown, availability and OG", async () => {
+  const id = await article();
+  await publishArticle(id, released());
+  await sql`UPDATE publications SET visible_after = now() + interval '3 minutes' WHERE article_id = ${id}`;
+  assert.equal((await get(`/api/site/items/${id}`)).status, 404);
+  assert.equal((await get(`/api/site/items/${id}/original`)).status, 404);
+  assert.equal((await get(`/items/${id}/markdown`)).status, 404);
+  assert.equal(JSON.parse((await get(`/api/site/items/availability?ids=${id}`)).body)[id], "unavailable");
+  assert.equal((await get(`/og/items/${id}.png`)).status, 404);
+
+  await sql`UPDATE publications SET visible_after = now() - interval '1 second' WHERE article_id = ${id}`;
+  assert.equal((await get(`/api/site/items/${id}`)).status, 200);
+  assert.equal((await get(`/api/site/items/${id}/original`)).status, 200);
+  assert.equal((await get(`/items/${id}/markdown`)).status, 200);
+  assert.equal(JSON.parse((await get(`/api/site/items/availability?ids=${id}`)).body)[id], "public");
+  assert.equal((await get(`/og/items/${id}.png`)).status, 200);
+});
+
+test("group cursors reject negative and out-of-range offsets", async () => {
+  const first = await article();
+  const second = await article();
+  await publishArticle(first, released());
+  await publishArticle(second, released());
+  const story = await storyFor(first);
+  const [fact] = await sql<{ id: number; public_id: string }[]>`SELECT f.id, f.public_id FROM facts f JOIN stories s ON s.id = f.story_id WHERE s.public_id = ${story}`;
+  await sql`INSERT INTO fact_articles (fact_id, article_id, role) VALUES (${fact!.id}, ${second}, 'report')`;
+  const firstPage = await get(`/api/site/groups/${fact!.public_id}/reports?take=1`);
+  assert.equal(firstPage.status, 200, firstPage.body);
+  const body = JSON.parse(firstPage.body) as { revision: string };
+  const binding = queryBinding({ f: fact!.public_id, c: "all", k: null, t: null, p: null });
+  for (const offset of [-1, 999]) {
+    const cursor = encodeCursor("gr1", { o: offset, r: body.revision, b: binding });
+    assert.equal((await get(`/api/site/groups/${fact!.public_id}/reports?cursor=${encodeURIComponent(cursor)}`)).status, 400);
+  }
 });
 
 test("an early release keeps the selected ledger in order", async () => {

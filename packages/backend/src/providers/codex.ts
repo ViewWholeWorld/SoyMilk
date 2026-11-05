@@ -10,7 +10,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { config } from "../config.ts";
 import { Conflict, NotFound, ValidationError } from "../lib/errors.ts";
 import { codexHome, privateLease, resetCodexIdentity, withCodexAdmin } from "./model-config.ts";
-import { ReceiptBusyError } from "./receipts.ts";
+import { ProviderRejectedError, ProviderRequestError, ReceiptBusyError } from "./receipts.ts";
 import type { ContentPart } from "./llm.ts";
 
 let pendingCalls: Promise<void> = Promise.resolve();
@@ -28,19 +28,20 @@ export function withCodexCall<T>(work: () => Promise<T>): Promise<T> {
 
 type Message = { id?: number | string; method?: string; params?: any; result?: any; error?: unknown };
 type Pending = { resolve: (value: any) => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
-export class CodexLimitError extends Error {
+export class CodexLimitError extends ProviderRejectedError {
   readonly kind: "quota" | "rate";
-  constructor(kind: "quota" | "rate") {
-    super(kind === "quota" ? "Codex 订阅额度已用完，等待重置" : "Codex 请求受到限流，稍后重试");
+  constructor(kind: "quota" | "rate", usage: Record<string, unknown> | null = null) {
+    super(kind === "quota" ? "Codex 订阅额度已用完，等待重置" : "Codex 请求受到限流，稍后重试", 429, true, false, false,
+      { usage, retryAfterSeconds: kind === "quota" ? 15 * 60 : 60, cooldownSeconds: kind === "quota" ? 15 * 60 : 60 });
     this.kind = kind;
   }
 }
-function limitError(error: any): CodexLimitError | null {
+function limitError(error: any, usage: Record<string, unknown> | null = null): CodexLimitError | null {
   const info = error?.codexErrorInfo ?? error?.data?.codexErrorInfo;
   const variant = typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] : "";
-  if (variant?.toLowerCase() === "usagelimitexceeded") return new CodexLimitError("quota");
+  if (variant?.toLowerCase() === "usagelimitexceeded") return new CodexLimitError("quota", usage);
   const status = error?.httpStatusCode ?? info?.httpStatusCode ?? (variant ? info?.[variant]?.httpStatusCode : null);
-  return status === 429 ? new CodexLimitError("rate") : null;
+  return status === 429 ? new CodexLimitError("rate", usage) : null;
 }
 export interface CodexAccount { connected: boolean; email: string | null; plan: string | null; loginInProgress?: boolean; pendingLogin?: CodexLogin | null }
 export interface CodexLogin { id: string; state: "pending" | "success" | "failed" | "cancelled"; verificationUrl: string; userCode: string; expiresAt: number; error: string | null }
@@ -218,11 +219,11 @@ export async function requestCodex(server: CodexServer, model: string, system: s
   let finish!: (v: any) => void; let fail!: (e: Error) => void;
   const done = new Promise<any>((resolve, reject) => { finish = resolve; fail = reject; });
   const off = server.observe((m) => {
-    if (m.method === "connection/closed") { fail(new Error("Codex 在响应完成前断开连接")); return; }
+    if (m.method === "connection/closed") { fail(new ProviderRequestError("Codex 在响应完成前断开连接", { usage })); return; }
     if (m.params?.threadId !== threadId) return;
-    if (m.method === "error") limited = limitError(m.params.error);
+    if (m.method === "error") limited = limitError(m.params.error, usage);
     if (m.method === "turn/plan/updated" || (m.method === "item/started" && !["agentMessage", "userMessage", "reasoning"].includes(m.params.item?.type))) {
-      fail(new Error("Codex 尝试使用工具，已停止；执行结果未知")); server.close(); return;
+      fail(new ProviderRequestError("Codex 尝试使用工具，已停止；执行结果未知", { usage })); server.close(); return;
     }
     if (m.method === "item/completed" && m.params.item?.type === "agentMessage" && m.params.item.phase !== "commentary") text = m.params.item.text;
     if (m.method === "thread/tokenUsage/updated") {
@@ -236,10 +237,10 @@ export async function requestCodex(server: CodexServer, model: string, system: s
         usage.completion_tokens_details = { reasoning_tokens: u.reasoningOutputTokens };
     }
     if (m.method === "turn/completed") {
-      m.params.turn.status === "completed" && text ? finish({ id: m.params.turn.id, choices: [{ message: { content: text } }], usage }) : fail(limited ?? limitError(m.params.turn.error) ?? new Error("Codex 未完成响应，执行结果未知"));
+      m.params.turn.status === "completed" && text ? finish({ id: m.params.turn.id, choices: [{ message: { content: text } }], usage }) : fail(limited ?? limitError(m.params.turn.error, usage) ?? new ProviderRequestError("Codex 未完成响应，执行结果未知", { usage }));
     }
   });
-  const timer = setTimeout(() => { fail(new Error("Codex 响应超时，执行结果未知")); server.close(); }, Math.min(timeout, 180_000));
+  const timer = setTimeout(() => { fail(new ProviderRequestError("Codex 响应超时，执行结果未知", { usage })); server.close(); }, Math.min(timeout, 180_000));
   const input = typeof user === "string" ? [{ type: "text", text: user }] : user.map((p) => p.type === "text" ? p : { type: "image", url: p.image_url.url });
   // Attach a rejection handler before turn/start: notifications may arrive before its response.
   const result = done.then((v) => ({ value: v }), (error: Error) => ({ error }));

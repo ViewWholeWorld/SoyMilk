@@ -34,6 +34,14 @@ test("自动归属经过自定义地址或新增连接后仍能跟随官方预�
   assert.equal(connectionDraftFor({ ...connection, supplierId: undefined }).autoSupplier, true);
 });
 
+test("新连接在首次编辑时获得稳定幂等 ID", () => {
+  const first = connectionDraftFor();
+  const second = updateConnectionDraft(first, { name: "重试连接", model: "retry-model" });
+  assert.match(first.id!, /^[0-9a-f-]{36}$/);
+  assert.equal(second.id, first.id);
+  assert.equal(connectionPayload(second).id, first.id);
+});
+
 test("手填接口沿用后端官方识别边界，地区映射为同一供应商", () => {
   const draft = connectionDraftFor(connection);
   for (const [baseUrl, expected] of [

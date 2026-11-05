@@ -49,6 +49,7 @@ export async function loadGroupReports(q: GroupReportsQuery, now = new Date()): 
     const c = decodeCursor<{ o: number; r: string; b: string }>("gr1", q.cursor);
     if (c.b !== binding) throw new InvalidCursorError("cursor does not match this group query");
     if (c.r !== revision) return { kind: "changed" };
+    if (!Number.isSafeInteger(c.o) || c.o < 0 || c.o > members.length) throw new InvalidCursorError("cursor offset is out of range");
     offset = c.o;
   } else if (q.revision && q.revision !== revision) {
     return { kind: "changed" };
@@ -133,6 +134,7 @@ export async function loadDevelopments(q: DevelopmentsQuery, now = new Date()): 
     const c = decodeCursor<{ o: number; r: string; b: string }>("dv1", q.cursor);
     if (c.b !== binding) throw new InvalidCursorError("cursor does not match this group query");
     if (c.r !== revision) return { kind: "changed" };
+    if (!Number.isSafeInteger(c.o) || c.o < 0 || c.o > list.length) throw new InvalidCursorError("cursor offset is out of range");
     offset = c.o;
   } else if (q.revision && q.revision !== revision) {
     return { kind: "changed" };

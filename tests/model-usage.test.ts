@@ -14,7 +14,7 @@ import { modelBillingContext } from "@aihot/backend/providers/model-billing";
 import { chatJson, type ModelSpec } from "@aihot/backend/providers/llm";
 import { resetCodexIdentity, saveModelConnection, selectModelConnection } from "@aihot/backend/providers/model-config";
 import { normalizeModelUsage } from "@aihot/backend/providers/model-usage";
-import { logicalKeyFor, paidRequest, ProviderRejectedError, ReceiptUnknownError } from "@aihot/backend/providers/receipts";
+import { logicalKeyFor, paidRequest, ProviderRejectedError, ProviderRequestError, ReceiptUnknownError } from "@aihot/backend/providers/receipts";
 import { registerAdmin } from "../apps/api/src/routes/admin.ts";
 
 const T = `usage_${tag()}`;
@@ -27,9 +27,11 @@ let budget: { per_minute: number; per_hour: number; per_day: number; window_star
 before(async () => {
   [budget] = await sql<typeof budget[]>`SELECT per_minute,per_hour,per_day,window_started_at FROM budgets WHERE service='llm'`;
   await sql`UPDATE budgets SET per_minute=100000,per_hour=100000,per_day=100000,window_started_at=now() WHERE service='llm'`;
+  await sql`INSERT INTO budgets(service,per_minute,per_hour,per_day,note) VALUES(${T},100,100,100,'test')`;
 });
 after(async () => {
   if (budget) await sql`UPDATE budgets SET per_minute=${budget.per_minute},per_hour=${budget.per_hour},per_day=${budget.per_day},window_started_at=${budget.window_started_at} WHERE service='llm'`;
+  await sql`DELETE FROM budgets WHERE service=${T}`;
   await sql`DELETE FROM model_pricing WHERE provider_key=${providerKey}`;
   await sql`DELETE FROM receipts WHERE service=${T}`;
   await closeDb();
@@ -106,6 +108,21 @@ test("重试只增加实际发送次数，unknown 继续阻止再次发送", asy
   assert.equal(sent, 0);
 });
 
+test("失败和 unknown 回执保留供应商 usage 并进入模型统计", async () => {
+  const requestedModel = `${T}-failed-usage`;
+  const base = request("failed-usage");
+  const req = { ...base, model: requestedModel, billingContext: { ...base.billingContext, requestedModel } };
+  await assert.rejects(paidRequest(req, async () => { throw new ProviderRequestError("transport lost", { usage: { prompt_tokens: 12, completion_tokens: 3 }, requestId: "fixture-request" }); }), ReceiptUnknownError);
+  const [attempt] = await sql<{ status: string; usage: Record<string, unknown>; normalized_usage: Record<string, unknown> }[]>`SELECT status,usage,normalized_usage FROM receipt_attempts WHERE receipt_id=(SELECT id FROM receipts WHERE logical_key=${logicalKeyFor(req)})`;
+  assert.equal(attempt!.status, "unknown");
+  assert.deepEqual(attempt!.usage, { prompt_tokens: 12, completion_tokens: 3 });
+  assert.equal(attempt!.normalized_usage.inputTotal, 12);
+  const overview = await modelsOverview(1);
+  const row = overview.capabilities.find((c) => c.key === "score")!.usage.find((u) => u.requestedModel === requestedModel)!;
+  assert.equal(row.tokensIn, 12);
+  assert.equal(row.tokensOut, 3);
+});
+
 test("无效和替代格式用量不使旧 token 概览报错", async () => {
   const model = `${T}-formats`;
   const req = (id: string) => ({ ...request(id), model, billingContext: { ...request(id).billingContext, requestedModel: model } });
@@ -136,9 +153,13 @@ test("API 模型实际入口保存所选连接与 token，不再生成估价", a
     await selectModelConnection(connection.id);
     const result = await chatJson({ model: "default", purpose: T, subject: T, promptVersion: "fixture", system: "fixture", user: T, schema: z.object({ ok: z.boolean() }) });
     const [attempt] = await sql`SELECT provider_key,normalized_usage,estimated_cost,estimate_status FROM receipt_attempts WHERE receipt_id=${result.receiptId}`;
+    const [receipt] = await sql<{ request: Record<string, unknown> }[]>`SELECT request FROM receipts WHERE id=${result.receiptId}`;
     assert.equal(attempt!.provider_key, `connection:${connection.id}`);
     assert.deepEqual(attempt!.normalized_usage, normalizeModelUsage(usage));
     assert.equal(attempt!.estimated_cost, null); assert.equal(attempt!.estimate_status, null);
+    assert.equal(receipt!.request.systemChars, "fixture".length);
+    assert.equal(receipt!.request.userChars, T.length);
+    assert.equal(receipt!.request.promptChars, "fixture".length + T.length);
   } finally { config.allowPrivateNetworkFetch = old; await provider.close(); }
 });
 

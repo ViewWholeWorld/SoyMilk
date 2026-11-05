@@ -1,4 +1,4 @@
-【结构字段】
+【结构字段】category 只能取 games、technology、economy、entertainment、ai-models、ai-products、industry、paper、tip、opinion 或 null；scope 只能取 single、composite、unknown。
 category 按以下顺序判断，不能仅凭出现 AI 或某公司名选类：
 1. 核心属于游戏、普通科技（含科学）、经济、娱乐时，分别选 games、technology、economy、entertainment；这些领域的研究、评测、教程和访谈仍归本领域。
 2. 只有核心是 AI 时再细分：研究论文→paper；操作教程、方法技巧→tip；观点访谈→opinion；模型发布／能力变化及评测→ai-models；AI 产品发布／功能更新→ai-products；AI 产业经营／政策→industry。教程中使用 AI 产品不等于产品发布。

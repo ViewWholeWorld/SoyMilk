@@ -113,13 +113,16 @@ export async function bindCooldownProbe(tx: Db, claim: CooldownClaim | null, rec
 }
 
 /** 与回执响应同事务落库；旧在途成功只能结算它自己观察到的拒绝版本。 */
-export async function settleProviderCooldown(tx: Db, claim: CooldownClaim | null, result: "success" | "spending" | "failure" | "unknown"): Promise<void> {
+export async function settleProviderCooldown(tx: Db, claim: CooldownClaim | null, result: "success" | "spending" | "failure" | "unknown", cooldownSeconds: number | null = null): Promise<void> {
   if (!claim) return;
   const state = await lockState(tx, claim.key);
   if (result === "spending") {
     const now = Date.now();
     await saveState(tx, claim.key, { revision: randomUUID(), refusedAt: now, until: now + PROVIDER_COOLDOWN_SECONDS * 1000,
       ...(state?.probeReceiptId ? { probe: state.probe, probeReceiptId: state.probeReceiptId } : {}) });
+  } else if (result === "failure" && cooldownSeconds && cooldownSeconds > 0) {
+    const now = Date.now();
+    await saveState(tx, claim.key, { revision: randomUUID(), refusedAt: now, until: now + cooldownSeconds * 1000 });
   } else if (result !== "unknown" && state && state.revision === claim.revision && claim.probe === state.probe) {
     if (result === "success") await tx`DELETE FROM settings WHERE key=${claim.key}`;
     else if (claim.probe) {

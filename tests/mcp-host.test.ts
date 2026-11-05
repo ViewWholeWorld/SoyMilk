@@ -86,6 +86,14 @@ test("MCP rejects malformed or disallowed Host and forwarded authorities", async
   }
 });
 
+test("MCP rejects an oversized parsed JSON body before passing it to the SDK", async () => {
+  const response = await app.inject({
+    method: "POST", url: "/api/mcp", headers: { host: "localhost", "content-type": "application/json", accept: "application/json" },
+    payload: { ...initialize, params: { ...initialize.params, padding: "x".repeat(300 * 1024) } },
+  });
+  assert.equal(response.statusCode, 413, response.body);
+});
+
 function rawRequest(address: string, authorityHeaders: string[], method = "POST") {
   return new Promise<{ status: number | undefined; body: string; cache: string | undefined }>((resolve, reject) => {
     const req = request(`${address}/api/mcp`, {

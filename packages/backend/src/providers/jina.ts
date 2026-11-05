@@ -2,7 +2,7 @@
 // proxy, always behind receipts and the per-minute/hour/day budget (any zero stops it).
 import { credential } from "../config.ts";
 import { guardedFetch } from "../lib/http-fetch.ts";
-import { paidRequest, ProviderRejectedError, ProviderUnavailableError } from "./receipts.ts";
+import { paidRequest, parseRetryAfter, ProviderRejectedError, ProviderUnavailableError } from "./receipts.ts";
 import { environmentCooldownScope, spendingRefusal } from "./provider-cooldown.ts";
 import { assertPageContent, contentDocument, UnavailablePageError } from "../lib/page-content.ts";
 
@@ -49,7 +49,8 @@ export async function jinaRead(
       if (res.status === 401 || res.status === 402 || res.status === 403 || res.status === 422 || res.status === 400) {
         throw new ProviderRejectedError(`jina HTTP ${res.status}`, res.status, false);
       }
-      if (res.status === 429 || res.status >= 500) throw new ProviderRejectedError(`jina HTTP ${res.status}`, res.status, true, false, spendingRefusal("jina", res.status, res.text()));
+      if (res.status === 429 || res.status >= 500) throw new ProviderRejectedError(`jina HTTP ${res.status}`, res.status, true, false, spendingRefusal("jina", res.status, res.text()),
+        { retryAfterSeconds: parseRetryAfter(res.headers.get("retry-after")) });
       const text = res.text();
       // 只记录上游报告的 token，不按本地固定单价推算金额。
       const tokens = Number(res.headers.get("x-usage-tokens")) || null;

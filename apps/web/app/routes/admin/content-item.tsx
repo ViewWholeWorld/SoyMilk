@@ -6,6 +6,7 @@ import type { AdminContentChain } from "@aihot/contracts/admin";
 import type { Route } from "./+types/content-item";
 import { adminGet } from "../../lib/admin.server";
 import { useAdminAction } from "../../features/admin/action";
+import { mergeTargetValue } from "../../features/admin/boundaries";
 import { bj, money } from "../../features/admin/format";
 import { KIND_LABEL, MODE_LABEL, VISIBILITY_LABEL } from "../../features/admin/labels";
 import { AdminPage, Badge, Button, Card, Empty, Field, Input, Json, KV, ReasonDialog, Select, Textarea } from "../../features/admin/ui";
@@ -43,6 +44,7 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
   const [visibility, setVisibility] = useState<string>(p?.visibility ?? "public");
   const [fields, setFields] = useState({ title: "", summary: "", reason: "", category: "", tags: "", selected: "", silent: "" });
   const [mergeInto, setMergeInto] = useState("");
+  const [mergeError, setMergeError] = useState("");
   const version = c.override?.version ?? 0;
   const base = `/api/admin/content/${encodeURIComponent(a.id)}`;
   const story = c.membership[0];
@@ -239,7 +241,7 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
               <div className="mt-2 flex flex-wrap gap-2">
                 <Button size="sm" onClick={() => setDialog("group")}>重新归组</Button>
                 {c.membership.length > 0 && <Button size="sm" onClick={() => setDialog("detach")}>移出事件</Button>}
-                {story?.story_id && <Button size="sm" onClick={() => setDialog("merge")}>把这个事件并入…</Button>}
+                {story?.story_id && <Button size="sm" onClick={() => { setMergeInto(""); setMergeError(""); setDialog("merge"); }}>把这个事件并入…</Button>}
               </div>
             </Step>
           </ol>
@@ -411,15 +413,17 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
         danger
         confirmLabel="合并"
         busy={pending === "merge"}
-        onClose={() => setDialog(null)}
+        onClose={() => { setDialog(null); setMergeInto(""); setMergeError(""); }}
         onSubmit={async (reason) => {
-          if (!/^\d+$/.test(mergeInto.trim())) return false;
-          return (await run("POST", "/api/admin/stories/merge", { from: story!.story_id, into: Number(mergeInto), reason }, { label: "merge", success: "事件已合并" })) !== null;
+          const target = mergeTargetValue(mergeInto, story?.story_id ?? null);
+          if (target === null) { setMergeError("请输入与当前事件不同的正整数编号"); return false; }
+          return (await run("POST", "/api/admin/stories/merge", { from: story!.story_id, into: target, reason }, { label: "merge", success: "事件已合并" })) !== null;
         }}
       >
         <Field label="并入的目标事件编号" hint="在目标事件任一内容的诊断页里可以看到 #编号">
-          <Input inputMode="numeric" value={mergeInto} onChange={(e) => setMergeInto(e.target.value)} placeholder="例如 1234" />
+          <Input inputMode="numeric" aria-label="并入的目标事件编号" value={mergeInto} onChange={(e) => { setMergeInto(e.target.value); setMergeError(""); }} placeholder="例如 1234" />
         </Field>
+        {mergeError && <p role="alert" className="text-[12.5px] text-hot">{mergeError}</p>}
       </ReasonDialog>
     </AdminPage>
   );

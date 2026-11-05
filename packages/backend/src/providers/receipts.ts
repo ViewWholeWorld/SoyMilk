@@ -25,6 +25,27 @@ export class BudgetExceededError extends Error {
 
 export class ReceiptBusyError extends Error {}
 
+export interface ProviderErrorDetails {
+  usage?: Record<string, unknown> | null;
+  requestId?: string | null;
+  reportedModel?: string | null;
+  retryAfterSeconds?: number | null;
+  cooldownSeconds?: number | null;
+}
+
+/** A provider call failed before a usable response reached the business layer. */
+export class ProviderRequestError extends Error {
+  readonly usage: Record<string, unknown> | null;
+  readonly requestId: string | null;
+  readonly reportedModel: string | null;
+  constructor(message: string, details: ProviderErrorDetails = {}) {
+    super(message);
+    this.usage = details.usage ?? null;
+    this.requestId = details.requestId ?? null;
+    this.reportedModel = details.reportedModel ?? null;
+  }
+}
+
 /** A request was not sent because its local switch or provider configuration needs attention. */
 export class ProviderUnavailableError extends Error {
   readonly kind: "disabled" | "configuration";
@@ -57,14 +78,34 @@ export class ProviderRejectedError extends Error {
   readonly retryable: boolean;
   readonly contentFiltered: boolean;
   readonly spendingRefused: boolean;
-  constructor(message: string, status: number | null, retryable: boolean, contentFiltered = false, spendingRefused = false) {
+  readonly usage: Record<string, unknown> | null;
+  readonly requestId: string | null;
+  readonly reportedModel: string | null;
+  readonly retryAfterSeconds: number | null;
+  readonly cooldownSeconds: number | null;
+  constructor(message: string, status: number | null, retryable: boolean, contentFiltered = false, spendingRefused = false, details: ProviderErrorDetails = {}) {
     super(message);
     this.status = status;
     this.retryable = retryable;
     this.contentFiltered = contentFiltered && !retryable;
     this.spendingRefused = spendingRefused;
+    this.usage = details.usage ?? null;
+    this.requestId = details.requestId ?? null;
+    this.reportedModel = details.reportedModel ?? null;
+    this.retryAfterSeconds = details.retryAfterSeconds ?? null;
+    this.cooldownSeconds = details.cooldownSeconds ?? null;
   }
 }
+
+const MAX_RETRY_AFTER_SECONDS = 24 * 3600;
+export function parseRetryAfter(value: string | null, now = Date.now()): number | null {
+  if (!value) return null;
+  const seconds = /^\d+$/.test(value.trim()) ? Number(value.trim()) : (Date.parse(value) - now) / 1000;
+  if (!Number.isFinite(seconds)) return null;
+  return Math.min(MAX_RETRY_AFTER_SECONDS, Math.max(1, Math.ceil(seconds)));
+}
+
+export const REQUIRED_BUDGET_SERVICES = ["jina", "socialdata", "dajiala", "zhipu", "deepseek", "mimo", "dashscope", "llm", "embedding"] as const;
 
 export interface CallOutcome {
   response: unknown;
@@ -156,7 +197,7 @@ interface ReceiptRow {
 async function checkBudget(tx: Db, service: string): Promise<void> {
   const [budget] = await tx<{ per_minute: number; per_hour: number; per_day: number; window_started_at: Date | null }[]>`
     SELECT per_minute, per_hour, per_day, window_started_at FROM budgets WHERE service = ${service}`;
-  if (!budget) return; // default rows come with the migrations; a service an operator removed is unlimited
+  if (!budget) throw new ProviderUnavailableError("configuration", `未配置 ${service} 的调用预算`);
   // Every request sent counts, retries of the same logical request included.
   const [counts] = await tx<{ minute: number; hour: number; day: number }[]>`
     SELECT
@@ -227,6 +268,22 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
           WHERE 'article:'||m.article_id||'@'||m.revision=ANY(${subjects}::text[])
             AND m.attempt_tag=${req.attemptTag ?? ''} AND m.state<>'cancelled' AND b.state<>'cancelled' LIMIT 1`;
         if (member.length) throw new ReceiptBusyError("已有冻结预筛批次，请沿原批次恢复");
+      }
+    }
+    // A provider identity change may intentionally move a request to another account. Keep the
+    // unresolved guard only for the same persisted provider scope; report corrections use distinct
+    // editorial revisions and must be allowed to run concurrently.
+    if (req.cooldown && req.subject && !req.purpose.startsWith("report_")) {
+      const [unresolved] = await tx<ReceiptRow[]>`
+        SELECT r.id,r.attempts,r.subject,r.status,r.response,r.created_at,r.updated_at FROM receipts r
+        WHERE r.service=${req.service} AND r.purpose=${req.purpose} AND r.subject=${req.subject}
+          AND r.logical_key<>${logicalKey} AND r.status IN ('pending','unknown')
+          AND r.request->'providerScope' = ${tx.json(req.cooldown as never)}
+        ORDER BY r.id LIMIT 1 FOR UPDATE OF r`;
+      if (unresolved) {
+        if (unresolved.status === "pending" && Date.now() - unresolved.updated_at.getTime() < PENDING_STALE_MS) return { kind: "busy" as const, row: unresolved };
+        if (unresolved.status === "pending") await markUnknown(tx, unresolved.id, "placeholder went stale without a recorded result");
+        return { kind: "unknown" as const, row: unresolved };
       }
     }
     if (req.subject?.startsWith("article:") && req.exclusiveWith?.length) {
@@ -312,14 +369,20 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
   } catch (error) {
     const status = error instanceof ProviderRejectedError ? "failed" : "unknown";
     const spending = error instanceof ProviderRejectedError && (error.status === 402 || error.status === 429 && error.spendingRefused);
+    const details = error instanceof ProviderRejectedError || error instanceof ProviderRequestError ? error : null;
+    const usage = details?.usage ?? null;
+    const normalizedUsage = req.billingContext && usage ? normalizeModelUsage(usage) : null;
     // "unknown": the request may have reached the provider (timeout, reset): do not re-send automatically.
     const message = (error instanceof ProviderRejectedError ? error.message : String(error)).slice(0, 1900) + (spending ? "; providerRejection=spending" : "");
     await sql.begin(async (tx) => {
-      await tx`UPDATE receipts SET status = ${status}, error = ${message},
+      await tx`UPDATE receipts SET status = ${status}, error = ${message}, request_id = ${details?.requestId ?? null},
+        usage = ${usage ? tx.json(usage as never) : null},
         request=coalesce(request, '{}'::jsonb) || ${tx.json({ providerRejection: spending ? "spending" : error instanceof ProviderRejectedError && error.contentFiltered ? "content_filter" : null })},
         updated_at = now() WHERE id = ${receiptId}`;
-      await tx`UPDATE receipt_attempts SET status = ${status}, error = ${message}, latency_ms = ${Date.now() - started}, finished_at = now() WHERE id = ${attemptId}`;
-      await settleProviderCooldown(tx, cooldown, spending ? "spending" : status === "unknown" ? "unknown" : "failure");
+      await tx`UPDATE receipt_attempts SET status = ${status}, error = ${message}, request_id = ${details?.requestId ?? null},
+        reported_model = ${details?.reportedModel ?? null}, usage = ${usage ? tx.json(usage as never) : null},
+        normalized_usage = ${normalizedUsage ? tx.json(normalizedUsage as never) : null}, latency_ms = ${Date.now() - started}, finished_at = now() WHERE id = ${attemptId}`;
+      await settleProviderCooldown(tx, cooldown, spending ? "spending" : status === "unknown" ? "unknown" : "failure", error instanceof ProviderRejectedError ? error.cooldownSeconds : null);
     });
     if (status === "unknown") throw new ReceiptUnknownError(receiptId, error instanceof Error ? error.message : String(error), { cause: error });
     if (spending && cooldown) throw new BudgetExceededError(req.service, "provider", PROVIDER_COOLDOWN_SECONDS);
@@ -425,7 +488,23 @@ export async function releaseUnknownReceipt(db: Db, id: number, error: string): 
 }
 
 export async function completeReceipt(db: Db, receiptId: number): Promise<void> {
-  await db`UPDATE receipts SET status = 'completed', completed_at = coalesce(completed_at, now()), updated_at = now() WHERE id = ${receiptId}`;
+  const result = await db`UPDATE receipts SET status = 'completed', completed_at = coalesce(completed_at, now()), updated_at = now()
+    WHERE id = ${receiptId} AND (
+      status = 'received'
+      OR (
+        status = 'failed'
+        AND error LIKE 'unusable output:%'
+        AND request->'providerRejection' = 'null'::jsonb
+        AND EXISTS (
+          SELECT 1 FROM receipt_attempts a
+          WHERE a.receipt_id = receipts.id AND a.attempt = receipts.attempts AND a.status = 'received'
+        )
+      )
+    ) RETURNING id`;
+  if (result.length) return;
+  const [row] = await db<{ status: string }[]>`SELECT status FROM receipts WHERE id = ${receiptId}`;
+  if (row?.status === "completed") return;
+  throw new ProviderUnavailableError("configuration", `回执 ${receiptId} 当前状态不能标记为 completed`);
 }
 
 /** Marks a received response that could not be used (e.g. unparsable) so a fresh attempt can be made. */

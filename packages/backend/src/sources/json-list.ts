@@ -2,7 +2,9 @@
 import { credential } from "../config.ts";
 import { guardedFetch } from "../lib/http-fetch.ts";
 import { collapseWhitespace, stripTags } from "../lib/text.ts";
-import { FetchError, type Candidate, type SourceRow } from "./types.ts";
+import { isHttpUrl } from "../lib/url.ts";
+import { FetchError, MAX_SOURCE_CANDIDATES, type Candidate, type SourceRow } from "./types.ts";
+import { parseLooseDate } from "./web-list.ts";
 
 export function getPath(obj: unknown, path: string): unknown {
   if (!path) return obj;
@@ -39,7 +41,7 @@ export function renderTemplate(template: string, item: unknown): string | null {
   return missing ? null : out;
 }
 
-function toDate(v: unknown, unit: string | undefined): Date | null {
+function toDate(v: unknown, unit: string | undefined, utcOffset = "+08:00"): Date | null {
   if (v === null || v === undefined || v === "") return null;
   if (unit === "epoch_ms" || unit === "epoch_s") {
     try {
@@ -55,8 +57,7 @@ function toDate(v: unknown, unit: string | undefined): Date | null {
     const d = m ? new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00Z`) : null;
     return d && Number.isFinite(d.getTime()) && d.toISOString().startsWith(`${m![1]}-${m![2]}-${m![3]}`) ? d : null;
   }
-  const t = Date.parse(String(v));
-  return Number.isFinite(t) ? new Date(t) : null;
+  return parseLooseDate(String(v), utcOffset);
 }
 
 function findKey(obj: unknown, key: string, depth = 0): unknown {
@@ -169,7 +170,7 @@ export async function fetchJsonList(source: SourceRow): Promise<Candidate[]> {
     if (c.minNumeric && !(Number(getPath(item, c.minNumeric.path)) >= Number(c.minNumeric.min))) continue;
     const title = firstString(item, c.titlePaths);
     const url = (c.urlTemplate && renderTemplate(c.urlTemplate, item)) || (c.urlTemplateFallback && renderTemplate(c.urlTemplateFallback, item));
-    if (!title || !url) continue;
+    if (!title || !url || !isHttpUrl(url)) continue;
     const externalId = c.externalIdPath ? getPath(item, c.externalIdPath) : null;
     const summary = firstString(item, c.summaryPaths);
     const raw = item && typeof item === "object" ? { ...(item as Record<string, unknown>) } : { value: item };
@@ -179,12 +180,13 @@ export async function fetchJsonList(source: SourceRow): Promise<Candidate[]> {
       url,
       title: collapseWhitespace(stripTags(title)),
       author: firstString(item, c.authorPaths),
-      publishedAt: toDate(getPath(item, c.publishedAtPath), c.publishedAtUnit),
+      publishedAt: toDate(getPath(item, c.publishedAtPath), c.publishedAtUnit, c.publishedAtUtcOffset),
       excerpt: summary ? collapseWhitespace(stripTags(summary)).slice(0, 2000) : null,
       bodyText: summaryIsBody ? stripTags(summary!) : null,
       bodyStatus: summaryIsBody ? "ok" : "pending",
       raw: { externalId: externalId ?? null },
     });
+    if (out.length > MAX_SOURCE_CANDIDATES) throw new FetchError(`candidate limit exceeded (${MAX_SOURCE_CANDIDATES})`);
   }
   if (items.length > 0 && out.length === 0 && !c.requireBoolean && !c.minNumeric) throw new FetchError("no items mapped (check title/url paths)");
   return out;

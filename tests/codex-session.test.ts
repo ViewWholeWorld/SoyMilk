@@ -12,7 +12,7 @@ import { CodexServer, requestCodex } from "@aihot/backend/providers/codex";
 import { CodexWorker, withCodexServer, withCodexSession } from "@aihot/backend/providers/codex-session";
 import { chatJson } from "@aihot/backend/providers/llm";
 import { resetCodexIdentity, saveModelConnection, withCodexAdmin } from "@aihot/backend/providers/model-config";
-import { BudgetExceededError, paidRequest, ReceiptUnknownError } from "@aihot/backend/providers/receipts";
+import { BudgetExceededError, paidRequest } from "@aihot/backend/providers/receipts";
 import { setTimeout as delay } from "node:timers/promises";
 import { gate } from "./setup.ts";
 import { CodexLimitError } from "@aihot/backend/providers/codex";
@@ -25,6 +25,12 @@ let opens = 0, last: CodexServer;
 let settled: { threads: number; turns: number; active: number; peak: number };
 let budget: { per_minute: number; per_hour: number; per_day: number; window_started_at: Date | null };
 let model: string;
+const testBudgetServices = new Set<string>();
+async function ensureTestBudget(service: string): Promise<void> {
+  testBudgetServices.add(service);
+  await sql`INSERT INTO budgets(service,per_minute,per_hour,per_day,note) VALUES(${service},100,100,100,'test')
+    ON CONFLICT(service) DO UPDATE SET per_minute=EXCLUDED.per_minute,per_hour=EXCLUDED.per_hour,per_day=EXCLUDED.per_day`;
+}
 async function open() {
   opens++;
   const server = new CodexServer(spawn(process.execPath, [path.join(import.meta.dirname, "fixtures/codex-session.cjs")], { stdio: "pipe", windowsHide: true }));
@@ -44,6 +50,7 @@ before(async () => {
 after(async () => {
   config.modelCallsEnabled = false; config.dataDir = previous;
   await sql.unsafe("UPDATE budgets SET per_minute=$1,per_hour=$2,per_day=$3,window_started_at=$4 WHERE service='llm'", [budget.per_minute,budget.per_hour,budget.per_day,budget.window_started_at]);
+  if (testBudgetServices.size) await sql`DELETE FROM budgets WHERE service = ANY(${[...testBudgetServices]}::text[])`;
   await closeDb(); await rm(dir, { recursive: true, force: true });
 });
 
@@ -135,6 +142,7 @@ test("the worker reuses its connection across queued requests, rotates bounded l
 test("worker 在付费回执占位前平滑启动请求", async () => {
   const pool = worker({ concurrency: 2, minStartIntervalMs: 100 });
   const starts: number[] = [], first = gate(), release = gate(), service = "session-pacing-"+T;
+  await ensureTestBudget(service);
   const askPaced = (value: string) => pool.call(async (server) => {
     starts.push(Date.now());
     return paidRequest({ service, purpose: "pacing", identity: { T, value } }, async () => {
@@ -185,15 +193,17 @@ test("worker 在建立连接前拒绝非法启动间隔", () => {
 
 test("节流等待中收到上游限流时不占用后续付费回执", async () => {
   const service = "session-paced-limit-"+T;
+  await ensureTestBudget(service);
   const pool = worker({ concurrency: 2, minStartIntervalMs: 10_000 });
   const send = (value: string) => pool.call(server => paidRequest({service, purpose:"paced-limit", identity:{T,value}},
     async () => ({response: await requestCodex(server,"fixture-model","",value,true,2000)})));
   try {
     const [limited, queued] = await Promise.allSettled([send("rate"), send("not-sent")]);
     assert.equal(limited!.status, "rejected");
-    if (limited!.status === "rejected") assert.ok(limited.reason instanceof ReceiptUnknownError);
+    if (limited!.status === "rejected") assert.ok(limited.reason instanceof CodexLimitError);
     assert.equal(queued!.status, "rejected");
     if (queued!.status === "rejected") assert.ok(queued.reason instanceof BudgetExceededError);
+    assert.equal((await sql`SELECT status FROM receipts WHERE service=${service} ORDER BY id DESC LIMIT 1`)[0]!.status, "failed");
     assert.equal((await sql`SELECT count(*)::int AS n FROM receipt_attempts WHERE service=${service}`)[0]!.n, 1);
   } finally { await pool.close(); }
   assert.equal(settled.turns, 1);
@@ -219,6 +229,7 @@ test("management drains active turns, obtains the account lease and lets queued 
 });
 
 test("an exhausted subscription waits until reset without reserving an attempt or sending a turn", async () => {
+  await ensureTestBudget("session-guard-"+T);
   const pool = worker({ open: async () => {
     const server = await open();
     await server.request("fixture/limits", { usedPercent: 100, resetsAt: Math.floor(Date.now()/1000)+600 });
@@ -244,6 +255,7 @@ test("a long device login sends waiting jobs back to retry before their queue le
 });
 
 for (const kind of ["rate","quota"] as const) test("upstream "+kind+" stops new requests while its paid peer settles", async () => {
+  await ensureTestBudget("session-limit-"+T);
   const opened = gate<CodexServer>();
   let server: CodexServer | undefined;
   const pool = worker({ open: async () => {
@@ -263,7 +275,7 @@ for (const kind of ["rate","quota"] as const) test("upstream "+kind+" stops new 
     assert.equal(pool.status.active,2); assert.equal(pool.status.queued,1);
     assert.deepEqual(await control.request("fixture/stats", {}), { threads: 2, turns: 2, active: 2, peak: 2 });
     await control.request("fixture/release", { tag: kind });
-    // The worker observes the limit only after paidRequest records its unknown receipt.
+    // The worker observes the limit only after paidRequest records the deterministic refusal.
     await Promise.allSettled([limited]);
     assert.ok(pool.status.blockedUntil! > Date.now());
     assert.equal(pool.status.concurrency,kind==="rate" ? 1 : 2);
@@ -272,10 +284,9 @@ for (const kind of ["rate","quota"] as const) test("upstream "+kind+" stops new 
     const outcomes = await pending;
     assert.equal(outcomes[0]!.status, "rejected");
     if (outcomes[0]!.status === "rejected") {
-      assert.ok(outcomes[0].reason instanceof ReceiptUnknownError);
-      assert.ok(outcomes[0].reason.cause instanceof CodexLimitError);
-      assert.equal(outcomes[0].reason.cause.kind,kind);
-      assert.equal((await sql`SELECT status FROM receipts WHERE id=${outcomes[0].reason.receiptId}`)[0]!.status,"unknown");
+      assert.ok(outcomes[0].reason instanceof CodexLimitError);
+      assert.equal(outcomes[0].reason.kind,kind);
+      assert.equal((await sql`SELECT status FROM receipts WHERE service=${"session-limit-"+T} ORDER BY id DESC LIMIT 1`)[0]!.status,"failed");
     }
     assert.equal(outcomes[1]!.status, "fulfilled");
     assert.equal(outcomes[2]!.status, "rejected");
@@ -292,6 +303,7 @@ for (const kind of ["rate","quota"] as const) test("upstream "+kind+" stops new 
 test("worker shutdown rejects queued work, drains the sent response and preserves its receipt", async () => {
   const pool = worker({ concurrency: 1 }), asked = gate(), release = gate();
   const service = "session-stop-"+T;
+  await ensureTestBudget(service);
   const running = pool.call((server) => paidRequest({ service, purpose: "stop", identity: { T } }, async () => {
     asked.open(); await release.promise;
     return { response: await requestCodex(server,"fixture-model","","slow",true,2000) };
