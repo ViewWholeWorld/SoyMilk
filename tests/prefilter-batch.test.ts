@@ -138,6 +138,19 @@ test('新文章和重复入队不重置最早时间；不足 5 篇到期仍发�
   assert.equal((await dispatchPrefilter(new Date(Date.now()+61_000))).batches.length,1);
 });
 
+test('放行 failed 批次会清除历史失败次数，再按原批次恢复', async () => {
+  const { id, ids } = await makeBatch();
+  await sql`UPDATE prefilter_batches SET state='failed',failures=2,retry_at=NULL,error='temporary failure' WHERE id=${id}`;
+  await sql`UPDATE articles SET processing_state='new',processing_error=NULL WHERE id=ANY(${ids}::text[])`;
+  await stagePrefilter(ids[0]!);
+  const [batch] = await sql`SELECT state,failures,retry_at,error FROM prefilter_batches WHERE id=${id}`;
+  assert.equal(batch!.state, 'ready');
+  assert.equal(batch!.failures, 0);
+  assert.equal(batch!.retry_at, null);
+  assert.equal(batch!.error, null);
+  await sql`DELETE FROM pgboss.job WHERE name=${QUEUES.prefilter} AND data->>'batchId'=${id}`;
+});
+
 test('跨来源填满，一次真实回执登记五消费者，重启式重复消费不重发，两次评分独立', async () => {
   const ids: string[] = [];
   for (let i=0;i<5;i++) { const id=await article(i===2?other:source); ids.push(id); await queueProcessing(id); }

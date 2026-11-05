@@ -9,7 +9,8 @@ import { config } from "@aihot/backend/config";
 import { closeDb, sql } from "@aihot/backend/db";
 import { chatJson, ModelOutputError } from "@aihot/backend/providers/llm";
 import { embeddingsAvailable } from "@aihot/backend/providers/embeddings";
-import { BudgetExceededError, paidRequest, ReceiptUnknownError } from "@aihot/backend/providers/receipts";
+import { BudgetExceededError, paidRequest, ProviderRequestError, ReceiptUnknownError, ProviderUnavailableError, completeReceipt, rejectReceivedResponse } from "@aihot/backend/providers/receipts";
+import { CodexLimitError } from "@aihot/backend/providers/codex";
 import { autoReleaseUnknownReceipts, releaseReceipt } from "@aihot/backend/operations/recover";
 import { upsertMaterial } from "@aihot/backend/content/materials";
 import { stopBoss } from "@aihot/backend/jobs/queue";
@@ -25,9 +26,11 @@ const ask = (subject: string) =>
 let savedBudget: { per_minute: number; per_hour: number; per_day: number } | undefined;
 before(async () => {
   [savedBudget] = await sql<{ per_minute: number; per_hour: number; per_day: number }[]>`SELECT per_minute, per_hour, per_day FROM budgets WHERE service = 'deepseek'`;
+  await sql`INSERT INTO budgets(service,per_minute,per_hour,per_day,note) VALUES('invariant-unbudgeted',100,100,100,'test') ON CONFLICT(service) DO UPDATE SET per_minute=EXCLUDED.per_minute,per_hour=EXCLUDED.per_hour,per_day=EXCLUDED.per_day`;
 });
 after(async () => {
   if (savedBudget) await sql`UPDATE budgets SET per_minute = ${savedBudget.per_minute}, per_hour = ${savedBudget.per_hour}, per_day = ${savedBudget.per_day} WHERE service = 'deepseek'`;
+  await sql`DELETE FROM budgets WHERE service = 'invariant-unbudgeted'`;
   await provider.close();
   await stopBoss();
   await closeDb();
@@ -100,6 +103,56 @@ test("with the valve off nothing is sent", async () => {
   } finally {
     config.modelCallsEnabled = true;
     delete process.env.DASHSCOPE_API_KEY;
+  }
+});
+
+test("缺少预算行时在付费请求边界 fail-closed", async () => {
+  const service = `missing-budget-${tag()}`;
+  const req = { service, purpose: "invariant_test", subject: `missing-${tag()}`, identity: { service } };
+  await assert.rejects(paidRequest(req, async () => ({ response: {} })), ProviderUnavailableError);
+  assert.equal((await sql`SELECT count(*)::int AS n FROM receipt_attempts WHERE service=${service}`)[0]!.n, 0);
+});
+
+test("Codex 明确限额拒绝写入 failed 与共享冷却，不进入 unknown", async () => {
+  const service = `codex-limit-${tag()}`;
+  await sql`INSERT INTO budgets(service,per_minute,per_hour,per_day,note) VALUES(${service},10,10,10,'test')`;
+  const scope = { service, model: "codex-test", providerKey: "codex:test", supplierId: null, accountFingerprint: "account", configurationFingerprint: "config" };
+  const req = { service, model: scope.model, purpose: "invariant_test", subject: `codex-${tag()}`, identity: { request: tag() }, cooldown: scope };
+  await assert.rejects(paidRequest(req, async () => { throw new CodexLimitError("quota", { prompt_tokens: 4, completion_tokens: 2 }); }), CodexLimitError);
+  const [attempt] = await sql<{ status: string; usage: Record<string, unknown> }[]>`SELECT status,usage FROM receipt_attempts WHERE service=${service}`;
+  assert.equal(attempt!.status, "failed");
+  assert.deepEqual(attempt!.usage, { prompt_tokens: 4, completion_tokens: 2 });
+  await assert.rejects(paidRequest(req, async () => ({ response: {} })), BudgetExceededError);
+  await sql`DELETE FROM budgets WHERE service=${service}`;
+});
+
+test("非法回执状态不能被 completeReceipt 覆盖", async () => {
+  const service = `complete-failed-${tag()}`;
+  await sql`INSERT INTO budgets(service,per_minute,per_hour,per_day,note) VALUES(${service},100,100,100,'test')`;
+  try {
+    const failed = { service, purpose: "invariant_test", subject: `failed-${tag()}`, identity: { id: tag() } };
+    await assert.rejects(paidRequest(failed, async () => { throw new Error("unknown"); }), ReceiptUnknownError);
+    const [failedRow] = await sql<{ id: number }[]>`SELECT id FROM receipts WHERE subject=${failed.subject}`;
+    await assert.rejects(completeReceipt(sql, failedRow!.id), ProviderUnavailableError);
+    const received = await paidRequest({ ...failed, subject: `received-${tag()}`, identity: { id: tag() } }, async () => ({ response: { ok: true } }));
+    await completeReceipt(sql, received.receiptId);
+    await completeReceipt(sql, received.receiptId);
+  } finally {
+    await sql`DELETE FROM budgets WHERE service=${service}`;
+  }
+});
+
+test("completeReceipt 只恢复解析拒绝但仍保留最新 received attempt 的回执", async () => {
+  const service = `complete-recovery-${tag()}`;
+  await sql`INSERT INTO budgets(service,per_minute,per_hour,per_day,note) VALUES(${service},100,100,100,'test')`;
+  try {
+    const request = { service, purpose: "invariant_test", subject: `recovery-${tag()}`, identity: { id: tag() } };
+    const received = await paidRequest(request, async () => ({ response: { ok: true } }));
+    await rejectReceivedResponse(received.receiptId, "unusable output: missing top-level structure");
+    await completeReceipt(sql, received.receiptId);
+    assert.equal((await sql<{ status: string }[]>`SELECT status FROM receipts WHERE id=${received.receiptId}`)[0]!.status, "completed");
+  } finally {
+    await sql`DELETE FROM budgets WHERE service=${service}`;
   }
 });
 

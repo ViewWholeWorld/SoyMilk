@@ -13,6 +13,7 @@ import { upsertMaterial } from "@aihot/backend/content/materials";
 import { consolidate, linkRelatedStories } from "@aihot/backend/events/consolidate";
 import { groupArticle } from "@aihot/backend/events/group";
 import { mergeStoryInto } from "@aihot/backend/events/merge";
+import { sweepStoryDigests } from "@aihot/backend/events/digest";
 import { candidateViews, recallFacts } from "@aihot/backend/events/recall";
 import { deferJob, enqueue, getBoss, QUEUES, stopBoss } from "@aihot/backend/jobs/queue";
 import { processGroupingJob } from "@aihot/backend/jobs/events";
@@ -287,14 +288,115 @@ for (const relationToRoot of ["SAME_OCCURRENCE", "SAME_STORY"] as const) {
   });
 }
 
+test("a committed merge can rerun projection and digest after the first projection fails", async () => {
+  const from = await storyWithRoot(randomText(), "projection-retry-from");
+  const into = await storyWithRoot(randomText(), "projection-retry-into");
+  const fn = `merge_projection_fault_${T.replace(/-/g, "_")}`;
+  await sql.unsafe(`CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+    IF NEW.article_id='${from.articleId}' THEN RAISE EXCEPTION 'projection interrupted'; END IF; RETURN NEW; END $$`);
+  await sql.unsafe(`CREATE TRIGGER ${fn} BEFORE UPDATE ON publications FOR EACH ROW EXECUTE FUNCTION ${fn}()`);
+  try { await assert.rejects(mergeStoryInto(from.storyId, into.storyId, "projection retry", "test"), /projection interrupted/); }
+  finally { await sql.unsafe(`DROP TRIGGER ${fn} ON publications`); await sql.unsafe(`DROP FUNCTION ${fn}()`); }
+  assert.equal((await sql`SELECT 1 FROM facts WHERE story_id=${from.storyId}`).length, 0);
+  const retried = await mergeStoryInto(from.storyId, into.storyId, "projection retry", "test");
+  assert.ok(retried);
+  assert.equal((await sql`SELECT story_id FROM publications WHERE article_id=${from.articleId}`)[0]!.story_id, into.storyId);
+  const digestJobs = await sql`SELECT id FROM pgboss.job WHERE name=${QUEUES.digest} AND data->>'storyId'=${String(into.storyId)} AND state<'completed'`;
+  assert.ok(digestJobs.length <= 1);
+  await sql`DELETE FROM pgboss.job WHERE id=ANY(${digestJobs.map((row) => row.id)}::uuid[])`;
+});
+
+test("a revised hot signal removes its old story evidence before attaching to the new story", async () => {
+  const first = await storyWithRoot(randomText(), "signal-revision-a");
+  const second = await storyWithRoot(randomText(), "signal-revision-b");
+  const firstTweet = `111111111${T}`, secondTweet = `222222222${T}`;
+  await sql`UPDATE articles SET identity_key=${`x:${firstTweet}`} WHERE id=${first.articleId}`;
+  await sql`UPDATE articles SET identity_key=${`x:${secondTweet}`} WHERE id=${second.articleId}`;
+  const source = `${SOURCE}-signal-revision`;
+  await sql`INSERT INTO sources(id,name,kind,tier,participation_mode,next_fetch_at) VALUES(${source},'Signal revision','x_search','T2','hot_signal','2100-01-01')`;
+  const url = `https://x.com/example/status/333333333`;
+  const created = await upsertMaterial({ sourceId: source, url, title: 'Signal one', bodyText: 'Signal one', bodyStatus: 'ok', via: 'fetch', xPost: { tweetId: `333333333${T}`, handle: 'example', authorName: 'Example', text: 'Signal one', replyTo: firstTweet } });
+  assert.equal((await groupArticle(created.articleId, { signalOnly: true })).storyId, first.storyId);
+  await upsertMaterial({ sourceId: source, url, title: 'Signal two', bodyText: 'Signal two changed', bodyStatus: 'ok', via: 'fetch', xPost: { tweetId: `333333333${T}`, handle: 'example', authorName: 'Example', text: 'Signal two', replyTo: secondTweet } });
+  assert.equal((await groupArticle(created.articleId, { signalOnly: true })).storyId, second.storyId);
+  assert.equal((await sql`SELECT 1 FROM story_signals WHERE article_id=${created.articleId} AND story_id=${first.storyId}`).length, 0);
+  assert.equal((await sql`SELECT 1 FROM story_signals WHERE article_id=${created.articleId} AND story_id=${second.storyId}`).length, 1);
+});
+
+test("a failed hot signal write keeps the old story evidence and retries into the new story", async () => {
+  const first = await storyWithRoot(randomText(), "signal-rollback-a");
+  const second = await storyWithRoot(randomText(), "signal-rollback-b");
+  const firstTweet = `444444444${T}`, secondTweet = `555555555${T}`;
+  await sql`UPDATE articles SET identity_key=${`x:${firstTweet}`} WHERE id=${first.articleId}`;
+  await sql`UPDATE articles SET identity_key=${`x:${secondTweet}`} WHERE id=${second.articleId}`;
+  const source = `${SOURCE}-signal-rollback`;
+  await sql`INSERT INTO sources(id,name,kind,tier,participation_mode,next_fetch_at) VALUES(${source},'Signal rollback','x_search','T2','hot_signal','2100-01-01')`;
+  const url = `https://x.com/example/status/666666666`;
+  const created = await upsertMaterial({ sourceId: source, url, title: "Signal rollback", bodyText: "Signal rollback", bodyStatus: "ok", via: "fetch",
+    xPost: { tweetId: `666666666${T}`, handle: "example", authorName: "Example", text: "Signal rollback", replyTo: firstTweet } });
+  assert.equal((await groupArticle(created.articleId, { signalOnly: true })).storyId, first.storyId);
+  await upsertMaterial({ sourceId: source, url, title: "Signal rollback moved", bodyText: "Signal rollback moved", bodyStatus: "ok", via: "fetch",
+    xPost: { tweetId: `666666666${T}`, handle: "example", authorName: "Example", text: "Signal rollback moved", replyTo: secondTweet } });
+  const [decisionsBefore] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM grouping_decisions WHERE article_id=${created.articleId}`;
+  const fn = `fail_decision_${T}`, trigger = `fail_decision_${T}`;
+  await sql.unsafe(`CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture decision failure'; END $$`);
+  await sql.unsafe(`CREATE TRIGGER ${trigger} BEFORE INSERT ON grouping_decisions FOR EACH ROW WHEN (NEW.article_id = '${created.articleId}') EXECUTE FUNCTION ${fn}()`);
+  try {
+    await assert.rejects(groupArticle(created.articleId, { signalOnly: true }), /fixture decision failure/);
+  } finally {
+    await sql.unsafe(`DROP TRIGGER ${trigger} ON grouping_decisions`);
+    await sql.unsafe(`DROP FUNCTION ${fn}()`);
+  }
+  const [kept] = await sql<{ story_id: number }[]>`SELECT story_id FROM story_signals WHERE article_id=${created.articleId}`;
+  assert.equal(Number(kept!.story_id), first.storyId, "回滚保留旧证据");
+  assert.equal((await sql`SELECT count(*)::int AS n FROM grouping_decisions WHERE article_id=${created.articleId}`)[0]!.n, decisionsBefore!.n, "失败不写决定");
+  assert.equal((await groupArticle(created.articleId, { signalOnly: true })).storyId, second.storyId);
+  assert.equal((await sql`SELECT 1 FROM story_signals WHERE article_id=${created.articleId} AND story_id=${first.storyId}`).length, 0);
+  assert.equal((await sql`SELECT 1 FROM story_signals WHERE article_id=${created.articleId} AND story_id=${second.storyId}`).length, 1);
+});
+
+test("without embeddings a hot signal keeps its existing story evidence", async () => {
+  const root = await storyWithRoot(randomText(), "signal-no-embedding");
+  const rootTweet = `777000111${T}`;
+  await sql`UPDATE articles SET identity_key=${`x:${rootTweet}`} WHERE id=${root.articleId}`;
+  const source = `${SOURCE}-signal-no-embedding`;
+  await sql`INSERT INTO sources(id,name,kind,tier,participation_mode) VALUES(${source},'Signal no embedding','x_search','T2','hot_signal')`;
+  const { articleId } = await upsertMaterial({ sourceId: source, url: `https://x.com/example/status/777000112${T}`, title: "Reaction",
+    publishedAt: new Date(), bodyText: "Reaction", bodyStatus: "ok", via: "fetch",
+    xPost: { tweetId: `777000112${T}`, handle: "example", authorName: "Example", text: "Reaction", replyTo: rootTweet } });
+  assert.equal((await groupArticle(articleId, { signalOnly: true })).storyId, root.storyId);
+  await sql`UPDATE articles SET x_post = x_post - 'replyTo' WHERE id=${articleId}`;
+  const saved = process.env.EMBEDDINGS_ENABLED;
+  process.env.EMBEDDINGS_ENABLED = "false";
+  try { assert.equal((await groupArticle(articleId, { signalOnly: true })).verdict, "signal-unmatched"); }
+  finally {
+    if (saved === undefined) delete process.env.EMBEDDINGS_ENABLED; else process.env.EMBEDDINGS_ENABLED = saved;
+  }
+  assert.equal((await sql`SELECT 1 FROM story_signals WHERE article_id=${articleId} AND story_id=${root.storyId}`).length, 1, "直接返回不先删除旧证据");
+});
+
+test("digest compensation finds an unfinished story once and stops after its version is written", async () => {
+  const story = await storyWithRoot(randomText(), "digest-compensation");
+  const first = await sweepStoryDigests();
+  assert.ok(first.enqueued >= 1);
+  const second = await sweepStoryDigests();
+  assert.equal(second.enqueued, 0);
+  await sql`DELETE FROM pgboss.job WHERE name=${QUEUES.digest} AND data->>'storyId'=${String(story.storyId)}`;
+  const [current] = await sql<{ version: number }[]>`SELECT version FROM stories WHERE id=${story.storyId}`;
+  await sql`INSERT INTO story_digests(story_id,version,digest,latest,article_ids,inputs_hash,context_article_ids)
+    VALUES(${story.storyId},${current!.version},'fixture digest','fixture latest',ARRAY[${story.articleId}], 'fixture-inputs', ARRAY[${story.articleId}])`;
+  assert.equal((await sweepStoryDigests()).enqueued, 0);
+});
+
 test("detaching a discussion post removes its signal even though it has no fact membership", async () => {
   const root = await storyWithRoot(randomText(), "signal-detach-root");
-  await sql`UPDATE articles SET identity_key = 'x:999000111' WHERE id = ${root.articleId}`;
+  const rootTweet = `999000111${T}`;
+  await sql`UPDATE articles SET identity_key = ${`x:${rootTweet}`} WHERE id = ${root.articleId}`;
   const source = `${SOURCE}-discussion`;
   await sql`INSERT INTO sources (id,name,kind,tier,participation_mode) VALUES (${source},'Discussion','x_search','T2','hot_signal')`;
-  const { articleId } = await upsertMaterial({ sourceId: source, url: "https://x.com/example/status/999000112", title: "Reaction",
+  const { articleId } = await upsertMaterial({ sourceId: source, url: `https://x.com/example/status/999000112${T}`, title: "Reaction",
     publishedAt: new Date(), bodyText: "Reaction", bodyStatus: "ok", via: "fetch",
-    xPost: { tweetId: "999000112", handle: "example", authorName: "Example", text: "Reaction", replyTo: "999000111" } });
+    xPost: { tweetId: `999000112${T}`, handle: "example", authorName: "Example", text: "Reaction", replyTo: rootTweet } });
   assert.equal((await groupArticle(articleId, { signalOnly: true })).storyId, root.storyId);
   await detachFromFact(articleId, "unrelated reaction", "test-editor");
   assert.equal((await sql`SELECT 1 FROM story_signals WHERE article_id = ${articleId}`).length, 0);

@@ -35,6 +35,12 @@ for (const name of ["PREFILTER_MODEL", "SCORE_MODEL", "STRUCTURE_MODEL", "UNDERS
 // 本文件验证评分与结构并行时的共享回执竞态；用真实不兼容配置选择分步路径。
 process.env.STRUCTURE_MODEL = "deepseek-flash-think";
 let budget: { per_minute: number; per_hour: number; per_day: number };
+const testBudgetServices = new Set<string>();
+async function ensureTestBudget(service: string): Promise<void> {
+  testBudgetServices.add(service);
+  await sql`INSERT INTO budgets(service,per_minute,per_hour,per_day,note) VALUES(${service},100,100,100,'test')
+    ON CONFLICT(service) DO UPDATE SET per_minute=EXCLUDED.per_minute,per_hour=EXCLUDED.per_hour,per_day=EXCLUDED.per_day`;
+}
 let parkedJobs: Array<{ id: string; start_after: Date }> = [];
 before(async () => {
   await getBoss();
@@ -53,6 +59,7 @@ after(async () => {
   if (parkedJobs.length) await sql`UPDATE pgboss.job j SET start_after=old.start_after
     FROM jsonb_to_recordset(${sql.json(parkedJobs as never)}) AS old(id uuid,start_after timestamptz) WHERE j.id=old.id`;
   await sql`UPDATE budgets SET per_minute=${budget.per_minute},per_hour=${budget.per_hour},per_day=${budget.per_day} WHERE service='deepseek'`;
+  if (testBudgetServices.size) await sql`DELETE FROM budgets WHERE service = ANY(${[...testBudgetServices]}::text[])`;
   await closeDb();
 });
 
@@ -99,6 +106,7 @@ async function jobsFor(ids: string[]) {
 
 test("every pending, received, completed and unknown caller is registered before returning", async () => {
   const req = { service: `consumer-${T}`, purpose: "fixture", identity: { input: T } };
+  await ensureTestBudget(req.service);
   const entered = gate(), release = gate();
   let calls = 0;
   const first = paidRequest({ ...req, subject: "first" }, async () => { calls++; entered.open(); await release.promise; return { response: { ok: true } }; });
@@ -192,6 +200,7 @@ test("release preceding a delayed unknown catch does not leave the second consum
 test("release locks articles before receipts, and leaves stale revisions or unrelated failures alone", async () => {
   const ids = await pair("locks");
   const req = { service: `locks-${T}`, purpose: "score_article", identity: { locks: T }, subject: `article:${ids[0]}@1` };
+  await ensureTestBudget(req.service);
   await assert.rejects(paidRequest(req, async () => { throw new Error("lost"); }), ReceiptUnknownError);
   const [receipt] = await sql<{ id: number }[]>`SELECT id FROM receipts WHERE logical_key=${logicalKeyFor(req)}`;
   await assert.rejects(paidRequest({ ...req, subject: `article:${ids[1]}@1` }, async () => { throw new Error("must not call"); }), ReceiptUnknownError);

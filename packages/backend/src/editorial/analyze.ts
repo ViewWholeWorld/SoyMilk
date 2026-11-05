@@ -25,7 +25,7 @@ import {
   needsShortTweetTranslation, parseTranslateOutput, PREFILTER_SYSTEM, prefilterUser, TAG_PROMPT_VALUES, translateInputOf, UNDERSTAND_SYSTEM, UNDERSTAND_RULES, understandUser,
   type IdentityGuard, type PriceEvidenceGuard,
 } from "./writing.ts";
-import { CATEGORY_BY_ITEM_TYPE, CATEGORY_GUIDE, CATEGORY_TAGS, ENTITIES, ENTITY_TAGS, ITEM_TYPES, normalizeTags, TOPIC_TAGS } from "./vocabulary.ts";
+import { CATEGORY_BY_ITEM_TYPE, CATEGORY_GUIDE, CATEGORY_TAGS, ENTITIES, ENTITY_TAGS, ITEM_TYPES, normalizePromptEnums, normalizeTags, TOPIC_TAGS } from "./vocabulary.ts";
 import { promptText, promptVersion } from "./prompts.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
 import { ANALYSIS_PURPOSES, analysisHistory, analysisTag, compatibleAnalysisModels, exclusiveAnalysisSteps, type AnalysisStep } from "./analysis-route.ts";
@@ -158,15 +158,15 @@ const FactSchema = z
   .nullable()
   .catch(null);
 
-export const StructureSchema = z.object({
+export const StructureSchema = z.preprocess(normalizePromptEnums, z.object({
   category: z.enum(CATEGORY_KEYS).nullable().catch(null),
   tags: z.array(z.string()).max(12).catch([]),
   subjects: z.array(z.string()).max(6).catch([]),
   scope: ScopeSchema,
   fact: FactSchema,
-});
+}));
 
-const UnderstandSchema = z.object({
+const UnderstandBase = z.object({
   itemType: z.enum(ITEM_TYPES),
   authorRole: z.enum(["principal", "observer", "relayer"]).catch("relayer"),
   tags: z.array(z.string()).max(12).catch([]),
@@ -174,20 +174,22 @@ const UnderstandSchema = z.object({
   titleZh: z.string().trim().min(1).max(200),
   summaryZh: z.string().trim().min(1).max(4000),
 });
+export const UnderstandSchema = z.preprocess(normalizePromptEnums, UnderstandBase);
 
 const SummarizeSchema = z.object({ titleZh: z.string(), summaryZh: z.string(), bodyZh: z.string() });
 // 合并输出不能沿用旧结构的静默缺省，否则正常文案会掩盖事实和分类缺失。
-export const CombinedStructureSchema = z.object({
+export const CombinedStructureSchema = z.preprocess(normalizePromptEnums, z.object({
   category: z.enum(CATEGORY_KEYS).nullable(), tags: z.array(z.string()).max(12),
   subjects: z.array(z.string()).max(6),
   scope: ScopeSchema,
   fact: z.object({ title: z.string().min(1).max(80), subject: z.string().max(80).nullable().optional(),
     action: z.string().max(80).nullable().optional(), object: z.string().max(160).nullable().optional(), occurredAt: z.string().nullable().optional(), ...QuoteFields }).nullable(),
-});
-const CombinedUnderstandSchema = z.object({ writing: UnderstandSchema, structure: CombinedStructureSchema });
-const RecoverableUnderstandSchema = CombinedUnderstandSchema.extend({ writing: UnderstandSchema.extend({
+}));
+const CombinedUnderstandBase = z.object({ writing: UnderstandSchema, structure: CombinedStructureSchema });
+export const CombinedUnderstandSchema = z.preprocess(normalizePromptEnums, CombinedUnderstandBase);
+const RecoverableUnderstandSchema = z.preprocess(normalizePromptEnums, CombinedUnderstandBase.extend({ writing: z.preprocess(normalizePromptEnums, UnderstandBase.extend({
   authorRole: z.enum(["principal", "observer", "relayer"]), tags: z.array(z.string()).max(12), editorialJudgment: z.string().max(400),
-}).strict() });
+}).strict()) }));
 const WRITING_FIELDS = ["itemType", "authorRole", "tags", "editorialJudgment", "titleZh", "summaryZh"];
 const STRUCTURE_FIELDS = ["category", "tags", "subjects", "fact"];
 const structureFields = (value: Record<string, unknown>) => [...STRUCTURE_FIELDS, ...(Object.hasOwn(value, "scope") ? ["scope"] : [])];

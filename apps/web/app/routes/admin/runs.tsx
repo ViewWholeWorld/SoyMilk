@@ -6,6 +6,7 @@ import type { Route } from "./+types/runs";
 import type { AdminReceiptIssue, AdminRuns } from "@aihot/contracts/admin";
 import { adminGet } from "../../lib/admin.server";
 import { useAdminAction } from "../../features/admin/action";
+import { billedValue } from "../../features/admin/boundaries";
 import { ago, bj, duration, num } from "../../features/admin/format";
 import { AdminPage, Badge, Button, Card, DataTable, Dot, Empty, Field, Json, ReasonDialog, Select, Stat, Time } from "../../features/admin/ui";
 
@@ -22,7 +23,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
   const r = refresh.data ?? loaderData;
   const { run, pending } = useAdminAction();
   const [receipt, setReceipt] = useState<AdminReceiptIssue | null>(null);
-  const [billed, setBilled] = useState("false");
+  const [billed, setBilled] = useState<string | null>(null);
   // Failure group to put back into processing ("" = every failure of the last 30 days).
   const [requeue, setRequeue] = useState<string | null>(null);
   const [followUp,setFollowUp] = useState<AdminRuns['followUps'][number] | null>(null);
@@ -142,7 +143,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
               { key: "w", label: "服务", render: (x) => <span className="whitespace-nowrap">{x.service}{x.model ? ` · ${x.model}` : ""}</span> },
               { key: "p", label: "用途", render: (x) => (x.subject && /^[\w-]{10,}$/.test(x.subject) && x.purpose.includes("analy") ? <Link className="text-accent" to={`/admin/content/${x.subject}`}>{x.purpose}</Link> : x.purpose) },
               { key: "e", label: "错误", render: (x) => <span className="line-clamp-2 text-[12px] text-ink-3" title={x.error ?? ""}>{x.error}</span> },
-              { key: "a", label: "", render: (x) => (x.status === "unknown" ? <Button size="sm" onClick={() => setReceipt(x)}>核对</Button> : null) },
+              { key: "a", label: "", render: (x) => (x.status === "unknown" ? <Button size="sm" onClick={() => { setBilled(null); setReceipt(x); }}>核对</Button> : null) },
             ]}
           />
         </Card>
@@ -250,11 +251,16 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
         description="结果未知的请求不会自动重发。先到供应商控制台确认这次请求有没有计费，再放行：放行后下一次处理会重新发起调用。"
         confirmLabel="记录并放行"
         busy={pending === "release"}
-        onClose={() => setReceipt(null)}
-        onSubmit={async (note) => (await run("POST", `/api/admin/receipts/${receipt!.id}/release`, { billed: billed === "true", note }, { label: "release", success: "已放行" })) !== null}
+        onClose={() => { setReceipt(null); setBilled(null); }}
+        onSubmit={async (note) => {
+          const selected = billedValue(billed);
+          if (selected === null) return false;
+          return (await run("POST", `/api/admin/receipts/${receipt!.id}/release`, { billed: selected, note }, { label: "release", success: "已放行" })) !== null;
+        }}
       >
         <Field label="供应商是否计费">
-          <Select value={billed} onChange={(e) => setBilled(e.target.value)}>
+          <Select aria-label="供应商是否计费" value={billed ?? ""} onChange={(e) => setBilled(e.target.value || null)}>
+            <option value="" disabled>请选择后才能放行</option>
             <option value="false">未计费（请求没有被接受）</option>
             <option value="true">已计费（结果没有取回）</option>
           </Select>

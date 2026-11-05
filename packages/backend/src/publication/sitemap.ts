@@ -30,7 +30,7 @@ interface Entry {
 async function build(): Promise<SitemapSnapshot> {
   const now = new Date();
   const entries: Entry[] = [];
-  const [latestItem] = await sql<{ t: Date | null }[]>`SELECT max(p.timeline_at) AS t FROM publications p WHERE ${selectedCondition(now)}`;
+  const [latestItem] = await sql<{ t: Date | null }[]>`SELECT max(p.timeline_at) AS t FROM publications p JOIN sources s ON s.id = p.source_id WHERE ${selectedCondition(now)} AND s.participation_mode <> 'isolated'`;
   const [latestDaily] = await sql<{ key: string | null; t: Date | null }[]>`SELECT max(key) AS key, max(generated_at) AS t FROM reports WHERE kind = 'daily'`;
   const latest = latestItem?.t ?? now;
   entries.push(
@@ -60,12 +60,14 @@ async function build(): Promise<SitemapSnapshot> {
   // levels, regrouped history) are reachable but not listed.
   const stories = await sql<{ public_id: string; latest_at: Date | null }[]>`
     SELECT public_id::text, latest_at FROM stories WHERE merged_into IS NULL AND EXISTS (
-      SELECT 1 FROM facts f JOIN fact_articles fa ON fa.fact_id = f.id JOIN publications p ON p.article_id = fa.article_id
-      WHERE f.story_id = stories.id AND ${evidenceCondition()} AND ${listedCondition(now)})
+      SELECT 1 FROM facts f JOIN fact_articles fa ON fa.fact_id = f.id JOIN publications p ON p.article_id = fa.article_id JOIN sources s ON s.id = p.source_id
+      WHERE f.story_id = stories.id AND ${evidenceCondition()} AND ${listedCondition(now)} AND s.participation_mode <> 'isolated')
     ORDER BY latest_at DESC NULLS LAST LIMIT 500`;
   for (const s of stories) entries.push({ loc: `/story/${s.public_id}`, lastmod: s.latest_at, changefreq: "daily", priority: 0.5 });
   const items = await sql<{ id: string; t: Date }[]>`
-    SELECT article_id AS id, updated_at AS t FROM publications p WHERE p.visibility = 'public' AND p.indexable AND ${releasedCondition(now)} ORDER BY timeline_at DESC LIMIT ${MAX_URLS - entries.length}`;
+    SELECT p.article_id AS id, p.updated_at AS t FROM publications p JOIN sources s ON s.id = p.source_id
+      WHERE p.visibility = 'public' AND p.indexable AND ${releasedCondition(now)} AND s.participation_mode <> 'isolated'
+      ORDER BY p.timeline_at DESC LIMIT ${MAX_URLS - entries.length}`;
   for (const it of items) entries.push({ loc: `/items/${it.id}`, lastmod: it.t, changefreq: "monthly", priority: 0.5 });
 
   const body = entries

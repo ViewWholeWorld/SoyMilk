@@ -41,7 +41,7 @@ export async function stagePrefilter(articleId: string, db: Db = sql): Promise<s
   if (m) {
     if (m.result) return null;
     // 人工重排或回执放行都恢复同一批次；unknown 未放行时仍由 storedReceipt 拦截。
-    await db`UPDATE prefilter_batches SET state='ready',retry_at=NULL WHERE id=${m.batch_id} AND state IN ('unknown','failed')`;
+    await db`UPDATE prefilter_batches SET state='ready',failures=0,retry_at=NULL,error=NULL WHERE id=${m.batch_id} AND state IN ('unknown','failed')`;
     return await batchJob(m.batch_id, db) ?? m.batch_id;
   }
   if (prefilterBatchPolicy().size === 1 || await hasSingleReceipt(db, articleId, a.revision, tag)) return null;
@@ -203,7 +203,9 @@ export async function processPrefilterBatch(id: string): Promise<{ state: string
       });
     }
     await sql.begin(async tx => {
-      await completeReceipt(tx, result.receiptId);
+      // A released receipt may be failed while its batch is being consumed after a stale revision;
+      // that audit state must stay failed rather than being promoted to completed.
+      if (!(obsolete && batch.receipt_id)) await completeReceipt(tx, result.receiptId);
       await tx`UPDATE prefilter_batches SET state='completed',retry_at=NULL,error=NULL,completed_at=now() WHERE id=${id}`;
     });
     const unknown = members.filter(m => batchMemberResult(result.data,m.article_id,m.revision,m.missing_evidence).label === 'UNKNOWN').length;

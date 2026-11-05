@@ -18,6 +18,8 @@ import { registerMcp } from "./routes/mcp.ts";
 import { sendProblem } from "./http/respond.ts";
 
 export async function buildApp(options: { onRoute?: (route: RouteOptions) => void } = {}): Promise<FastifyInstance> {
+  const privateBodyLimit = 1 * 1024 * 1024;
+  const ingestBodyLimit = 256 * 1024;
   const app = Fastify({
     logger: { level: process.env.LOG_LEVEL || "info", redact: ["req.headers.authorization", "req.headers.cookie"] },
     // Access logs never record query strings (tokens, actors).
@@ -28,7 +30,12 @@ export async function buildApp(options: { onRoute?: (route: RouteOptions) => voi
     routerOptions: { ignoreTrailingSlash: false, maxParamLength: 300 },
   });
   // 验收脚本在注册时核对路由清单，避免新增接口漏掉 HTTP 用例。
-  if (options.onRoute) app.addHook("onRoute", options.onRoute);
+  app.addHook("onRoute", (route) => {
+    if (route.url.startsWith("/api/ingest/")) route.bodyLimit = ingestBodyLimit;
+    else if (route.url.startsWith("/api/admin/") || route.url === "/api/auth/password") route.bodyLimit = privateBodyLimit;
+    else if (route.url === "/api/mcp") route.bodyLimit = 256 * 1024;
+    options.onRoute?.(route);
+  });
 
   app.addHook("onRequest", async (req) => {
     req.requestId = req.id;

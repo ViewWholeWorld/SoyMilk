@@ -78,7 +78,7 @@ export async function stub(answer: (hit: number, req: { url: string; body: strin
       hits += 1;
       const out = await answer(hits, { url: req.url ?? "/", body: Buffer.concat(chunks).toString("utf8") });
       const reply = out instanceof Reply ? out : { status: 200, json: out };
-      res.writeHead(reply.status, { "content-type": "application/json" });
+      res.writeHead(reply.status, { "content-type": "application/json", ...(reply.headers ?? {}) });
       res.end(JSON.stringify(reply.json));
     });
   });
@@ -93,9 +93,11 @@ export async function stub(answer: (hit: number, req: { url: string; body: strin
 export class Reply {
   readonly status: number;
   readonly json: unknown;
-  constructor(status: number, json: unknown) {
+  readonly headers?: Record<string, string>;
+  constructor(status: number, json: unknown, headers?: Record<string, string>) {
     this.status = status;
     this.json = json;
+    this.headers = headers;
   }
 }
 

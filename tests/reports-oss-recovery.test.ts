@@ -1,7 +1,7 @@
 // Failure cases: automatic retries rewrite published issues; two writers race on a missing issue;
 // a slow correction overwrites a newer one; report/receipt commits split; empty gaps starve later
 // daily/weekly/monthly issues or make a failed catch-up look successful. All use a local model stub.
-import { gate, stub, tag, useModelStubs } from "./setup.ts";
+import { gate, Reply, stub, tag, useModelStubs } from "./setup.ts";
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -15,9 +15,10 @@ import { SCHEDULES } from "../apps/worker/src/schedules.ts";
 const T = tag();
 const SOURCE = `report-recovery-${T}`;
 let answer = async (user: string) => ({ title: user.slice(0, 100), leadParagraph: "导语", highlights: [1], headline: "本期进展", overview: "总述", themes: [{ heading: "主题", summary: "摘要", refs: [1] }] });
-const provider = await stub(async (_hit, request) => ({
-  choices: [{ message: { content: JSON.stringify(await answer(JSON.parse(request.body).messages.at(-1).content)) } }],
-}));
+let rateLimited = false;
+const provider = await stub(async (_hit, request) => rateLimited
+  ? new Reply(429, { error: "rate limited" }, { "retry-after": "300" })
+  : ({ choices: [{ message: { content: JSON.stringify(await answer(JSON.parse(request.body).messages.at(-1).content)) } }] }));
 await useModelStubs({ DEEPSEEK: provider.url });
 before(async () => {
   await sql`INSERT INTO sources (id, name, kind, tier) VALUES (${SOURCE}, 'Report recovery', 'rss', 'T1')`;
@@ -25,6 +26,8 @@ before(async () => {
 beforeEach(async () => {
   await sql`DELETE FROM reports`;
   await sql`DELETE FROM articles WHERE source_id = ${SOURCE}`;
+  await sql`DELETE FROM receipts WHERE subject LIKE 'report:%'`;
+  await sql`DELETE FROM settings WHERE key LIKE 'report.failure.%'`;
 });
 after(async () => { await provider.close(); await stopBoss(); await closeDb(); });
 
@@ -210,4 +213,54 @@ test("empty older gaps cannot starve a later daily, weekly or monthly, and failu
   for (const [kind, key] of [["daily", "2024-02-02"], ["weekly", "2024-W04"], ["monthly", "2024-01"]]) {
     assert.ok(await report(kind!, key!), `${kind} ${key} was recovered past the empty gaps`);
   }
+});
+
+test("catch-up gives weekly and monthly reports a turn after a daily failure and counts the limit by successes", async () => {
+  await item("2024-02-02T12:00:00Z");
+  await item("2024-02-03T12:00:00Z");
+  await item("2024-02-04T12:00:00Z");
+  await item("2024-02-05T12:00:00Z");
+  await item("2024-01-15T12:00:00Z");
+  await sql`INSERT INTO reports (kind,key,window_start,window_end,content,generated_at) VALUES
+    ('daily','2024-02-01',now(),now(),'{}',now()),('weekly','2024-W04',now(),now(),'{}',now()),('monthly','2023-12',now(),now(),'{}',now())`;
+  const original = answer;
+  answer = async (user) => user.split("\n").length <= 1 ? "not-json" as never : original(user);
+  try { await assert.rejects(catchUpReports(new Date("2024-02-06T03:00:00Z"), 2), /report catch-up:/); }
+  finally { answer = original; }
+  assert.ok(await report("weekly", "2024-W05"));
+  assert.ok(await report("monthly", "2024-01"));
+  assert.equal(await report("daily", "2024-02-02"), undefined);
+});
+
+test("报告补成遇到 Retry-After 时记录同一等待，窗口内不重复付费", async () => {
+  await item("2024-07-01T12:00:00Z");
+  const now = new Date("2024-07-02T03:00:00Z");
+  rateLimited = true;
+  try {
+    await assert.rejects(catchUpReports(now), /report catch-up:/);
+  } finally { rateLimited = false; }
+  const failures = await sql<{ key: string; value: { retryAt?: string } }[]>`SELECT key,value FROM settings WHERE key LIKE 'report.failure.%'`;
+  const daily = failures.find((failure) => failure.key === "report.failure.daily.2024-07-02");
+  assert.ok(daily?.value.retryAt, "供应商等待写入报告的 retryAt");
+  const retryAt = Date.parse(daily!.value.retryAt!);
+  assert.ok(retryAt > Date.now() + 290_000 && retryAt <= Date.now() + 301_000, `retryAt=${daily!.value.retryAt}`);
+  const hits = provider.hits();
+  await catchUpReports(now).catch(() => undefined);
+  assert.equal(provider.hits(), hits, "等待窗口内不再调用模型");
+});
+
+test("连续坏报告达到上限后暂停自动付费重试并保留失败记录", async () => {
+  await item("2024-06-01T12:00:00Z");
+  const original = answer;
+  answer = async () => "not-json" as never;
+  try {
+    const before = provider.hits();
+    for (let i = 0; i < 3; i++) await assert.rejects(catchUpReports(new Date("2024-06-03T03:00:00Z")), /report catch-up:/);
+    const afterLimit = provider.hits();
+    await catchUpReports(new Date("2024-06-03T03:00:00Z")).catch(() => undefined);
+    assert.equal(provider.hits(), afterLimit);
+    assert.ok(afterLimit > before);
+    const failures = await sql<{ value: { count: number } }[]>`SELECT value FROM settings WHERE key LIKE 'report.failure.%'`;
+    assert.ok(failures.some((row) => row.value.count >= 3));
+  } finally { answer = original; }
 });

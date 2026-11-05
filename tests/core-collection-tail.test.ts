@@ -98,7 +98,7 @@ for (const size of [0, 1, 59, 60, 61, 100]) {
   });
 }
 
-test("超过参数数量上限的大列表仍判重并保存新尾部", async () => {
+test("超过候选数量硬上限的大列表失败并保留诊断", async () => {
   const known: Item = { url: `${base}/${T}`, title: "Large", date: null, summary: "" };
   const tail = { ...known, url: known.url + "-tail", title: "Tail" };
   const { id, listing } = await source("large", "json_list", [known]);
@@ -106,13 +106,12 @@ test("超过参数数量上限的大列表仍判重并保存新尾部", async ()
   listing.items = [...Array<Item>(65_535).fill(known), tail];
   assert.ok(Buffer.byteLength(JSON.stringify(listing.items)) < 8 * 1024 * 1024, "响应在既有 8MiB 上限内");
   const result = await collectSource(id);
-  assert.deepEqual(result, { sourceId: id, status: "ok", found: 65_536, created: 1, revised: 0 });
-  assert.equal(await count(id), 2);
-  assert.equal(await revisions(id), 2);
-  assert.equal(await jobs(id), 2);
-  assert.deepEqual(await collectSource(id), { sourceId: id, status: "ok", found: 65_536, created: 0, revised: 0 });
-  assert.equal(await revisions(id), 2);
-  assert.equal(await jobs(id), 2);
+  assert.deepEqual(result, { sourceId: id, status: "failed", found: 0, created: 0, revised: 0, error: "candidate limit exceeded (500)" });
+  assert.equal(await count(id), 1);
+  assert.equal(await revisions(id), 1);
+  assert.equal(await jobs(id), 1);
+  const [run] = await sql`SELECT error FROM fetch_runs WHERE source_id=${id} ORDER BY id DESC LIMIT 1`;
+  assert.equal(run!.error, "candidate limit exceeded (500)");
 });
 
 test("前 60 条已知时仍创建和修订尾部，并只排入正常处理一次", async () => {

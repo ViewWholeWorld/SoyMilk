@@ -3,7 +3,7 @@ import type { HotParticipant, HotStripEntry } from "@aihot/contracts/site";
 import { sql } from "../db.ts";
 import { proxiedImage, proxiedImageSet } from "../media/imgproxy.ts";
 
-import { storedHotRanking, tierRank, type HotEntry, type HotRanking } from "../events/hot.ts";
+import { currentSignals, storedHotRanking, tierRank, type HotEntry, type HotRanking } from "../events/hot.ts";
 import { evidenceCondition, listedCondition } from "./scope.ts";
 import { publicationCacheEpoch, readPublicationCache, registerPublicationCache } from "./cache.ts";
 const MAX_FACES = 6;
@@ -25,10 +25,16 @@ async function queryLatestHotRanking(): Promise<HotRanking | null> {
       ORDER BY p.first_party DESC,p.selected DESC,p.score DESC NULLS LAST,p.article_id LIMIT 1
     ) rep ON true WHERE st.id=ANY(${ids}::bigint[]) AND st.merged_into IS NULL` : [];
   const byId = new Map(current.map(s => [s.id, s]));
+  const publicNames = ids.length ? await sql<{ story_id: number; name: string }[]>`
+    SELECT DISTINCT cs.story_id, s.name FROM ${currentSignals()} cs JOIN sources s ON s.id = cs.source_id
+    WHERE cs.story_id = ANY(${ids}::bigint[])` : [];
+  const namesByStory = new Map<number, Set<string>>();
+  for (const row of publicNames) namesByStory.set(row.story_id, new Set([...(namesByStory.get(row.story_id) ?? []), row.name]));
   // 榜单保留热度快照，文字和代表稿每次按当前权限读取，不复用嵌入的旧标题。
   const entries = row.entries.flatMap(e => {
     const story = byId.get(e.storyId);
-    return story?.article_id ? [{ ...e, title: story.title, representativeItemId: story.article_id,
+    return story?.article_id ? [{ ...e, title: story.title, sourceNames: e.sourceNames.filter((name) => namesByStory.get(e.storyId)?.has(name)),
+      participants: e.participants.filter((participant) => namesByStory.get(e.storyId)?.has(participant.name)), representativeItemId: story.article_id,
       representativeUrl: story.url, representativeSource: story.source_name }] : [];
   });
   return { id: row.id, computedAt: row.computedAt, ruleVersion: row.ruleVersion, entries, coverage: row.coverage };
@@ -63,7 +69,7 @@ async function queryExtras(ranking: HotRanking): Promise<Extras> {
       SELECT DISTINCT ON (s.id) s.name, s.icon_url, a.x_post->>'avatarUrl' AS avatar
       FROM story_signals ss JOIN sources s ON s.id = ss.source_id
       LEFT JOIN articles a ON a.id = CASE WHEN s.icon_url IS NULL THEN ss.article_id END AND a.x_post ? 'avatarUrl'
-      WHERE ss.story_id = ANY(${ids}::bigint[])
+      WHERE ss.story_id = ANY(${ids}::bigint[]) AND s.participation_mode <> 'isolated'
       ORDER BY s.id, (a.id IS NULL), a.discovered_at DESC`;
   const extras: Extras = {
     faces: new Map(faces.map((f) => [f.name, f.icon_url ?? f.avatar])),
@@ -86,7 +92,7 @@ export async function rankingExtras(ranking: HotRanking) {
   const texts = new Map(rows.map(r => [r.id, { summary: r.digest ?? r.summary, latest: r.latest }]));
   return {
     participants: (e: HotEntry): HotParticipant[] => {
-      const people = e.participants
+      const people = e.participants.filter((participant) => faces.has(participant.name))
         .map((p, i) => ({ p, i, icon: faces.get(p.name) ?? null }))
         .sort((x, y) => Number(y.p.kind === "editorial") - Number(x.p.kind === "editorial") || tierRank(x.p.tier) - tierRank(y.p.tier) || Number(!!y.icon) - Number(!!x.icon) || x.i - y.i);
       // Every name stays for the tooltip; only visible Faces need srcSet.

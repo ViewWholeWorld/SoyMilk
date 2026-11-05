@@ -14,6 +14,8 @@ import { readChatGPTSession } from "../providers/chatgpt-auth.ts";
 import { modelBillingContext } from "../providers/model-billing.ts";
 import { providerSpendingRefused } from "../providers/provider-cooldown.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
+import { REQUIRED_BUDGET_SERVICES } from "../providers/receipts.ts";
+import { REPORT_FAILURE_LIMIT } from "../reports/compose.ts";
 
 const REPEAT_MS: Record<Exclude<Level, "digest">, number> = { now: 3600_000, today: 24 * 3600_000 };
 
@@ -127,6 +129,21 @@ export async function collectFindings(now = Date.now(), open: AlertState = {}): 
     out.push({ key: "receipts.unknown", level: "digest", title: `${r!.receipts} 个付费请求自动重试过一次，结果仍未知`, detail: `${r!.services}；后台“运行”页核对后放行` });
   }
 
+  const reportFailures = await sql<{ key: string; value: { kind?: string; key?: string; count?: number; lastError?: string } }[]>`
+    SELECT key,value FROM settings WHERE key LIKE 'report.failure.%'`;
+  for (const failure of reportFailures) {
+    if ((failure.value.count ?? 0) < REPORT_FAILURE_LIMIT) continue;
+    const label = failure.value.kind && failure.value.key ? `${failure.value.kind}:${failure.value.key}` : failure.key.slice("report.failure.".length);
+    out.push({
+      key: `report.failure.${label}`,
+      level: "now",
+      title: `周期报告自动重试已暂停：${label}`,
+      impact: "该周期报告不会继续自动付费重试",
+      heals: "不会，需要人工检查失败原因后清除或修复",
+      detail: `连续失败 ${failure.value.count} 次；${failure.value.lastError ?? "无错误详情"}`,
+    });
+  }
+
   // Runnable jobs (deferred ones excluded) that have waited more than two hours.
   const queues = await sql<{ name: string; n: number; oldest: Date }[]>`
     SELECT name, count(*)::int AS n, min(start_after) AS oldest FROM pgboss.job
@@ -156,6 +173,18 @@ export const providerConsole = (service: string) => PROVIDERS[service]?.where ??
 /** Paid services that refuse us (no balance, a dead key), and daily budgets used up. */
 async function providerFindings(now: number, open: AlertState): Promise<Finding[]> {
   const out: Finding[] = await providerRefusalFindings(now,open);
+  const budgetRows = await sql<{ service: string }[]>`SELECT service FROM budgets`;
+  const configured = new Set(budgetRows.map((row) => row.service));
+  for (const service of REQUIRED_BUDGET_SERVICES) if (!configured.has(service)) {
+    out.push({
+      key: `budget.config.${service}`,
+      level: "now",
+      title: `${providerName(service)} 没有调用预算配置`,
+      impact: "相关付费请求已停止，避免配置缺失变成无限额度",
+      heals: "不会，需要补齐 budgets 表配置",
+      detail: `budgets 表缺少 ${service}`,
+    });
+  }
   const capped = await sql<{ service: string; per_day: number; used: number }[]>`
     SELECT b.service, b.per_day, count(a.id)::int AS used FROM budgets b
     JOIN receipt_attempts a ON a.service = b.service AND a.origin = 'live' AND a.started_at > now() - interval '1 day'

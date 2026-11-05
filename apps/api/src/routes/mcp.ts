@@ -219,6 +219,7 @@ function allowedOrigin(origin: string | undefined): boolean {
 const CORS_METHODS = "POST, GET, DELETE, OPTIONS";
 const CORS_HEADERS = "Content-Type, Accept, MCP-Protocol-Version, MCP-Session-Id, Last-Event-ID, MCP-Method, MCP-Name";
 const CORS_EXPOSE = "MCP-Protocol-Version, MCP-Session-Id, Link";
+export const MCP_BODY_LIMIT = 256 * 1024;
 
 function corsHeaders(reply: FastifyReply, origin: string | undefined) {
   reply.header("Vary", "Origin");
@@ -228,7 +229,7 @@ function corsHeaders(reply: FastifyReply, origin: string | undefined) {
 }
 
 export function registerMcp(app: FastifyInstance) {
-  const handler = createMcpHandler(() => buildMcpServer(), { legacy: "stateless", maxRequestBodySize: 256 * 1024 });
+  const handler = createMcpHandler(() => buildMcpServer(), { legacy: "stateless", maxRequestBodySize: MCP_BODY_LIMIT });
   // SSE subscriptions otherwise keep Fastify's server.close waiting until systemd kills the slot.
   // preClose runs before HTTP draining; onClose would be too late for a never-ending stream.
   app.addHook("preClose", async () => { await handler.close(); });
@@ -253,6 +254,9 @@ export function registerMcp(app: FastifyInstance) {
       headers.set(k, Array.isArray(v) ? v.join(", ") : String(v));
     }
     const body = req.method === "POST" ? (typeof req.body === "string" ? req.body : JSON.stringify(req.body ?? null)) : undefined;
+    if (body !== undefined && Buffer.byteLength(body, "utf8") > MCP_BODY_LIMIT) {
+      return reply.code(413).type("application/json").send({ error: "request_too_large" });
+    }
     // A client that goes away ends the exchange in the SDK too (a subscriptions/listen stream is open
     // until then).
     const gone = new AbortController();
@@ -277,7 +281,7 @@ export function registerMcp(app: FastifyInstance) {
     }
   };
 
-  app.route({ method: ["GET", "POST", "DELETE"], url: "/api/mcp", handler: serve });
+  app.route({ method: ["GET", "POST", "DELETE"], url: "/api/mcp", bodyLimit: MCP_BODY_LIMIT, handler: serve });
   app.options("/api/mcp", async (req, reply) => {
     reply.header("Cache-Control", "no-store");
     if (!allowedOrigin(req.headers.origin)) return reply.code(403).type("application/json").send({ error: "origin_not_allowed" });

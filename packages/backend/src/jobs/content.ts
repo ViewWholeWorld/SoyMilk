@@ -219,7 +219,10 @@ async function afterFailure(articleId: string, revision: number, attemptTag: str
                 processing_retry_at = NULL, processing_queued_at = NULL WHERE id = ${articleId} AND revision = ${revision}`;
       return { state: "failed" };
     }
-    const retryAt = new Date(Date.now() + RETRY_MINUTES[attempts - 1]! * 60_000);
+    const retryDelaySeconds = error instanceof ProviderRejectedError && error.retryAfterSeconds !== null
+      ? error.retryAfterSeconds
+      : RETRY_MINUTES[attempts - 1]! * 60;
+    const retryAt = new Date(Date.now() + retryDelaySeconds * 1000);
     await tx`UPDATE articles SET processing_state = 'new', processing_error = ${message}, processing_attempts = ${attempts},
               processing_retry_at = ${retryAt}, processing_queued_at = NULL WHERE id = ${articleId} AND revision = ${revision}`;
     return { state: "retrying", retryAt };
@@ -303,6 +306,7 @@ const ARTICLE_STEPS = new Set([
   ...(["prefilter", "score", "understand", "summarize", "structure"] as const).flatMap((step) => CAPABILITIES[step].purposes),
   "body_fallback", "x_article",
   "translate_body",
+  "group_article", "group_signal",
 ]);
 
 /**
@@ -317,8 +321,41 @@ export function receiptArticleSubject(receipt: { purpose: string; subject: strin
 }
 
 export async function resumeAfterRelease(receipt: { id: number; purpose: string; subject: string | null }, db: Db): Promise<boolean> {
+  if (receipt.purpose === "prefilter_batch") {
+    const member = /^article:([^@:#]+)@([1-9]\d*)/.exec(receipt.subject ?? "");
+    if (member) {
+      const [article] = await db<{ id: string }[]>`UPDATE articles SET processing_state='new',processing_retry_at=NULL,processing_error=NULL,processing_queued_at=NULL
+        WHERE id=${member[1]!} AND revision=${Number(member[2])} AND processing_state='failed'
+          AND processing_error=${`receipt ${receipt.id} outcome unknown`} RETURNING id`;
+      if (!article) return false;
+      const queued = await queueProcessing(article.id, { db });
+      if (!queued) await db`UPDATE articles SET processing_queued_at=NULL WHERE id=${article.id}`;
+      return !!queued;
+    }
+    const match = /^prefilter-batch:([0-9a-f-]+)$/i.exec(receipt.subject ?? "");
+    if (!match) return false;
+    const [batch] = await db<{ id: string }[]>`UPDATE prefilter_batches SET state='ready',failures=0,retry_at=NULL,error=NULL
+      WHERE id=${match[1]!} AND state IN ('unknown','failed') RETURNING id`;
+    if (!batch) return false;
+    const queued = await enqueue(QUEUES.prefilter, { batchId: batch.id }, { singletonKey: `batch:${batch.id}` }, db);
+    return !!queued;
+  }
+  if (receipt.purpose === "story_digest") {
+    const match = /^story:(\d+)@/.exec(receipt.subject ?? "");
+    if (!match) return false;
+    const [story] = await db<{ id: number }[]>`SELECT id FROM stories WHERE id=${Number(match[1])} AND merged_into IS NULL`;
+    if (!story) return false;
+    const queued = await enqueue(QUEUES.digest, { storyId: story.id, afterCorrection: true }, { singletonKey: `story:${story.id}` }, db);
+    return !!queued;
+  }
   const article = receiptArticleSubject(receipt);
   if (!article) return false;
+  if (receipt.purpose === "group_article" || receipt.purpose === "group_signal") {
+    const [row] = await db<{ id: string }[]>`SELECT id FROM articles WHERE id=${article.articleId}`;
+    if (!row) return false;
+    const queued = await enqueue(QUEUES.group, { articleId: row.id, signalOnly: receipt.purpose === "group_signal" }, { singletonKey: row.id }, db);
+    return !!queued;
+  }
   if (receipt.purpose === "translate_body") return resumeTranslationAfterRelease(receipt.id, article.articleId, article.revision!, db);
   const [a] = await db`UPDATE articles SET processing_state = 'new', processing_retry_at = NULL, processing_error = NULL
                         WHERE id = ${article.articleId} AND processing_state = 'failed'
