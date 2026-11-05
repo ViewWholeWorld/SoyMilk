@@ -145,6 +145,20 @@ test("确认资金拒绝后持久等待 15 分钟，冷却不新增回执且已�
   assert.ok(providerSpendingRefused(service, refused!.error));
 });
 
+test("资金 429 复用同一有效等待，冷却与预算等待一致", async () => {
+  const current = scope();
+  const req = request(current);
+  await assert.rejects(paidRequest(req, async () => {
+    throw new ProviderRejectedError("HTTP 429", 429, true, false, true, { retryAfterSeconds: 42 });
+  }), (error: unknown) => error instanceof BudgetExceededError && error.retryAfterSeconds === 42);
+  const [state] = await sql<{ value: { refusedAt: number; until: number } }[]>`SELECT value FROM settings WHERE key=${providerCooldownKey(current)}`;
+  assert.equal(state!.value.until - state!.value.refusedAt, 42_000, "冷却窗口采用 Retry-After 而不是固定 15 分钟");
+  const [before] = await sql<{ n: number }[]>`SELECT count(*) AS n FROM receipt_attempts WHERE service=${service}`;
+  await assert.rejects(paidRequest(request(current), success), (error: unknown) => error instanceof BudgetExceededError && error.retryAfterSeconds <= 42);
+  const [afterCount] = await sql<{ n: number }[]>`SELECT count(*) AS n FROM receipt_attempts WHERE service=${service}`;
+  assert.equal(afterCount!.n, before!.n, "等待期间不新增付费 attempt");
+});
+
 test("连接、供应商、账号、配置和请求型号各自隔离，不修改付费请求身份", async () => {
   const current = scope();
   const original = request(current);

@@ -10,7 +10,7 @@ import { addDays, beijingDate, beijingMidnight, isoWeekLabel, isoWeekRange } fro
 import { sql } from "../db.ts";
 import { Conflict } from "../audit.ts";
 import { chatJson, ModelOutputError } from "../providers/llm.ts";
-import { completeReceipt, ProviderRejectedError, rejectReceivedResponse } from "../providers/receipts.ts";
+import { completeReceipt, rejectReceivedResponse, requestWait } from "../providers/receipts.ts";
 import { shutdownSignal } from "../jobs/queue.ts";
 import { publicReportContent } from "../publication/report-prose.ts";
 
@@ -31,10 +31,11 @@ async function recordReportFailure(kind: ReportKind, key: string, error: unknown
     const setting = reportFailureSetting(kind, key);
     await tx`SELECT pg_advisory_xact_lock(hashtext(${setting}))`;
     const [row] = await tx<{ value: ReportFailureState }[]>`SELECT value FROM settings WHERE key=${setting}`;
+    const wait = requestWait(error);
     const state: ReportFailureState = {
       kind, key, count: (row?.value.count ?? 0) + 1,
       lastError: String(error instanceof Error ? error.message : error).slice(0, 500), updatedAt: new Date().toISOString(),
-      ...(error instanceof ProviderRejectedError && error.retryAfterSeconds ? { retryAt: new Date(Date.now() + error.retryAfterSeconds * 1000).toISOString() } : {}),
+      ...(wait ? { retryAt: new Date(Date.now() + wait.retryAfterSeconds * 1000).toISOString() } : {}),
     };
     await tx`INSERT INTO settings(key,value,updated_by) VALUES(${setting},${tx.json(state as never)},'reports.catch-up')
       ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_by=EXCLUDED.updated_by,updated_at=now()`;

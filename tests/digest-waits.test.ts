@@ -1,5 +1,5 @@
 // 真实队列的综述等待不消耗失败额度，也不绕过未知付费回执。
-import { stub, tag, useModelStubs } from "./setup.ts";
+import { stub, tag, useModelStubs, Reply } from "./setup.ts";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { sql, closeDb } from "@aihot/backend/db";
@@ -11,7 +11,10 @@ import { enqueue, getBoss, QUEUES, stopBoss, shutdownSignal } from "@aihot/backe
 import { ReceiptUnknownError } from "@aihot/backend/providers/receipts";
 const T = tag(), source = `digest-waits-${T}`, priority = 910008;
 let malformed = false;
-const provider = await stub(() => ({ choices: [{ message: { content: malformed ? "不是有效 JSON" : JSON.stringify({ title: "合成综述", digest: "合成综述正文，仅用于本地回归。", latest: "合成进展" }) } }] }));
+let rateLimited = false;
+const provider = await stub(() => rateLimited
+  ? new Reply(429, { error: "rate limited" }, { "retry-after": "90" })
+  : ({ choices: [{ message: { content: malformed ? "不是有效 JSON" : JSON.stringify({ title: "合成综述", digest: "合成综述正文，仅用于本地回归。", latest: "合成进展" }) } }] }));
 await useModelStubs({ DEEPSEEK: provider.url });
 let budget: any;
 before(async () => { await getBoss(); [budget] = await sql`SELECT * FROM budgets WHERE service='deepseek'`; await sql`INSERT INTO sources(id,name,kind,tier,participation_mode,next_fetch_at) VALUES(${source},'综述等待回归','rss','T1','editorial','2100-01-01')`; });
@@ -51,6 +54,27 @@ test("R08：连续预算等待、重启领取和已有真实失败额度均保�
     assert.equal(provider.hits(),hits+1);
     assert.equal((await boss.findJobs(QUEUES.digest,{ key:`story:${storyId}`,queued:true })).length,0);
   } finally { await sql`DELETE FROM pgboss.job WHERE name=${QUEUES.digest} AND data->>'storyId'=${String(storyId)}`; }
+});
+
+test("R08：综述遇到 Retry-After 按同一回执延后，不立即新增付费尝试", async () => {
+  const storyId = await fixture(), j = await claim();
+  const hits = provider.hits();
+  rateLimited = true;
+  try {
+    const result = await processDigestJob(j.data, j.id, j.retryCount);
+    assert.equal((result as any).state, "waiting");
+    assert.equal((result as any).kind, "provider-retry");
+    assert.equal((result as any).retryAfterSeconds, 90);
+  } finally { rateLimited = false; }
+  assert.equal(provider.hits(), hits + 1);
+  const [queued] = await (await getBoss()).findJobs(QUEUES.digest, { key: `story:${storyId}`, queued: true });
+  assert.ok(queued);
+  assert.ok(queued.startAfter.getTime() > Date.now() + 60_000, "按 Retry-After 延后");
+  assert.equal((await sql`SELECT count(*)::int AS n FROM receipt_attempts a JOIN receipts r ON r.id=a.receipt_id WHERE r.subject=${`story:${storyId}@2`}`)[0]!.n, 1);
+  const resumed = await claim();
+  assert.equal((await processDigestJob(resumed.data, resumed.id, resumed.retryCount) as any).updated, true);
+  await (await getBoss()).complete(QUEUES.digest, resumed.id);
+  await sql`DELETE FROM pgboss.job WHERE name=${QUEUES.digest} AND data->>'storyId'=${String(storyId)}`;
 });
 
 test("R08：已有纠错后继保持 singleton 和 payload；未知回执仍停止付费", async () => {

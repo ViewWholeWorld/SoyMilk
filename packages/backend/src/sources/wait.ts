@@ -12,7 +12,7 @@ export function collectionWait(error: unknown) {
 const LEGACY_WAIT = String.raw`^(Budget for .+ exhausted \(.+\)|Receipt [0-9]+ is in flight|Receipt [0-9]+ has an unknown outcome;.*|JINA_API_KEY is not configured|SOCIALDATA_API_KEY is not configured|This operation was aborted|shutdown)$`;
 export const sourceWaitMessage = (message: string) => new RegExp(LEGACY_WAIT).test(message);
 export const WAITING_FETCH_RUN = sql`(
-  coalesce(detail->'waiting'->>'kind','') IN ('budget','busy','disabled','configuration','unknown','shutdown')
+  coalesce(detail->'waiting'->>'kind','') IN ('budget','busy','disabled','configuration','unknown','shutdown','provider-retry')
   OR coalesce(error,'') ~ ${LEGACY_WAIT}
 )`;
 // 旧版预算等待虽记为 failed，但从未增加连续失败计数，不参与扣减。

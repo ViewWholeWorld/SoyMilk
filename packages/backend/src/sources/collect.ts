@@ -28,6 +28,11 @@ export function collectErrorMessage(error: unknown): string {
   return typeof code === "string" && code.length > 0 ? `${message} (${code})` : message;
 }
 
+/** 详情页预算按系统上限截断；调用前配置已在边界校验为有限非负整数。 */
+export function detailFetchBudget(configured: number): { budget: number; clamped: boolean } {
+  return { budget: Math.min(configured, MAX_DETAIL_FETCHES), clamped: configured > MAX_DETAIL_FETCHES };
+}
+
 export function noiseFiltered(c: Candidate, source: SourceRow): boolean {
   const f = source.config.ingestNoiseFilter;
   const cats: string[] = c.categories ?? [];
@@ -164,10 +169,11 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
     // Detail pages only for material we have not seen (bounded per run), and only for what the listing lacks.
     const d = source.config.detail;
     const known = d ? await storedTitles(candidates.map((c) => c.identityKey!)) : new Map<string, string>();
-    const configuredDetailBudget = Number(d?.maxFetches ?? 0);
-    const detailBudget = Math.min(configuredDetailBudget, MAX_DETAIL_FETCHES);
+    // 配置已在 collect 入口校验为有限非负整数；这里只做系统上限截断并留下诊断。
+    const configuredDetailBudget = d?.maxFetches ?? 0;
+    const { budget: detailBudget, clamped: detailBudgetClamped } = detailFetchBudget(configuredDetailBudget);
     const limits: Record<string, number> = {};
-    if (configuredDetailBudget > MAX_DETAIL_FETCHES) limits.detailFetches = MAX_DETAIL_FETCHES;
+    if (detailBudgetClamped) limits.detailFetches = MAX_DETAIL_FETCHES;
     if (candidates.length >= MAX_SOURCE_CANDIDATES) limits.listingCandidates = MAX_SOURCE_CANDIDATES;
     if (candidates.length >= MAX_STORED_CANDIDATES) limits.storedCandidates = MAX_STORED_CANDIDATES;
     let detailUsed = 0;

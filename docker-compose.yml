@@ -12,8 +12,9 @@ x-backend: &backend
   env_file: .env
   environment: &backend-env
     NODE_ENV: production
-    # Kept for old images during an application-only rollback; new images prefer the encoded fields below.
-    DATABASE_URL: postgres://aihot:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/aihot
+    # 旧镜像只认 DATABASE_URL；该值由 deploy/nas/compose.sh 在边界按字段变量生成（percent-encode），
+    # 本地直接 compose 时为空，新镜像改用下面的字段连接。
+    DATABASE_URL: ${DATABASE_URL:-}
     DATABASE_HOST: db
     DATABASE_USER: aihot
     DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}

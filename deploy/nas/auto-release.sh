@@ -64,26 +64,38 @@ verify_release_ref() {
     printf '无法读取发布标签 %s\n' "$tag" >&2
     return 1
   }
-  tag_sha=$(printf '%s' "$tag_response" | sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' | head -n 1)
-  tag_type=$(printf '%s' "$tag_response" | sed -n 's/.*"type"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' | head -n 1)
+  tag_type=$(printf '%s' "$tag_response" | release_object_type)
+  tag_sha=$(printf '%s' "$tag_response" | release_object_sha)
   [ -n "$tag_sha" ] || { printf '发布标签 %s 没有可解析的提交\n' "$tag" >&2; return 1; }
   if [ "$tag_type" = tag ]; then
+    # Annotated tag: dereference the tag object once and use only the commit it points at.
     tag_object=$(curl -fsS -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$GITHUB_REPO/git/tags/$tag_sha") || return 1
-    tag_sha=$(printf '%s' "$tag_object" | sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' | head -n 1)
+    if [ "$(printf '%s' "$tag_object" | release_object_type)" != commit ]; then
+      printf '注释标签 %s 未指向提交\n' "$tag" >&2
+      return 1
+    fi
+    tag_sha=$(printf '%s' "$tag_object" | release_object_sha)
     [ -n "$tag_sha" ] || { printf '注释标签 %s 没有可解析的提交\n' "$tag" >&2; return 1; }
+  elif [ "$tag_type" != commit ]; then
+    printf '发布标签 %s 指向不支持的 %s 对象\n' "$tag" "${tag_type:-unknown}" >&2
+    return 1
   fi
-  compare_response=$(curl -fsS -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$GITHUB_REPO/compare/main...$tag") || return 1
+  compare_response=$(curl -fsS -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$GITHUB_REPO/compare/main...$tag_sha") || return 1
   compare_status=$(printf '%s' "$compare_response" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' | head -n 1)
   compare_ahead_by=$(printf '%s' "$compare_response" | sed -n 's/.*"ahead_by"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1)
   if ! release_ref_is_on_main "$compare_status" "${compare_ahead_by:-unknown}"; then
     printf '发布标签 %s 不在 main 历史上（compare=%s ahead_by=%s）\n' "$tag" "${compare_status:-unknown}" "${compare_ahead_by:-unknown}" >&2
     return 1
   fi
-  ci_response=$(curl -fsS -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$GITHUB_REPO/actions/workflows/ci.yml/runs?head_sha=$tag_sha&per_page=100") || return 1
-  printf '%s' "$ci_response" | grep -Eq '"conclusion"[[:space:]]*:[[:space:]]*"success"' || {
-    printf '发布标签 %s 没有成功的 CI 运行\n' "$tag" >&2
+  # Same commit, ci.yml, push event, newest run only: a queued/in-progress run, a failed rerun, or
+  # PR-only success is not release evidence.
+  ci_response=$(curl -fsS -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$GITHUB_REPO/actions/workflows/ci.yml/runs?head_sha=$tag_sha&event=push&per_page=1") || return 1
+  ci_status=$(printf '%s' "$ci_response" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' | head -n 1)
+  ci_conclusion=$(printf '%s' "$ci_response" | sed -n 's/.*"conclusion"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' | head -n 1)
+  if ! release_ci_allows "$ci_status" "$ci_conclusion"; then
+    printf '发布标签 %s 的 push CI 未通过（status=%s conclusion=%s）\n' "$tag" "${ci_status:-missing}" "${ci_conclusion:-missing}" >&2
     return 1
-  }
+  fi
 }
 
 version_not_lower() {
@@ -99,7 +111,7 @@ version_not_lower() {
 if [ "$dry_run" = true ]; then
   resolve_version
   image="$IMAGE_REPO:$version"
-  run sha256sum docker-compose.yml deploy/nas/compose.sh deploy/nas/compose.override.yml deploy/nas/compose.codex-worker.yml deploy/nas/compose.web-time.yml
+  run sha256sum docker-compose.yml deploy/nas/compose.sh deploy/nas/database-url.sh deploy/nas/compose.override.yml deploy/nas/compose.codex-worker.yml deploy/nas/compose.web-time.yml
   run compose ps -q api
   run docker_cmd inspect --format '{{.Image}}' '<api容器>'
   run compose ps -a -q '<setup/api/worker/web>'
@@ -124,7 +136,7 @@ if [ "$dry_run" = true ]; then
   run docker_cmd inspect --format '{{.Image}}' '<setup/api/worker/web容器>'
   run docker_cmd inspect --format '{{.State.ExitCode}}' '<setup容器，须为0>'
   run docker_cmd inspect --format '{{.Id}} {{.Image}} {{.State.StartedAt}}' '<db容器，须与切换前一致>'
-  run sha256sum docker-compose.yml deploy/nas/compose.sh deploy/nas/compose.override.yml deploy/nas/compose.codex-worker.yml deploy/nas/compose.web-time.yml
+  run sha256sum docker-compose.yml deploy/nas/compose.sh deploy/nas/database-url.sh deploy/nas/compose.override.yml deploy/nas/compose.codex-worker.yml deploy/nas/compose.web-time.yml
   run diff '<切换前配置校验和>' '<验收时配置校验和>'
   run compose exec -T web node scripts/smoke.ts --base "$WEB_SMOKE_BASE"
   printf '计划：成功后仅保留最新 3 个 backups/release-* 目录；清理失败只记日志。\n'
@@ -266,7 +278,7 @@ exec 3>&1
 printf '发布日志：%s/%s-<版本>.log\n' "$status_dir" "$stamp"
 exec >> "$status_dir/$stamp-resolve.log" 2>&1
 mkdir -p "$backup"
-sha256sum docker-compose.yml deploy/nas/compose.sh deploy/nas/compose.override.yml \
+sha256sum docker-compose.yml deploy/nas/compose.sh deploy/nas/database-url.sh deploy/nas/compose.override.yml \
   deploy/nas/compose.codex-worker.yml deploy/nas/compose.web-time.yml > "$backup/config-before.sha256"
 resolve_version
 mv "$status_dir/$stamp-resolve.log" "$status_dir/$stamp-$version.log"
@@ -391,7 +403,7 @@ container=$(compose ps -q db)
 [ -n "$container" ]
 docker_cmd inspect --format '{{.Id}} {{.Image}} {{.State.StartedAt}}' "$container" > "$backup/db-after.txt"
 diff "$backup/db-before.txt" "$backup/db-after.txt"
-sha256sum docker-compose.yml deploy/nas/compose.sh deploy/nas/compose.override.yml \
+sha256sum docker-compose.yml deploy/nas/compose.sh deploy/nas/database-url.sh deploy/nas/compose.override.yml \
   deploy/nas/compose.codex-worker.yml deploy/nas/compose.web-time.yml > "$backup/config-after.sha256"
 diff "$backup/config-before.sha256" "$backup/config-after.sha256"
 retry_health
