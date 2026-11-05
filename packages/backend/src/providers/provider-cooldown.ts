@@ -118,7 +118,7 @@ export async function settleProviderCooldown(tx: Db, claim: CooldownClaim | null
   const state = await lockState(tx, claim.key);
   if (result === "spending") {
     const now = Date.now();
-    await saveState(tx, claim.key, { revision: randomUUID(), refusedAt: now, until: now + PROVIDER_COOLDOWN_SECONDS * 1000,
+    await saveState(tx, claim.key, { revision: randomUUID(), refusedAt: now, until: now + (cooldownSeconds ?? PROVIDER_COOLDOWN_SECONDS) * 1000,
       ...(state?.probeReceiptId ? { probe: state.probe, probeReceiptId: state.probeReceiptId } : {}) });
   } else if (result === "failure" && cooldownSeconds && cooldownSeconds > 0) {
     const now = Date.now();

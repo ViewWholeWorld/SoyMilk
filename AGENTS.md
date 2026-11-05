@@ -2,7 +2,7 @@
 
 SoyMilk 是覆盖游戏、AI、科技、经济、娱乐的私网资讯站，负责采集、模型筛选与写作、事件归组及刊物生成。先读 [README](README.md)，再按[文档索引](docs/文档索引.md)查阅任务资料；维护 NAS 先读[站点维护说明](docs/运维部署/站点维护说明.md)。使用中文沟通与编写说明，代码沿用相邻风格。
 
-当前代码版本：**3.9.9**；版本号以根 `package.json` 为唯一来源，文档同步由 `npm run check:version` 校验。
+当前代码版本：**4.0.0**；版本号以根 `package.json` 为唯一来源，文档同步由 `npm run check:version` 校验。
 
 ## 第一章：技术栈声明
 
@@ -116,7 +116,7 @@ npm run dev:web              # 网页：http://localhost:3000
 - 入口为 `ssh beans-nas`，部署目录 `/share/homes/tromso/apps/soymilk` 不是 Git checkout。统一用 `sh deploy/nas/compose.sh`，保留私有覆盖及最后的 `compose.release.yml`，核对 setup/API/worker/web 镜像；发布默认只迁移，需显式 `SEED_TOPICS_ON_RELEASE=true` 才运行 `--topics-only`。
 - 已恢复仅检查的最小 CI（PR 到 develop/main 或手动触发时运行类型、版本、后端、网页构建与网页测试，不部署），CI 全绿即合并并发布；打 `v*` 标签后由运维侧在 NAS 运行 `deploy/nas/auto-release.sh <版本>`，发布后项目经理验证生产环境（health、网页、worker 队列、近期模型调用失败），异常则拆任务修复后再发布，严重问题（服务不可用、数据风险、回退失败）立即通知所有者。v* 标签触发 GHCR 镜像构建；CI 不连接 NAS、GitHub 不存放密钥。仓库不得提交 IP、主机名、用户名、端口、密钥路径、代理地址或令牌。基础 Compose 及受保护定制变更仍须具体授权；按[手动部署流程](docs/运维部署/生产环境手动部署.md)验证、排空 worker、备份、切换和验收。仅回退兼容应用，保留新状态、迟到分析过滤、轮次及回执消费者；不恢复旧库、删除付费记录或批量重开历史终态。
 - **Hermes 已不在 NAS 部署**。旧文档的固定网络、启动与原生客户端验收要求不再适用；仓库示例仅供可选接入，公开 MCP 五个匿名只读工具继续保留。
-- 不读取或输出生产 `.env`、密钥、Codex `auth.json`、令牌、完整 Docker inspect／Compose config 或未筛选日志。通过 `bootstrapBudgetStatus()`、`modelsOverview().tokenSummary` 等状态接口输出必要统计，运行计数和预算标注查询时间。
+- 除 `deploy/nas/compose.sh` 按数据库连接字段生成编码后的旧镜像兼容地址外，不读取或输出生产 `.env`、密钥、Codex `auth.json`、令牌、完整 Docker inspect／Compose config 或未筛选日志。通过 `bootstrapBudgetStatus()`、`modelsOverview().tokenSummary` 等状态接口输出必要统计，运行计数和预算标注查询时间。
 
 ## 第四章：测试规范
 

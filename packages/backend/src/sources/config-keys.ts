@@ -48,7 +48,13 @@ export function unsupportedConfig(kind: SourceRow["kind"], config: Record<string
     else if (key === "maxItemAgeDays" && (typeof value !== "number" || !Number.isFinite(value) || value <= 0)) out.push(`${key}=${String(value)}`);
     else if (VALUES[key] && !VALUES[key]!.includes(String(value))) out.push(`${key}=${String(value)}`);
     else if (NESTED[key] && value && typeof value === "object") {
-      for (const sub of Object.keys(value)) if (!NESTED[key]!.includes(sub)) out.push(`${key}.${sub}`);
+      const nested = value as Record<string, unknown>;
+      for (const sub of Object.keys(nested)) if (!NESTED[key]!.includes(sub)) out.push(`${key}.${sub}`);
+      if (key === "detail" && Object.hasOwn(nested, "maxFetches")) {
+        const maxFetches = nested.maxFetches;
+        // 详情页预算必须是有限非负整数；NaN/负数/小数会让上限比较失效，不能静默按 0 或无上限运行。
+        if (typeof maxFetches !== "number" || !Number.isInteger(maxFetches) || maxFetches < 0) out.push(`${key}.maxFetches=${String(maxFetches)}`);
+      }
     }
   }
   return out;

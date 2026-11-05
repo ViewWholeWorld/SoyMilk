@@ -12,8 +12,8 @@ import { sanitizeBody, trimTrailingChrome } from "@aihot/backend/content/sanitiz
 import { fetchDetail, fetchWebList, fromHtml, fromMarkdown } from "@aihot/backend/sources/web-list";
 import { fetchRss } from "@aihot/backend/sources/rss";
 import { fetchJsonList } from "@aihot/backend/sources/json-list";
-import { noiseFiltered } from "@aihot/backend/sources/collect";
-import { unsupportedConfig } from "@aihot/backend/sources/config-keys";
+import { detailFetchBudget, noiseFiltered } from "@aihot/backend/sources/collect";
+import { assertSupportedConfig, unsupportedConfig } from "@aihot/backend/sources/config-keys";
 
 const source = (config: Record<string, unknown>) => ({ id: "test-list", config }) as never;
 
@@ -173,6 +173,19 @@ test("config entries a source kind does not implement are named, not ignored", (
   );
   assert.deepEqual(unsupportedConfig("rss", { feedUrl: "https://example.org/feed", denyUrlPrefixes: ["https://example.org/business/"] }), []);
   for (const kind of ["x_search", "mp_account"] as const) assert.deepEqual(unsupportedConfig(kind, {}), [`kind=${kind}`], "退役采集类型不能接受空配置重新启用");
+});
+
+test("详情页预算只接受有限非负整数，超限值仍由系统上限截断", () => {
+  for (const bad of ["abc", -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.deepEqual(unsupportedConfig("web_list", { url: "https://example.org/", detail: { maxFetches: bad } }), [`detail.maxFetches=${String(bad)}`]);
+  }
+  for (const good of [0, 1, 50, 51]) assert.deepEqual(unsupportedConfig("web_list", { url: "https://example.org/", detail: { maxFetches: good } }), []);
+  assert.deepEqual(detailFetchBudget(0), { budget: 0, clamped: false });
+  assert.deepEqual(detailFetchBudget(1), { budget: 1, clamped: false });
+  assert.deepEqual(detailFetchBudget(50), { budget: 50, clamped: false });
+  assert.deepEqual(detailFetchBudget(51), { budget: 50, clamped: true }, "超过系统上限仍截断并留下诊断");
+  assert.deepEqual(detailFetchBudget(1000), { budget: 50, clamped: true });
+  assert.throws(() => assertSupportedConfig("web_list", { url: "https://example.org/", detail: { maxFetches: "abc" } }), /detail\.maxFetches=abc/);
 });
 
 test("a listing that links other articles in its teasers takes only the links that begin a line", () => {

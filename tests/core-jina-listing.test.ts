@@ -18,7 +18,7 @@ const SOURCE = `test-jina-listing-${T}`;
 
 // Jina, answered here: in "drop" mode the connection closes after the request arrived, so whether it
 // was billed is unknown.
-let mode: "drop" | "page" | "invalid" = "drop";
+let mode: "drop" | "page" | "invalid" | "rate-limit" = "drop";
 let hits = 0;
 const jina = http.createServer((req, res) => {
   if (req.headers["x-return-format"] === "html") {
@@ -27,6 +27,7 @@ const jina = http.createServer((req, res) => {
   }
   hits += 1;
   if (mode === "drop") return void req.socket.destroy();
+  if (mode === "rate-limit") { res.writeHead(429, { "content-type": "application/json", "retry-after": "180" }); return void res.end(JSON.stringify({ error: "rate limited" })); }
   res.writeHead(200, { "content-type": "text/plain" });
   if (mode === "invalid") return void res.end("Upstream temporarily unavailable");
   res.end(`Title: News\nURL Source: https://example.org/news/\n\nMarkdown Content:\n# [Post ${hits} ${T}](https://example.org/news/post-${hits}-${T})\n`);
@@ -86,6 +87,43 @@ test("a listing read with an unknown outcome is not paid for again until it is r
   assert.equal(next.created, 1);
   assert.equal(hits, 3);
   assert.equal((await receipts()).length, 2);
+});
+
+test("a paid listing Retry-After becomes a source wait without a failure or extra attempt", async () => {
+  const id = `${SOURCE}-retry`;
+  await sql`INSERT INTO sources (id, name, kind, tier, participation_mode, next_fetch_at, config, cursor)
+    VALUES (${id}, 'Jina Retry-After', 'web_list', 'T2', 'editorial', '2100-01-01',
+            ${sql.json({ url: "https://r.jina.ai/https://example.org/retry/", allowUrlPrefixes: ["https://example.org/retry/"] })},
+            ${sql.json({ initializedAt: new Date().toISOString() })})`;
+  mode = "rate-limit";
+  const run = await collectSource(id, { force: true });
+  assert.equal(run.status, "skipped", run.error ?? "");
+  const [source] = await sql<{ seconds: number; fail_count: number; health: string }[]>`
+    SELECT extract(epoch FROM next_fetch_at - now()) AS seconds, fail_count, health FROM sources WHERE id=${id}`;
+  assert.ok(source!.seconds > 170 && source!.seconds <= 181, `seconds=${source!.seconds}`);
+  assert.equal(source!.fail_count, 0, "等待不是一次采集失败");
+  assert.equal(source!.health, "ok");
+  const [runRow] = await sql<{ waiting: { kind: string; retryAfterSeconds: number } }[]>`
+    SELECT detail->'waiting' AS waiting FROM fetch_runs WHERE source_id=${id} ORDER BY id DESC LIMIT 1`;
+  assert.equal(runRow!.waiting.kind, "provider-retry");
+  assert.equal(runRow!.waiting.retryAfterSeconds, 180);
+  const [receipt] = await sql<{ attempts: number }[]>`
+    SELECT attempts FROM receipts WHERE subject=${`source:${id}`} ORDER BY id DESC LIMIT 1`;
+  assert.equal(receipt!.attempts, 1, "等待期间只保留一次已发生的请求");
+  mode = "page";
+});
+
+test("invalid detail.maxFetches is refused at the collect boundary before any paid fetch", async () => {
+  const id = `${SOURCE}-invalid-max`;
+  await sql`INSERT INTO sources (id, name, kind, tier, participation_mode, next_fetch_at, config, cursor)
+    VALUES (${id}, 'Invalid maxFetches', 'web_list', 'T2', 'editorial', '2100-01-01',
+            ${sql.json({ url: "https://r.jina.ai/https://example.org/invalid/", allowUrlPrefixes: ["https://example.org/invalid/"], detail: { maxFetches: "abc" } })},
+            ${sql.json({ initializedAt: new Date().toISOString() })})`;
+  const before = hits;
+  const run = await collectSource(id, { force: true });
+  assert.equal(run.status, "failed");
+  assert.match(run.error ?? "", /detail\.maxFetches=abc/);
+  assert.equal(hits, before, "无效配置不发起付费抓取");
 });
 
 test("a listing parsed with selectors is read from Jina as rendered HTML, dates included", async () => {

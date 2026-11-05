@@ -21,12 +21,13 @@ const created: string[] = [];
 const savedEnvironment = Object.fromEntries(["JINA_API_KEY", "JINA_BASE_URL", "TRANSLATE_MODEL", "COLLECT_ENABLED"].map(key => [key, process.env[key]]));
 const savedPrivateNetwork = config.allowPrivateNetworkFetch;
 let serial = 0;
-let mode: "ok" | "reject" | "hold" | "hold-reject" = "ok";
+let mode: "ok" | "reject" | "hold" | "hold-reject" | "rate-limit" = "ok";
 let held: { entered: ReturnType<typeof gate<void>>; release: ReturnType<typeof gate<void>> } | null = null;
 const model = await stub(async (_hit, request) => {
   const localMode = mode;
   if (localMode === "hold" || localMode === "hold-reject") { held!.entered.open(); await held!.release.promise; }
   if (localMode === "reject" || localMode === "hold-reject") return new Reply(503, { error: "budget not configured is provider text, not a local wait" });
+  if (localMode === "rate-limit") return new Reply(429, { error: "rate limited" }, { "retry-after": "120" });
   const { segments } = JSON.parse(JSON.parse(request.body).messages[1].content);
   return { choices: [{ message: { content: JSON.stringify({ t: segments.map(() => "完整中文译文") }) } }] };
 });
@@ -183,6 +184,24 @@ test("an unknown translation waits beyond three scans and releases only translat
   assert.equal((await sql`SELECT attempts FROM receipts WHERE id=${receiptId}`)[0]!.attempts, 2);
   const [a] = await sql`SELECT processing_state,processing_attempt_tag FROM articles WHERE id=${id}`;
   assert.equal(a!.processing_state, "analyzed"); assert.equal(a!.processing_attempt_tag, "original-analysis");
+});
+
+test("供应商 Retry-After 让译文等待同一回执，不消耗失败次数", async () => {
+  const { id } = await article(); mode = "rate-limit";
+  try { assert.equal((await processTranslation(id, 1)).wait, "provider-retry"); }
+  finally { mode = "ok"; }
+  const attempt = await attempts(id);
+  assert.equal(attempt!.attempts, 0, "等待不是一次真实失败");
+  assert.equal(attempt!.outcome, "waiting");
+  const seconds = (attempt!.retry_at.getTime() - Date.now()) / 1000;
+  assert.ok(seconds > 110 && seconds <= 121, `retry_at=${attempt!.retry_at.toISOString()}`);
+  const hits = model.hits();
+  assert.equal((await processTranslation(id, 1)).state, "waiting");
+  assert.equal(model.hits(), hits, "等待窗口内不再发起付费请求");
+  await due(id);
+  assert.equal((await processTranslation(id, 1)).state, "translated");
+  assert.equal(model.hits(), hits + 1);
+  assert.equal((await attempts(id))!.attempts, 0);
 });
 
 test("busy, disabled and budget translation waits preserve an earlier real failure", async () => {

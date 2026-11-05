@@ -61,6 +61,10 @@ export function requestWait(error: unknown): { kind: string; retryAfterSeconds: 
   if (error instanceof BudgetExceededError) return { kind: "budget", retryAfterSeconds: error.retryAfterSeconds };
   if (error instanceof ReceiptBusyError) return { kind: "busy", retryAfterSeconds: 60 };
   if (error instanceof ProviderUnavailableError) return { kind: error.kind, retryAfterSeconds: 300 };
+  // 供应商明确要求等待（有效 Retry-After）时不消耗失败额度；无 header 的 429/5xx 仍走原有重试。
+  if (error instanceof ProviderRejectedError && error.retryable && error.retryAfterSeconds !== null) {
+    return { kind: "provider-retry", retryAfterSeconds: error.retryAfterSeconds };
+  }
   return null;
 }
 
@@ -370,6 +374,10 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
     const status = error instanceof ProviderRejectedError ? "failed" : "unknown";
     const spending = error instanceof ProviderRejectedError && (error.status === 402 || error.status === 429 && error.spendingRefused);
     const details = error instanceof ProviderRejectedError || error instanceof ProviderRequestError ? error : null;
+    // 资金拒绝沿用供应商给出的有效等待（Retry-After／冷却），无 header 时才用默认冷却窗口。
+    const spendingWait = details instanceof ProviderRejectedError
+      ? details.retryAfterSeconds ?? details.cooldownSeconds ?? PROVIDER_COOLDOWN_SECONDS
+      : PROVIDER_COOLDOWN_SECONDS;
     const usage = details?.usage ?? null;
     const normalizedUsage = req.billingContext && usage ? normalizeModelUsage(usage) : null;
     // "unknown": the request may have reached the provider (timeout, reset): do not re-send automatically.
@@ -382,10 +390,10 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
       await tx`UPDATE receipt_attempts SET status = ${status}, error = ${message}, request_id = ${details?.requestId ?? null},
         reported_model = ${details?.reportedModel ?? null}, usage = ${usage ? tx.json(usage as never) : null},
         normalized_usage = ${normalizedUsage ? tx.json(normalizedUsage as never) : null}, latency_ms = ${Date.now() - started}, finished_at = now() WHERE id = ${attemptId}`;
-      await settleProviderCooldown(tx, cooldown, spending ? "spending" : status === "unknown" ? "unknown" : "failure", error instanceof ProviderRejectedError ? error.cooldownSeconds : null);
+      await settleProviderCooldown(tx, cooldown, spending ? "spending" : status === "unknown" ? "unknown" : "failure", error instanceof ProviderRejectedError ? (spending ? spendingWait : error.cooldownSeconds) : null);
     });
     if (status === "unknown") throw new ReceiptUnknownError(receiptId, error instanceof Error ? error.message : String(error), { cause: error });
-    if (spending && cooldown) throw new BudgetExceededError(req.service, "provider", PROVIDER_COOLDOWN_SECONDS);
+    if (spending && cooldown) throw new BudgetExceededError(req.service, "provider", spendingWait);
     throw error;
   }
 

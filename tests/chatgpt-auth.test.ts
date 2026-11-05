@@ -11,7 +11,7 @@ import { z } from "zod";
 import { config } from "@aihot/backend/config";
 import { closeDb, sql } from "@aihot/backend/db";
 import { chatJson } from "@aihot/backend/providers/llm";
-import { BudgetExceededError, ProviderRejectedError, ReceiptUnknownError } from "@aihot/backend/providers/receipts";
+import { BudgetExceededError, ProviderRejectedError, ReceiptUnknownError, requestWait } from "@aihot/backend/providers/receipts";
 import {
   CHATGPT_ISSUER, ChatGPTAuthorizationDeclinedError, chatGPTAccess, chatGPTHostId, createChatGPTAuthorization, disconnectChatGPT,
   finishChatGPTAuthorization, readChatGPTClientId, readChatGPTSession, saveChatGPTSession,
@@ -151,6 +151,40 @@ test("only response.completed succeeds; usage is normalized for existing receipt
 test("HTTP failures never log provider bodies containing credentials", async () => {
   api.intercept({ path: "/v1/responses", method: "POST" }).reply(401, "secret-token-echo");
   await assert.rejects(requestChatGPT({}, "fake-key", 1000), (error: unknown) => error instanceof ProviderRejectedError && !error.message.includes("secret-token-echo"));
+});
+
+test("ChatGPT 429/5xx Retry-After 进入统一等待，资金冷却复用同一秒数", async () => {
+  const cooldownPrefix = "provider.cooldown.v1.%";
+  const beforeKeys = new Set((await sql<{ key: string }[]>`SELECT key FROM settings WHERE key LIKE ${cooldownPrefix}`).map((row) => row.key));
+  const [budget] = await sql<{ per_minute: number; per_hour: number; per_day: number }[]>`SELECT per_minute, per_hour, per_day FROM budgets WHERE service='llm'`;
+  config.modelCallsEnabled = true;
+  process.env.LLM_AUTH_MODE = "chatgpt"; process.env.LLM_MODEL = "fixture-model";
+  await saveChatGPTSession(fixture);
+  try {
+    await sql`INSERT INTO budgets (service, per_minute, per_hour, per_day) VALUES ('llm', 10000, 10000, 10000) ON CONFLICT (service) DO UPDATE SET per_minute=10000, per_hour=10000, per_day=10000`;
+    for (const [status, wait] of [[503, 30], [429, 75]] as const) {
+      api.intercept({ path: "/v1/responses", method: "POST" }).reply(status, { error: { code: "insufficient_quota" } }, { headers: { "retry-after": String(wait) } });
+      await assert.rejects(requestChatGPT({}, "fake-key", 1000), (error: unknown) => {
+        assert.ok(error instanceof ProviderRejectedError);
+        assert.equal(error.retryAfterSeconds, wait);
+        assert.deepEqual(requestWait(error), { kind: "provider-retry", retryAfterSeconds: wait });
+        return true;
+      });
+    }
+    api.intercept({ path: "/v1/responses", method: "POST" }).reply(429, { error: { code: "insufficient_quota" } }, { headers: { "retry-after": "75" } });
+    await assert.rejects(chatJson({ model: "default", purpose: "chatgpt_retry_after", subject: "wait", promptVersion: "1", system: "S", user: "u", schema: z.object({ ok: z.boolean() }) }),
+      (error: unknown) => error instanceof BudgetExceededError && error.retryAfterSeconds === 75);
+    const [state] = await sql<{ value: { refusedAt: number; until: number } }[]>`
+      SELECT value FROM settings WHERE key LIKE ${cooldownPrefix} AND updated_by='provider-cooldown' ORDER BY updated_at DESC LIMIT 1`;
+    assert.equal(state!.value.until - state!.value.refusedAt, 75_000, "资金 429 的冷却采用 Retry-After");
+  } finally {
+    config.modelCallsEnabled = false;
+    delete process.env.LLM_AUTH_MODE;
+    delete process.env.LLM_MODEL;
+    if (budget) await sql`UPDATE budgets SET per_minute=${budget.per_minute}, per_hour=${budget.per_hour}, per_day=${budget.per_day} WHERE service='llm'`;
+    const created = (await sql<{ key: string }[]>`SELECT key FROM settings WHERE key LIKE ${cooldownPrefix}`).filter((row) => !beforeKeys.has(row.key)).map((row) => row.key);
+    if (created.length) await sql`DELETE FROM settings WHERE key IN ${sql(created)}`;
+  }
 });
 
 test("closed model valve sends no OAuth or model request", async () => {
