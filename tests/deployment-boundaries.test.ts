@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { after, test } from "node:test";
 import postgres from "postgres";
 import { databaseUrlFromEnv } from "@aihot/backend/config";
@@ -114,6 +116,48 @@ test("发布标签比较方向只接受 main 历史提交", () => {
   assert.equal(allows("diverged", "0"), false);
 });
 
+test("annotated tag 的 dry-run 通过解引用提交进入 compare 和 push CI 查询", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "soymilk-release-policy-"));
+  const log = path.join(dir, "curl.log");
+  const fakeCurl = path.join(dir, "curl");
+  writeFileSync(fakeCurl, [
+    "#!/bin/sh",
+    "url=",
+    "for arg do url=$arg; done",
+    "printf '%s\\n' \"$url\" >> \"$FAKE_CURL_LOG\"",
+    "case \"$url\" in",
+    "  *'/git/ref/tags/v4.0.0') printf '%s\\n' '{\"ref\":\"refs/tags/v4.0.0\",\"object\":{\"sha\":\"1111111111111111111111111111111111111111\",\"type\":\"tag\"}}' ;;",
+    "  *'/git/tags/1111111111111111111111111111111111111111') printf '%s\\n' '{\"sha\":\"1111111111111111111111111111111111111111\",\"tag\":\"v4.0.0\",\"object\":{\"sha\":\"2222222222222222222222222222222222222222\",\"type\":\"commit\"}}' ;;",
+    "  *'/compare/main...2222222222222222222222222222222222222222') printf '%s\\n' '{\"status\":\"behind\",\"ahead_by\":0}' ;;",
+    "  *'/actions/workflows/ci.yml/runs?head_sha=2222222222222222222222222222222222222222&event=push&per_page=1')",
+    "    if [ \"${FAKE_CI_PENDING:-}\" = true ]; then printf '%s\\n' '{\"total_count\":1,\"workflow_runs\":[{\"status\":\"in_progress\",\"conclusion\":null}]}';",
+    "    else printf '%s\\n' '{\"total_count\":1,\"workflow_runs\":[{\"status\":\"completed\",\"conclusion\":\"success\"}]}'; fi ;;",
+    "  *) printf 'fake curl: unexpected URL %s\\n' \"$url\" >&2; exit 22 ;;",
+    "esac",
+  ].join("\n"));
+  chmodSync(fakeCurl, 0o755);
+  const root = new URL("..", import.meta.url).pathname;
+  const run = (extraEnv: Record<string, string> = {}) => execFileSync("sh", ["deploy/nas/auto-release.sh", "v4.0.0", "--dry-run"], {
+    cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, FAKE_CURL_LOG: log, GITHUB_REPO: "ViewWholeWorld/SoyMilk", ...extraEnv },
+  });
+  try {
+    run();
+    const calls = readFileSync(log, "utf8").trim().split("\n");
+    assert.ok(calls.some((url) => url.endsWith("/git/ref/tags/v4.0.0")));
+    assert.ok(calls.some((url) => url.includes("/git/tags/1111111111111111111111111111111111111111")), "按 tag object SHA 解引用");
+    assert.ok(calls.some((url) => url.includes("/compare/main...2222222222222222222222222222222222222222")), "compare 使用解引用提交");
+    assert.ok(calls.some((url) => url.includes("/actions/workflows/ci.yml/runs?head_sha=2222222222222222222222222222222222222222&event=push&per_page=1")), "CI 查询使用解引用提交和 push 事件");
+    assert.ok(!calls.some((url) => url.includes("compare/main...v4.0.0")), "不使用标签名 compare");
+    assert.throws(() => run({ FAKE_CI_PENDING: "true" }), (error: unknown) => {
+      const failure = error as { status?: number; stderr?: string };
+      return failure.status === 1 && /push CI 未通过（status=in_progress/.test(failure.stderr ?? "");
+    }, "未完成的 push run 阻止发布");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("发布门禁只使用解引用后的提交 SHA，并只放行最新 push CI success", () => {
   const policy = new URL("../deploy/nas/release-policy.sh", import.meta.url).pathname;
   const run = (script: string) => execFileSync("sh", ["-c", `. "$1"; ${script}`, "release-policy-test", policy], { encoding: "utf8" });
@@ -122,8 +166,10 @@ test("发布门禁只使用解引用后的提交 SHA，并只放行最新 push C
   const lightRef = '{"ref":"refs/tags/v4.0.0","object":{"sha":"3333333333333333333333333333333333333333","type":"commit"}}';
   assert.equal(run(`release_object_sha '${ref}'`).trim(), "1111111111111111111111111111111111111111");
   assert.equal(run(`release_object_sha '${tagObject}'`).trim(), "2222222222222222222222222222222222222222", "注释标签取嵌套 object.sha");
+  assert.equal(run(`printf '%s' '${tagObject}' | release_object_sha`).trim(), "2222222222222222222222222222222222222222", "auto-release 的管道输入同样可解析");
+  assert.equal(run(`printf '%s' '${tagObject}' | release_object_type`).trim(), "commit");
+  assert.equal(run(`printf '%s' '${lightRef}' | release_object_sha`).trim(), "3333333333333333333333333333333333333333");
   assert.equal(run(`release_object_type '${tagObject}'`).trim(), "commit");
-  assert.equal(run(`release_object_sha '${lightRef}'`).trim(), "3333333333333333333333333333333333333333");
   const allows = (status: string, conclusion: string) => {
     try {
       run(`release_ci_allows '${status}' '${conclusion}'`);

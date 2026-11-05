@@ -90,8 +90,8 @@ verify_release_ref() {
   # Same commit, ci.yml, push event, newest run only: a queued/in-progress run, a failed rerun, or
   # PR-only success is not release evidence.
   ci_response=$(curl -fsS -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$GITHUB_REPO/actions/workflows/ci.yml/runs?head_sha=$tag_sha&event=push&per_page=1") || return 1
-  ci_status=$(printf '%s' "$ci_response" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' | head -n 1)
-  ci_conclusion=$(printf '%s' "$ci_response" | sed -n 's/.*"conclusion"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' | head -n 1)
+  ci_status=$(printf '%s' "$ci_response" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p' | head -n 1)
+  ci_conclusion=$(printf '%s' "$ci_response" | sed -n 's/.*"conclusion"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p' | head -n 1)
   if ! release_ci_allows "$ci_status" "$ci_conclusion"; then
     printf '发布标签 %s 的 push CI 未通过（status=%s conclusion=%s）\n' "$tag" "${ci_status:-missing}" "${ci_conclusion:-missing}" >&2
     return 1
