@@ -50,8 +50,8 @@ test("发布、Compose、首次安装和行业文档契约覆盖第四组边界"
   assert.match(release, /--entrypoint node worker --input-type=module/);
   assert.match(release, /setup_command='node scripts\/migrate\.ts'/);
 
-  assert.match(read("README.md"), /当前版本 3\.9\.9/);
-  assert.match(read("AGENTS.md"), /当前代码版本：\*\*3\.9\.9\*\*/);
+  assert.match(read("README.md"), /当前版本 4\.0\.0/);
+  assert.match(read("AGENTS.md"), /当前代码版本：\*\*4\.0\.0\*\*/);
   const industry = read("industry/README.md");
   assert.doesNotMatch(industry, /features\.ts/);
   for (const file of ["site.ts", "taxonomy.ts", "topics.json", "sources.json", "selection.ts", "changelog.json"]) {
